@@ -1,0 +1,222 @@
+
+define i32 Swap32(i32 Value) asm {
+    emit, 0x0F ; bswap edi
+    emit, 0xCF
+
+    mov, eax, edi
+    ret
+}
+
+define i64 Swap64(i64 Value) asm {
+    emit, 0x48 ; bswap rdi
+    emit, 0x0F
+    emit, 0xCF
+
+    mov, rax, rdi
+    ret
+}
+
+define void P(i64 V) {
+    Print("%x ", (V & 0xFFFF_FFFF))
+}
+
+class SHA1State derives INew {
+    union {
+        struct {
+            i32 H0
+            i32 H1
+            i32 H2
+            i32 H3
+            i32 H4
+        }
+
+        i32[5] H
+        i8[20] Output
+    }
+
+    union {
+        i8[64] ChunkBytes
+        i32[16] ChunkWords
+    }
+
+    i32 ChunkCursor
+    i32 Length
+
+    i32[80] Block
+
+    define void New() {
+        this->H0 := 0x67452301
+        this->H1 := 0xEFCDAB89 As i32
+        this->H2 := 0x98BADCFE As i32
+        this->H3 := 0x10325476
+        this->H4 := 0xC3D2E1F0 As i32
+    }
+
+    define i32 LeftShift(i32 Value, i32 Count) {
+        return (Value << Count) | (Value >> (32 - Count))
+    }
+
+    define void UpdateChunk() {
+        this->ChunkCursor := 0
+
+        for (i32 Index := 0, Index < 16, Index++) {
+            this->Block[Index] := Swap32(this->ChunkWords[Index])
+        }
+
+        for (i32 Index := 0, Index < 80, Index++) {
+            P(this->Block[Index])
+        }
+
+        for (i32 Index := 16, Index < 80, Index++) {
+            i32 Mix := this->Block[Index - 3] ^ this->Block[Index - 8] ^ this->Block[Index - 14] ^ this->Block[Index - 16]
+
+            this->Block[Index] := this->LeftShift(Mix, 1)
+        }
+
+        Print("\n")
+
+        for (i32 Index := 0, Index < 80, Index++) {
+            P(this->Block[Index])
+        }
+
+        i32 A := this->H0
+        i32 B := this->H1
+        i32 C := this->H2
+        i32 D := this->H3
+        i32 E := this->H4
+
+        for (i32 Index := 0, Index < 80, Index++) {
+            i32 F := 0
+            i32 K := 0
+
+            if (Index < 20) {
+                F := (B & C) | ((~B) & D)
+                K := 0x5A827999
+            }
+            else if (Index < 40) {
+                F := B ^ C ^ D
+                K := 0x6ED9EBA1
+            }
+            else if (Index < 60) {
+                F := (B & C) | (B & D) | (C & D)
+                K := 0x8F1BBCDC As i32
+            }
+            else {
+                F := B ^ C ^ D
+                K := 0xCA62C1D6 As i32
+            }
+
+            i32 Temp := this->LeftShift(A, 5) + F + E + K + this->Block[Index]
+
+            E := D
+            D := C
+            C := this->LeftShift(B, 30)
+            B := A
+            A := Temp
+        }
+
+        this->H0 += A
+        this->H1 += B
+        this->H2 += C
+        this->H3 += D
+        this->H4 += E
+    }
+
+    define void Update(void* Data, i32 Size) {
+        this->Length += Size
+
+        while (Size != 0) {
+            if (this->ChunkCursor) {
+                i8* ChunkBytesTail := this->ChunkBytes + this->ChunkCursor
+                i32 SizeToFill := 64 - this->ChunkCursor
+
+                if (Size >= SizeToFill) {
+                    MoveMemory(ChunkBytesTail, Data, SizeToFill)
+                    Size -= SizeToFill
+                    Data += SizeToFill
+
+                    this->UpdateChunk()
+                }
+                else {
+                    MoveMemory(ChunkBytesTail, Data, Size)
+                    this->ChunkCursor += Size
+
+                    break
+                }
+            }
+            else {
+                if (Size >= 64) {
+                    MoveMemory(this->ChunkBytes, Data, 64)
+                    this->UpdateChunk()
+
+                    Size -= 64
+                    Data += 64
+                }
+                else {
+                    MoveMemory(this->ChunkBytes, Data, Size)
+                    this->ChunkCursor := Size
+
+                    break
+                }
+            }
+        }
+    }
+
+    define void UpdateString(i8* String) {
+        this->Update(String, StringLength(String))
+    }
+
+    define void PadFillCurrentChunk() {
+        for (i32 Index := this->ChunkCursor, Index < 64, Index++) {
+            this->ChunkBytes[Index] := 0
+        }
+    }
+
+    define i32 ChunkSpace() {
+        return 64 - this->ChunkCursor
+    }
+
+    define void Finalize() {
+        if (this->ChunkSpace() = 0) {
+            ; Ensure we have enough space for the 0x80 terminator
+
+            this->UpdateChunk()
+        }
+
+        this->Update(i8[0x80], 1)
+
+        if (this->ChunkSpace() < 8) {
+            ; Not enough room for length, pad+flush chunk
+
+            this->PadFillCurrentChunk()
+            this->UpdateChunk()
+        }
+
+        ; Pad to end of chunk for length
+
+        this->PadFillCurrentChunk()
+        
+        i64 SwappedLength := Swap64((this->Length - 1) * 8) ; Exclude 0x80 terminator
+
+        this->ChunkCursor := 56
+        this->Update(&SwappedLength, 8)
+
+        for (i32 Index := 0, Index < 5, Index++) {
+            this->H[Index] := Swap32(this->H[Index])
+        }
+    }
+
+    define void Print() {
+        for (i32 Index := 0, Index < 5, Index++) {
+            for (i32 Byte := 0, Byte < 4, Byte++) {
+                i8 Value := this->Output[(Index * 4) + Byte]
+
+                Print("%B", Value)
+            }
+
+            if (Index + 1 != 5) {
+                ;Print(" ")
+            }
+        }
+    }
+}

@@ -1,0 +1,12 @@
+#Require "$/Console.rlx"
+
+#Require "./src/SHA-1.rlx"
+
+define void Main() {
+    SHA1State* State := new SHA1State()
+
+    State->UpdateString("The quick brown fox jumps over the lazy dogThe quick brown fox jumps over the lazy dogThe quick brown fox jumps over the lazy dogThe quick brown fox jumps over the lazy dogThe quick brown fox jumps over the lazy dog")
+    State->Finalize()
+
+    State->Print()
+}
