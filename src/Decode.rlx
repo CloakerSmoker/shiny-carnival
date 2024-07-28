@@ -1,0 +1,38 @@
+
+define i32 DecodeHexCharacter(i8 Next) {
+    if ('0' <= Next && Next <= '9') {
+        return Next - '0'
+    }
+    else if ('a' <= Next && Next <= 'f') {
+        return 10 + Next - 'a'
+    }
+    else if ('A' <= Next && Next <= 'F') {
+        return 10 + Next - 'A'
+    }
+    else {
+        return -1
+    }
+}
+
+define i32 DecodeHex(i8* String, i32 Length, i8* Output) {
+    if (Length % 2 != 0) {
+        return -1
+    }
+
+    for (i32 Index := 0, Index < Length / 2, Index++) {
+        i32 I2 := Index * 2
+
+        i32 Upper := DecodeHexCharacter(String[I2])
+        i32 Lower := DecodeHexCharacter(String[I2 + 1])
+
+        if (Upper < 0 || Lower < 0) {
+            return -1
+        }
+
+        if (Output) {
+            Output[Index] := ((Upper << 4) | Lower) As i8
+        }
+    }
+
+    return Length / 2
+}

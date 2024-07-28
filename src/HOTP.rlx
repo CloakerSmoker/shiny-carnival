@@ -1,0 +1,36 @@
+
+struct SHA1HOTPGenerator {
+    SHA1HMACState HMAC
+
+    i32 OutputDivisor
+
+    define void Initialize(i8* Key, i32 KeySize, i32 OutputPower) {
+        this~>HMAC->Initialize(Key, KeySize)
+
+        this->OutputDivisor := 1
+
+        for (i32 Index := 0, Index < OutputPower, Index++) {
+            this->OutputDivisor *= 10
+        }
+    }
+
+    define i32 Calculate(i64 Counter) {
+        i8[20] HMAC
+
+        i64 SwappedCounter := Swap64(Counter)
+
+        this~>HMAC->Calculate(&SwappedCounter, 8, HMAC)
+
+        this~>HMAC->Print(HMAC)
+        Print("\n")
+
+        i32 Selector := HMAC[19] & 0xF
+
+        i8* pTruncated := &HMAC[Selector]
+        i32 Truncated := Swap32(*(pTruncated As i32*)) & 0x7F_FF_FF_FF
+
+        Print("%x\n", Truncated)
+
+        return Truncated % this->OutputDivisor
+    }
+}

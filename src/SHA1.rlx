@@ -1,4 +1,12 @@
 
+define void ZeroMemory(void* RawMemory, i32 Size) {
+    i8* Memory := RawMemory
+
+    for (i32 Index := 0, Index < Size, Index++) {
+        Memory[Index] := 0
+    }
+}
+
 define i32 Swap32(i32 Value) asm {
     emit, 0x0F ; bswap edi
     emit, 0xCF
@@ -20,7 +28,7 @@ define void P(i64 V) {
     Print("%x ", (V & 0xFFFF_FFFF))
 }
 
-class SHA1State derives INew {
+struct SHA1State {
     union {
         struct {
             i32 H0
@@ -31,25 +39,30 @@ class SHA1State derives INew {
         }
 
         i32[5] H
-        i8[20] Output
-    }
-
-    union {
-        i8[64] ChunkBytes
-        i32[16] ChunkWords
     }
 
     i32 ChunkCursor
     i32 Length
 
-    i32[80] Block
+    union {
+        i8[64] ChunkBytes
+        i32[16] ChunkWords
+        i32[80] Block
+    }
 
-    define void New() {
+    define void Initialize() {
         this->H0 := 0x67452301
         this->H1 := 0xEFCDAB89 As i32
         this->H2 := 0x98BADCFE As i32
         this->H3 := 0x10325476
         this->H4 := 0xC3D2E1F0 As i32
+
+        this->ChunkCursor := 0
+        this->Length := 0
+    }
+
+    define void Reset() {
+        this->Initialize()
     }
 
     define i32 LeftShift(i32 Value, i32 Count) {
@@ -63,20 +76,10 @@ class SHA1State derives INew {
             this->Block[Index] := Swap32(this->ChunkWords[Index])
         }
 
-        for (i32 Index := 0, Index < 80, Index++) {
-            P(this->Block[Index])
-        }
-
         for (i32 Index := 16, Index < 80, Index++) {
             i32 Mix := this->Block[Index - 3] ^ this->Block[Index - 8] ^ this->Block[Index - 14] ^ this->Block[Index - 16]
 
             this->Block[Index] := this->LeftShift(Mix, 1)
-        }
-
-        Print("\n")
-
-        for (i32 Index := 0, Index < 80, Index++) {
-            P(this->Block[Index])
         }
 
         i32 A := this->H0
@@ -127,10 +130,14 @@ class SHA1State derives INew {
 
         while (Size != 0) {
             if (this->ChunkCursor) {
+                ; We have a partial block to fill
+
                 i8* ChunkBytesTail := this->ChunkBytes + this->ChunkCursor
                 i32 SizeToFill := 64 - this->ChunkCursor
 
                 if (Size >= SizeToFill) {
+                    ; We have enough inbound data to fill the block completely
+
                     MoveMemory(ChunkBytesTail, Data, SizeToFill)
                     Size -= SizeToFill
                     Data += SizeToFill
@@ -138,6 +145,8 @@ class SHA1State derives INew {
                     this->UpdateChunk()
                 }
                 else {
+                    ; Block will still be partial
+
                     MoveMemory(ChunkBytesTail, Data, Size)
                     this->ChunkCursor += Size
 
@@ -146,6 +155,8 @@ class SHA1State derives INew {
             }
             else {
                 if (Size >= 64) {
+                    ; Enough for a full block of processing
+
                     MoveMemory(this->ChunkBytes, Data, 64)
                     this->UpdateChunk()
 
@@ -153,6 +164,8 @@ class SHA1State derives INew {
                     Data += 64
                 }
                 else {
+                    ; Leftover, turns into a partial block
+
                     MoveMemory(this->ChunkBytes, Data, Size)
                     this->ChunkCursor := Size
 
@@ -176,7 +189,7 @@ class SHA1State derives INew {
         return 64 - this->ChunkCursor
     }
 
-    define void Finalize() {
+    define void Finalize(void* Output) {
         if (this->ChunkSpace() = 0) {
             ; Ensure we have enough space for the 0x80 terminator
 
@@ -196,27 +209,107 @@ class SHA1State derives INew {
 
         this->PadFillCurrentChunk()
         
-        i64 SwappedLength := Swap64((this->Length - 1) * 8) ; Exclude 0x80 terminator
+        i64 SwappedBitLength := Swap64((this->Length - 1) * 8) ; Exclude 0x80 terminator
 
         this->ChunkCursor := 56
-        this->Update(&SwappedLength, 8)
+        this->Update(&SwappedBitLength, 8)
+
+        this->Length -= 9 ; Update to ignore terminator+length
 
         for (i32 Index := 0, Index < 5, Index++) {
+            ; Swap output back to LE
+
             this->H[Index] := Swap32(this->H[Index])
         }
+
+        MoveMemory(Output, this->H, 20)
+
+        this->Reset()
     }
 
-    define void Print() {
+    define void Hash(void* Data, i32 Size, void* Output) {
+        this->Reset()
+        this->Update(Data, Size)
+        this->Finalize(Output)
+    }
+
+    define void Print(i8* Output) {
         for (i32 Index := 0, Index < 5, Index++) {
             for (i32 Byte := 0, Byte < 4, Byte++) {
-                i8 Value := this->Output[(Index * 4) + Byte]
+                i8 Value := Output[(Index * 4) + Byte]
 
                 Print("%B", Value)
             }
 
             if (Index + 1 != 5) {
-                ;Print(" ")
+                Print(" ")
             }
         }
+    }
+}
+
+i32 SHA1_BLOCK_SIZE := 64
+i32 SHA1_OUTPUT_SIZE := 20
+
+struct SHA1HMACState {
+    union {
+        i32[16] KeyBlock
+        i8[64] KeyBlockBytes
+    }
+
+    union {
+        i32[16] OPad
+        i8[64] OPadBytes
+    }
+
+    union {
+        i32[16] IPad
+        i8[64] IPadBytes
+    }
+
+    SHA1State Hasher
+
+    define void Initialize(i8* KeyBytes, i32 KeySize) {
+        this~>Hasher->Initialize()
+
+        ZeroMemory(this->KeyBlock, 64)
+        ZeroMemory(this->OPad, 64)
+        ZeroMemory(this->IPad, 64)
+
+        if (KeySize > SHA1_BLOCK_SIZE) {
+            this~>Hasher->Hash(KeyBytes, KeySize, this->KeyBlock)
+
+            KeySize := SHA1_OUTPUT_SIZE
+        }
+        else {
+            MoveMemory(this->KeyBlock, KeyBytes, KeySize)
+        }
+
+        MoveMemory(this->OPad, this->KeyBlock, 64)
+        MoveMemory(this->IPad, this->KeyBlock, 64)
+
+        for (i32 Index := 0, Index < 64, Index++) {
+            this->OPadBytes[Index] ^= 0x5C
+            this->IPadBytes[Index] ^= 0x36
+        }
+    }
+
+    define void Calculate(void* Message, i32 Size, void* Output) {
+        SHA1State* Hash := this~>Hasher
+        i8[20] Temporary
+
+        Hash->Reset()
+
+        Hash->Update(this->IPad, 64)
+        Hash->Update(Message, Size)
+        Hash->Finalize(Temporary)
+
+        Hash->Update(this->OPad, 64)
+        Hash->Update(Temporary, 20)
+        Hash->Finalize(Output)
+    }
+
+    define void Print(void* Output) {
+        this~>Hasher->Print(Output)
     }
 }
