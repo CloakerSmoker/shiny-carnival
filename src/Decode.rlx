@@ -36,3 +36,69 @@ define i32 DecodeHex(i8* String, i32 Length, i8* Output) {
 
     return Length / 2
 }
+
+define i32 DecodeBase64Character(i8 Next) {
+    if ('A' <= Next && Next <= 'Z') {
+        return Next - 'A'
+    }
+    else if ('a' <= Next && Next <= 'z') {
+        return Next - 'a' + 26
+    }
+    else if ('0' <= Next && Next <= '9') {
+        return Next - '0' + 52
+    }
+    else if (Next = '+') {
+        return 62
+    }
+    else if (Next = '/') {
+        return 63
+    }
+    else {
+        return -1
+    }
+}
+
+define i32 DecodeBase64(i8* String, i32 Length, i8* Output) {
+    ; https://rosettacode.org/wiki/Base64_decode_data
+
+    i32 Accumulator := 0
+    i32 OutputIndex := 0
+
+    for (i32 Index := 0, Index < Length, Index += 4) {
+        i32 V1 := DecodeBase64Character(String[Index])
+        i32 V2 := DecodeBase64Character(String[Index + 1])
+
+        Accumulator := V1 << 2
+        Accumulator |= V2 >> 4
+
+        if (Output) {
+            Output[OutputIndex] := Accumulator
+        }
+
+        OutputIndex++
+
+        i8 B3 := String[Index + 2]
+
+        if (B3 != '=') {
+            i32 V3 := DecodeBase64Character(B3)
+
+            Accumulator := (V2 & 0xF) << 4
+            Accumulator |= V3 >> 4
+
+            if (Output) {
+                Output[OutputIndex] := Accumulator
+            }
+
+            OutputIndex++
+
+            i8 B4 := String[Index + 3]
+
+            if (B4 != '=') {
+                i32 V4 := DecodeBase64Character(B4)
+
+                Accumulator := (V3 & 0x3) << 6
+                Accumulator |= V4
+            }
+        }
+    }
+}

@@ -1,6 +1,6 @@
 #Require "$/Console.rlx"
 
-#Require "./src/SHA-1.rlx"
+#Require "./src/SHA1.rlx"
 #Require "./src/HOTP.rlx"
 #Require "./src/Decode.rlx"
 
@@ -36,7 +36,7 @@ define void Main() {
     SHA1HOTPGenerator HOTP
     HOTP.Initialize(KeyBuffer, KeySize, 6)
 
-    i32 Value := HOTP.Calculate(1)
+    i32 Value := HOTP.Calculate(9)
 
     Print("Value: %i\n", Value)
 }
