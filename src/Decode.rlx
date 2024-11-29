@@ -72,7 +72,7 @@ define i32 DecodeBase64(i8* String, i32 Length, i8* Output) {
         Accumulator |= V2 >> 4
 
         if (Output) {
-            Output[OutputIndex] := Accumulator
+            Output[OutputIndex] := Accumulator As i8
         }
 
         OutputIndex++
@@ -86,7 +86,7 @@ define i32 DecodeBase64(i8* String, i32 Length, i8* Output) {
             Accumulator |= V3 >> 4
 
             if (Output) {
-                Output[OutputIndex] := Accumulator
+                Output[OutputIndex] := Accumulator As i8
             }
 
             OutputIndex++
@@ -101,4 +101,6 @@ define i32 DecodeBase64(i8* String, i32 Length, i8* Output) {
             }
         }
     }
+
+    return Accumulator
 }
