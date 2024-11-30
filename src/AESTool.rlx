@@ -1,0 +1,350 @@
+#Require "$/Console.rlx"
+#Require "./src/Decode.rlx"
+#Require "./src/AES/Constructions.rlx"
+#Require "./src/PKCS5.rlx"
+
+i32 AES_NEEDS_IV_8       := 0b0001_0000
+i32 AES_NEEDS_IV_16      := 0b0010_0000
+i32 AES_NEEDS_PAD        := 0b0100_0000
+i32 AES_RANDOM_ACCESS    := 0b1000_0000
+
+enum AESConstruction As i32 {
+    ECB  := 1 | AES_NEEDS_PAD | AES_RANDOM_ACCESS,
+    CBC  := 2 | AES_NEEDS_PAD | AES_NEEDS_IV_16,
+    PCBC := 3 | AES_NEEDS_PAD | AES_NEEDS_IV_16,
+    CFB  := 4 | AES_NEEDS_PAD | AES_NEEDS_IV_16,
+    OFB  := 5 | AES_NEEDS_IV_16,
+    CTR  := 6 | AES_NEEDS_IV_8 | AES_RANDOM_ACCESS
+}
+
+enum DataType {
+    Unknown
+    File
+    Hex
+}
+
+define void* LoadData(i8* String, i32* ExpectedSize) {
+    DataType Type := DataType::None
+
+    if (CompareMemory(String, "file:", 5)) {
+        Type := DataType::File
+        String += 5
+    }
+    else if (CompareMemory(String, "hex:", 4)) {
+        Type := DataType::Hex
+        String += 4
+    }
+    else if (CompareMemory(String, "0x", 2)) {
+        Type := DataType::Hex
+        String += 2
+    }
+
+    i8 ValidHex := true
+    i8 ValidFile := true
+    
+    i32 Length := StringLength(String)
+
+    for (i32 Index := 0, Index < Length, Index++) {
+        i8 Next := String[Index]
+
+        if !(IsHex(Next)) {
+            ValidHex := false
+        }
+
+        if !(IsPath(Next)) {
+            ValidFile := false
+        }
+    }
+
+    i8 ValidSize := true
+
+    if (ValidHex && ExpectedSize != null && *ExpectedSize != 0) {
+        if (Length / 2 != *ExpectedSize) {
+            ValidSize := false
+        }
+    }
+
+    if (Type = DataType::Unknown) {
+        if (ValidHex && ValidSize) {
+            Type := DataType::Hex
+        }
+        else if (ValidFile) {
+            Type := DataType::File
+        }
+    }
+    else if (Type = DataType::Hex) {
+        if !(ValidHex || ValidSize) {
+            return null
+        }
+
+        i32 BufferSize := Length / 2
+
+        if (ExpectedSize != null) {
+            BufferSize := *ExpectedSize
+            *ExpectedSize := BufferSize
+        }
+
+        void* Buffer := Alloc(BufferSize + 16)
+        DecodeHex(String, Length, Buffer)
+
+        return Buffer
+    }
+    else if (Type = DataType::Path) {
+        if !(ValidFile) {
+            return null
+        }
+
+        i64 Handle := FileOpen(String, FILE_READ)
+
+        if (Handle < 0) {
+            return null
+        }
+
+        i32 FileSize := FileGetSize(Handle)
+
+        if (ExpectedSize != null && *ExpectedSize != 0) {
+            if (FileSize != *ExpectedSize) {
+                return null
+            }
+        }
+
+        *ExpectedSize := FileSize
+
+        return FileReadAll(Handle)
+    }
+}
+
+define i32 Main(i64 ArgC, i8** ArgV) {
+
+    ; ./aes 128 ecb enc -k 010203 
+    ; ./aes 128 ecb enc --key file:key.bin
+
+    i32 Index := 1
+
+    AESKeySize KeySize := AESKeySize::128
+    i8* KeySizeString := ArgV[Index++]
+
+    if (StringEquals(KeySizeString, "128")) {
+        KeySize := AESKeySize::128
+    }
+    else if (StringEquals(KeySizeString, "192")) {
+        KeySize := AESKeySize::192
+    }
+    else if (StringEquals(KeySizeString, "256")) {
+        KeySize := AESKeySize::256
+    }
+    else {
+        Print("Invalid key size '%s'\n", KeySizeString)
+        return 1
+    }
+
+    i32 KeySizeBytes := KeySize As i32
+
+    AESConstruction Construction := AESConstruction::ECB
+    i8* ConstructionString := ArgV[Index++]
+
+    if (StringEquals(ConstructionString, "ecb")) {
+        Construction := AESConstruction::ECB
+    }
+    else if (StringEquals(ConstructionString, "cbc")) {
+        Construction := AESConstruction::CBC
+    }
+    else if (StringEquals(ConstructionString, "pcbc")) {
+        Construction := AESConstruction::PCBC
+    }
+    else if (StringEquals(ConstructionString, "cfb")) {
+        Construction := AESConstruction::CFB
+    }
+    else if (StringEquals(ConstructionString, "ofb")) {
+        Construction := AESConstruction::OFB
+    }
+    else if (StringEquals(ConstructionString, "ctr")) {
+        Construction := AESConstruction::CTR
+    }
+    else {
+        Print("Unknown construction '%'\n", ConstructionString)
+        return 1
+    }
+
+    i32 ConstructionFlags := Construction As i32
+
+    i8* ModeString := ArgV[Index++]
+    i8 Decrypt := false
+
+    if (StringEquals(ModeString, "enc") || StringEquals(ModeString, "encrypt")) {
+        Decrypt := false
+    }
+    else if (StringEquals(ModeString, "dec") || StringEquals(ModeString, "decrypt")) {
+        Decrypt := true
+    }
+    else {
+        Print("Unknown mode '%s'\n", ModeString)
+        return 1
+    }
+
+    void* Key := null
+    void* IV := null
+
+    i32 InputSize := 0
+    void* Input := null
+
+    i64 OutputHandle := STDOUT
+    
+    for (, Index < ArgC, Index++) {
+        i8* Next := ArgV[Index]
+
+        if (StringEquals(Next, "-i") || StringEquals(Next, "--input")) {
+            Input := LoadData(ArgV[++Index], &InputSize)
+        }
+        else if (StringEquals(Next, "-o") || StringEquals(Next, "--output")) {
+            i8* Output := ArgV[++Index]
+
+            if (StringEquals(Output, "-")) {
+                OutputHandle := STDOUT
+            }
+            else {
+                OutputHandle := FileOpen(Output, FILE_WRITE)
+
+                if (OutputHandle < 0) {
+                    Print("Cound not open output file '%s'\n", Output)
+                    return 1
+                }
+            }
+        }
+        else if (StringEquals(Next, "--iv")) {
+            i32 IVSize := 0
+
+            if (ConstructionFlags & AES_NEEDS_IV_8) {
+                IVSize := 8
+            }
+            else if (ConstructionFlags & AES_NEEDS_IV_16) {
+                IVSize := 16
+            }
+            else {
+                Print("AES construction %s does not need an IV\n", nameof:(Construction))
+                return 1
+            }
+
+            IV := LoadData(ArgV[++Index], &IVSize)
+        }
+        else if (StringEquals(Next, "-k") || StringEquals(Next, "--key")) {
+            Key := LoadData(ArgV[++Index], &KeySizeBytes)
+        }
+        else if (StringEquals(Next, "-n") || StringEquals(Next, "--nonce")) {
+            IV := Alloc(16)
+
+            i64 Nonce := AToI(ArgV[++Index])
+
+            MoveMemory(IV, Nonce, 8)
+        }
+    }
+
+    if (Key = null) {
+        Print("No key specified\n")
+        return 1
+    }
+    
+    if (ConstructionFlags & (AES_NEEDS_IV_8 | AES_NEEDS_IV_16)) {
+        if (IV = null) {
+            Print("No IV specified\n")
+            return 1
+        }
+    }
+
+    if (Input = null) {
+        Print("No input specified\n")
+        return 1
+    }
+
+    if (Construction & AES_NEEDS_PAD) {
+        i32 Remainder := InputSize % 16
+
+        if (Remainder) {
+            i32 FullBlocks := InputSize / 16
+
+            PKCS5Pad(Input + (FullBlocks * 16), Remainder, 16)
+
+            Print("Applied PCKS#5 padding to final block (%B)\n", 16 - Remainder)
+
+            InputSize += (16 - Remainder)
+        }
+    }
+
+    i32 BlockCount := InputSize / 16
+
+    if (Construction = AESConstruction::ECB) {
+        auto ECB := new AES_ECB(KeySize)
+
+        ECB->SetKey(Key)
+
+        if (Decrypt) {
+            ECB->DecryptBlocks(Input, BlockCount)
+        }
+        else {
+            ECB->EncryptBlocks(Input, BlockCount)
+        }
+    }
+    else if (Construction = AESConstruction::CBC) {
+        auto CBC := new AES_CBC(KeySize)
+
+        CBC->SetKey(Key, IV)
+
+        if (Decrypt) {
+            CBC->DecryptBlocks(Input, BlockCount)
+        }
+        else {
+            CBC->EncryptBlocks(Input, BlockCount)
+        }
+    }
+    else if (Construction = AESConstruction::PCBC) {
+        auto PCBC := new AES_PCBC(KeySize)
+
+        PCBC->SetKey(Key, IV)
+
+        if (Decrypt) {
+            PCBC->DecryptBlocks(Input, BlockCount)
+        }
+        else {
+            PCBC->EncryptBlocks(Input, BlockCount)
+        }
+    }
+    else if (Construction = AESConstruction::CFB) {
+        auto CFB := new AES_CFB(KeySize)
+
+        CFB->SetKey(Key, IV)
+
+        if (Decrypt) {
+            CFB->DecryptBlocks(Input, BlockCount)
+        }
+        else {
+            CFB->EncryptBlocks(Input, BlockCount)
+        }
+    }
+    else if (Construction = AESConstruction::OFB) {
+        auto OFB := new AES_OFB(KeySize)
+
+        OFB->SetKey(Key, IV)
+
+        if (Decrypt) {
+            OFB->DecryptBytes(Input, InputSize)
+        }
+        else {
+            OFB->EncryptBytes(Input, InputSize)
+        }
+    }
+    else if (Construction = AESConstruction::CTR) {
+        auto CTR := new AES_CTR(KeySize)
+
+        CTR->SetKey(Key, IV)
+
+        if (Decrypt) {
+            CTR->DecryptBytes(Input, InputSize)
+        }
+        else {
+            CTR->EncryptBytes(Input, InputSize)
+        }
+    }
+
+    FileWrite(OutputHandle, Input, )
+
+}
