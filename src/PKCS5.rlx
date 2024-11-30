@@ -1,0 +1,10 @@
+
+define void PKCS5Pad(void* Block, i32 DataSize, i32 BlockSize) {
+    i8* BlockBytes := Block
+
+    i32 PaddingNeeded := BlockSize - DataSize
+
+    for (i32 Index := 0, Index < PaddingNeeded, Index++) {
+        BlockBytes[DataSize + Index] := PaddingNeeded As i8
+    }
+}
