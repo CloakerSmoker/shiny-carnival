@@ -1,0 +1,360 @@
+#Require "./src/AES/BlockCipher.rlx"
+
+struct AES_ECB {
+    AESBlockCipher* AES
+
+    static self* New(AESKeySize KeySize) {
+        self* this := Alloc(#self)
+
+        this->AES := new AESBlockCipher(KeySize)
+
+        return this
+    }
+
+    define void SetKey(void* Key) {
+        this->AES->SetKey(Key)
+    }
+
+    define void EncryptBlocks(void* Data, i32 BlockCount) {
+        for (i32 Index := 0, Index < BlockCount, Index++) {
+            void* Block := Data + (Index * 16)
+
+            this->AES->EncryptBlock(Block)
+        }
+    }
+
+    define void DecryptBlocks(void* Data, i32 BlockCount) {
+        for (i32 Index := 0, Index < BlockCount, Index++) {
+            void* Block := Data + (Index * 16)
+
+            this->AES->DecryptBlock(Block)
+        }
+    }
+}
+
+struct AES_CBC {
+    AESBlockCipher* AES
+    i8[16] IV
+
+    static self* New(AESKeySize KeySize) {
+        self* this := Alloc(#self)
+
+        this->AES := new AESBlockCipher(KeySize)
+
+        return this
+    }
+
+    define void SetKey(void* Key, void* IV) {
+        this->AES->SetKey(Key)
+        MoveMemory(this->IV, IV, 16)
+    }
+
+    define void XOR(void* Left, void* Right) {
+        i32* LeftWords := Left
+        i32* RightWords := Right
+
+        for (i32 Index := 0, Index < 4, Index++) {
+            LeftWords[Index] ^= RightWords[Index]
+        }
+    }
+
+    define void EncryptBlocks(void* Data, i32 BlockCount) {
+        void* PreviousCipherText := this->IV
+
+        for (i32 Index := 0, Index < BlockCount, Index++) {
+            void* Block := Data + (Index * 16)
+
+            this->XOR(Block, PreviousCipherText)
+            this->AES->EncryptBlock(Block)
+
+            PreviousCipherText := Block
+        }
+    }
+
+    define void DecryptBlocks(void* Data, i32 BlockCount) {
+        i8[16] PreviousCipherText
+        MoveMemory(PreviousCipherText, this->IV, 16)
+
+        for (i32 Index := 0, Index < BlockCount, Index++) {
+            void* Block := Data + (Index * 16)
+
+            i8[16] CurrentCipherText
+            MoveMemory(CurrentCipherText, Block, 16)
+
+            this->AES->DecryptBlock(Block)
+            this->XOR(Block, PreviousCipherText)
+
+            MoveMemory(PreviousCipherText, CurrentCipherText, 16)
+        }
+    }
+}
+
+struct AES_PCBC {
+    AESBlockCipher* AES
+    i8[16] IV
+
+    static self* New(AESKeySize KeySize) {
+        self* this := Alloc(#self)
+
+        this->AES := new AESBlockCipher(KeySize)
+
+        return this
+    }
+
+    define void SetKey(void* Key, void* IV) {
+        this->AES->SetKey(Key)
+        MoveMemory(this->IV, IV, 16)
+    }
+
+    define void XOR(void* Left, void* Right) {
+        i32* LeftWords := Left
+        i32* RightWords := Right
+
+        for (i32 Index := 0, Index < 4, Index++) {
+            LeftWords[Index] ^= RightWords[Index]
+        }
+    }
+
+    define void EncryptBlocks(void* Data, i32 BlockCount) {
+        i8[16] IV
+        MoveMemory(IV, this->IV, 16)
+
+        for (i32 Index := 0, Index < BlockCount, Index++) {
+            void* Block := Data + (Index * 16)
+
+            i8[16] CurrentPlainText
+            MoveMemory(CurrentPlainText, Block, 16)
+
+            this->XOR(Block, IV)
+            this->AES->EncryptBlock(Block)
+
+            MoveMemory(IV, CurrentPlainText, 16)
+            this->XOR(IV, Block)
+        }
+    }
+
+    define void DecryptBlocks(void* Data, i32 BlockCount) {
+        i8[16] IV
+        MoveMemory(IV, this->IV, 16)
+
+        for (i32 Index := 0, Index < BlockCount, Index++) {
+            void* Block := Data + (Index * 16)
+
+            i8[16] CurrentCipherText
+            MoveMemory(CurrentCipherText, Block, 16)
+
+            this->AES->DecryptBlock(Block)
+            this->XOR(Block, IV)
+
+            MoveMemory(IV, CurrentCipherText, 16)
+            this->XOR(IV, Block)
+        }
+    }
+}
+
+struct AES_CFB {
+    AESBlockCipher* AES
+    i8[16] IV
+
+    static self* New(AESKeySize KeySize) {
+        self* this := Alloc(#self)
+
+        this->AES := new AESBlockCipher(KeySize)
+
+        return this
+    }
+
+    define void SetKey(void* Key, void* IV) {
+        this->AES->SetKey(Key)
+        MoveMemory(this->IV, IV, 16)
+    }
+
+    define void XOR(void* Left, void* Right) {
+        i32* LeftWords := Left
+        i32* RightWords := Right
+
+        for (i32 Index := 0, Index < 4, Index++) {
+            LeftWords[Index] ^= RightWords[Index]
+        }
+    }
+
+    define void EncryptBlocks(void* Data, i32 BlockCount) {
+        i8[16] PreviousCipherText
+        MoveMemory(PreviousCipherText, this->IV, 16)
+
+        for (i32 Index := 0, Index < BlockCount, Index++) {
+            void* Block := Data + (Index * 16)
+
+            this->AES->EncryptBlock(PreviousCipherText)
+            this->XOR(Block, PreviousCipherText)
+
+            MoveMemory(PreviousCipherText, Block, 16)
+        }
+    }
+
+    define void DecryptBlocks(void* Data, i32 BlockCount) {
+        i8[16] PreviousCipherText
+        MoveMemory(PreviousCipherText, this->IV, 16)
+
+        for (i32 Index := 0, Index < BlockCount, Index++) {
+            void* Block := Data + (Index * 16)
+
+            i8[16] CurrentCipherText
+            MoveMemory(CurrentCipherText, Block, 16)
+
+            this->AES->EncryptBlock(PreviousCipherText)
+            this->XOR(Block, PreviousCipherText)
+
+            MoveMemory(PreviousCipherText, CurrentCipherText, 16)
+        }
+    }
+}
+
+struct AES_OFB {
+    AESBlockCipher* AES
+    i8[16] IV
+
+    static self* New(AESKeySize KeySize) {
+        self* this := Alloc(#self)
+
+        this->AES := new AESBlockCipher(KeySize)
+
+        return this
+    }
+
+    define void SetKey(void* Key, void* IV) {
+        this->AES->SetKey(Key)
+        MoveMemory(this->IV, IV, 16)
+    }
+
+    define void XOR(void* Left, void* Right) {
+        i32* LeftWords := Left
+        i32* RightWords := Right
+
+        for (i32 Index := 0, Index < 4, Index++) {
+            LeftWords[Index] ^= RightWords[Index]
+        }
+    }
+
+    define void EncryptBlocks(void* Data, i32 BlockCount) {
+        i8[16] IV
+        MoveMemory(IV, this->IV, 16)
+
+        for (i32 Index := 0, Index < BlockCount, Index++) {
+            void* Block := Data + (Index * 16)
+
+            this->AES->EncryptBlock(IV)
+            this->XOR(Block, IV)
+        }
+    }
+
+    define void DecryptBlocks(void* Data, i32 BlockCount) {
+        this->EncryptBlocks(Data, BlockCount)
+    }
+
+    define void EncryptBytes(void* Data, i32 Size) {
+        i32 BlockCount := Size / 16
+        i32 Remainder := Size % 16
+
+        this->EncryptBlocks(Data, BlockCount)
+
+        void* TailData := Data + (BlockCount * 16)
+
+        i8[16] TemporaryBlock
+        MoveMemory(TemporaryBlock, TailData, Remainder)
+
+        this->EncryptBlocks(TemporaryBlock, 1)
+
+        MoveMemory(TailData, TemporaryBlock, Remainder)
+    }
+    define void DecryptBytes(void* Data, i32 Size) {
+        this->EncryptBytes(Data, Size)
+    }
+}
+
+struct AES_CTR {
+    AESBlockCipher* AES
+    i8[16] IV
+
+    static self* New(AESKeySize KeySize) {
+        self* this := Alloc(#self)
+
+        this->AES := new AESBlockCipher(KeySize)
+
+        return this
+    }
+
+    define void SetKey(void* Key, void* IV) {
+        this->AES->SetKey(Key)
+        MoveMemory(this->IV, IV, 8)
+    }
+    define void SetKey(void* Key, i64 Nonce) {
+        this->SetKey(Key, &Nonce)
+    }
+
+    define void XOR(void* Left, void* Right) {
+        i32* LeftWords := Left
+        i32* RightWords := Right
+
+        for (i32 Index := 0, Index < 4, Index++) {
+            LeftWords[Index] ^= RightWords[Index]
+        }
+    }
+
+    define void EncryptBlocks(i64 InitialCounter, void* Data, i32 BlockCount) {
+        i8[16] IV
+        MoveMemory(IV, this->IV, 8)
+
+        i64* Counter := &IV[8] As void*
+
+        Counter[0] := InitialCounter
+
+        for (i32 Index := 0, Index < BlockCount, Index++) {
+            void* Block := Data + (Index * 16)
+
+            i8[16] Temporary
+            MoveMemory(Temporary, IV, 16)
+            this->AES->EncryptBlock(Temporary)
+
+            this->XOR(Block, Temporary)
+
+            *Counter += 1
+        }
+    }
+    define void EncryptBlocks(void* Data, i32 BlockCount) {
+        this->EncryptBlocks(0, Data, BlockCount)
+    }
+
+    define void DecryptBlocks(i64 InitialCounter, void* Data, i32 BlockCount) {
+        this->EncryptBlocks(InitialCounter, Data, BlockCount)
+    }
+    define void DecryptBlocks(void* Data, i32 BlockCount) {
+        this->EncryptBlocks(Data, BlockCount)
+    }
+
+    define void EncryptBytes(i64 InitialCounter, void* Data, i32 Size) {
+        i32 BlockCount := Size / 16
+        i32 Remainder := Size % 16
+
+        this->EncryptBlocks(Data, BlockCount)
+
+        void* TailData := Data + (BlockCount * 16)
+
+        i8[16] TemporaryBlock
+        MoveMemory(TemporaryBlock, TailData, Remainder)
+
+        this->EncryptBlocks(BlockCount, TemporaryBlock, 1)
+
+        MoveMemory(TailData, TemporaryBlock, Remainder)
+    }
+    define void EncryptBytes(void* Data, i32 Size) {
+        this->EncryptBytes(0, Data, Size)
+    }
+
+    define void DecryptBytes(i64 InitialCounter, void* Data, i32 Size) {
+        this->EncryptBytes(InitialCounter, Data, Size)
+    }
+    define void DecryptBytes(void* Data, i32 Size) {
+        this->EncryptBytes(0, Data, Size)
+    }
+}
