@@ -1,0 +1,580 @@
+#Require "$/Console.rlx"
+
+i64 BIG_NUMBER_BASE := 10 ;0x7FFF_FFFF
+
+enum ComparisonResult {
+    Less
+    Equal
+    Greater
+}
+
+struct BigNumber {
+    i32* Digits
+    i32 DigitCount
+    i32 ReferenceCount
+    i8 Negative
+
+    define self* Reference() {
+        this->ReferenceCount += 1
+
+        return this
+    }
+
+    define self* Release() {
+        this->ReferenceCount -= 1
+
+        if (this->ReferenceCount <= 0) {
+            Free(this->Digits)
+            Free(this)
+        }
+
+        return this
+    }
+
+    define void Reserve(i32 NewDigitCount) {
+        this->DigitCount := NewDigitCount
+        this->Digits := ReAlloc(this->Digits, NewDigitCount * 4)
+    }
+
+    define void Push(i32 SingleDigit) {
+        this->Reserve(this->DigitCount + 1)
+
+        this->Digits[this->DigitCount - 1] := SingleDigit
+    }
+
+    define void Prepend(i32 SingleDigit) {
+        i32 OldDigitCount := this->DigitCount
+
+        this->Reserve(OldDigitCount + 1)
+        MoveMemory(&this->Digits[1], &this->Digits[0], OldDigitCount * 4)
+
+        this->Digits[0] := SingleDigit
+    }
+
+    static self* WithDigits(i32 DigitCount) {
+        self* this := Alloc(#self)
+
+        this->DigitCount := DigitCount
+        this->Digits := Alloc((DigitCount + 1) * 4)
+
+        return this->Reference()
+    }
+
+    static self* New(i64 Value) {
+        self* this := Alloc(#self)
+
+        this->Digits := Alloc(4)
+
+        if (Value < 0) {
+            this->Negative := true
+            Value *= -1
+        }
+
+        if (Value = 0) {
+            this->Push(0)
+        }
+        else {
+            while (Value != 0) {
+                i64 Digit := Value % BIG_NUMBER_BASE
+
+                this->Push(Digit As i32)
+
+                Value /= BIG_NUMBER_BASE
+            }
+        }
+
+        return this->Reference()
+    }
+
+    static self* New(BigNumber* CloneSource) {
+        self* this := self:WithDigits(CloneSource->DigitCount)
+
+        this->Negative := CloneSource->Negative
+
+        MoveMemory(this->Digits, CloneSource->Digits, CloneSource->DigitCount * 4)
+
+        return this->Reference()
+    }
+
+    define self* Shrink() {
+        i32 Count := 0
+
+        for (i32 Index := this->DigitCount - 1, Index >= 1, Index--) {
+            if (this->Digits[Index] != 0) {
+                break
+            }
+
+            Count++
+        }
+
+        this->Reserve(this->DigitCount - Count)
+
+        return this
+    }
+
+    define i32 DigitAt(i32 Index) {
+        if (Index >= this->DigitCount) {
+            return 0
+        }
+
+        return this->Digits[Index]
+    }
+
+    static ComparisonResult CompareAbsoluteValue(BigNumber* Left, BigNumber* Right) {
+        if (Left->DigitCount > Right->DigitCount) {
+            return ComparisonResult::Greater
+        }
+        else if (Left->DigitCount < Right->DigitCount) {
+            return ComparisonResult::Less
+        }
+        else {
+            for (i32 Index := Left->DigitCount - 1, Index >= 0, Index--) {
+                i32 L := Left->Digits[Index]
+                i32 R := Right->Digits[Index]
+
+                if (L > R) {
+                    return ComparisonResult::Greater
+                }
+                else if (L < R) {
+                    return ComparisonResult::Less
+                }
+            }
+
+            return ComparisonResult::Equal
+        }
+    }
+
+    static ComparisonResult Compare(BigNumber* Left, BigNumber* Right) {
+        if (Left->Negative != Right->Negative) {
+            if (Left->Negative) {
+                return ComparisonResult::Less
+            }
+            else if (Right->Negative) {
+                return ComparisonResult::Greater
+            }
+        }
+
+        i8 ComparingNegatives := Left->Negative
+
+        ComparisonResult AbsoluteComparison := self:CompareAbsoluteValue(Left, Right)
+
+        Print("CompareAbs(%bn-digits, %bn-digits) = %s\n", Left, Right, nameof:(AbsoluteComparison))
+
+        if (AbsoluteComparison = ComparisonResult::Equal) {
+            return ComparisonResult::Equal
+        }
+        else if (AbsoluteComparison = ComparisonResult::Less) {
+            ; abs(a) < abs(b)
+
+            if (ComparingNegatives) {
+                ; when comparing negatives, the smaller number is greater
+
+                return ComparisonResult::Greater
+            }
+            else {
+                return ComparisonResult::Less
+            }
+        }
+        else if (AbsoluteComparison = ComparisonResult::Greater) {
+            ; abs(a) > abs(b)
+
+            if (ComparingNegatives) {
+                return ComparisonResult::Less
+            }
+            else {
+                return ComparisonResult::Greater
+            }
+        }
+
+        return ComparisonResult::Equal
+    }
+
+    static BigNumber* Negate(BigNumber* In) {
+        BigNumber* Result := new BigNumber(In)
+
+        Result->Negative := !In->Negative
+
+        In->Release()
+
+        return Result
+    }
+    define BigNumber* Negate() {
+        return self:Negate(this)
+    }
+
+    define void _Increment(i64 Carry) {
+        for (i32 Index := 0, Index < this->DigitCount, Index++) {
+            i64 Sum := this->Digits[Index] + Carry
+
+            Carry := Sum / BIG_NUMBER_BASE
+
+            this->Digits[Index] := (Sum - (Carry * BIG_NUMBER_BASE)) As i32
+        }
+
+        while (Carry != 0) {
+            this->Push((Carry % BIG_NUMBER_BASE) As i32)
+            Carry /= BIG_NUMBER_BASE
+        }
+    }
+
+    static BigNumber* BaseAdd(BigNumber* Left, BigNumber* Right) {
+        if (Right->DigitCount > Left->DigitCount) {
+            BigNumber* Temporary := Left
+            Left := Right
+            Right := Temporary
+        }
+
+        BigNumber* Result := new BigNumber(Left)
+        i32 Carry := 0
+
+        for (i32 Index := 0, Index < Right->DigitCount, Index++) {
+            i64 L := Left->Digits[Index]
+            i64 R := Right->Digits[Index]
+
+            i64 Sum := L + R + Carry
+
+            if (Sum >= BIG_NUMBER_BASE) {
+                Carry := 1
+                Sum -= BIG_NUMBER_BASE
+            }
+            else {
+                Carry := 0
+            }
+
+            Result->Digits[Index] := Sum As i32
+        }
+
+        while (Carry != 0 && Index < Left->DigitCount) {
+            i64 Sum := Left->Digits[Index] + Carry
+
+            if (Sum >= BIG_NUMBER_BASE) {
+                Carry := 1
+                Sum -= BIG_NUMBER_BASE
+            }
+            else {
+                Carry := 0
+            }
+
+            Result->Digits[Index++] := Sum As i32
+        }
+
+        if (Carry) {
+            Result->Push(1)
+        }
+
+        Left->Release()
+        Right->Release()
+
+        return Result
+    }
+
+    declare BigNumber* Subtract(BigNumber*)
+
+    static BigNumber* Add(BigNumber* Left, BigNumber* Right) {
+        if (Left->Negative != Right->Negative) {
+            return Left->Subtract(Right->Negate())
+        }
+
+        return BigNumber:BaseAdd(Left, Right)
+    }
+    define BigNumber* Add(BigNumber* Right) {
+        return self:Add(this, Right)
+    }
+
+    define void _Decrement(i64 Value) {
+        i32 Borrow := 0
+        i64 Carry := -Value
+
+        for (i32 Index := 0, Index < this->DigitCount, Index++) {
+            i64 Difference := this->Digits[Index] + Carry
+
+            Carry := Difference / BIG_NUMBER_BASE
+            Difference %= BIG_NUMBER_BASE
+
+            if (Difference < 0) {
+                this->Digits[Index] := (Difference + BIG_NUMBER_BASE) As i32
+                Carry -= 1
+            }
+            else {
+                this->Digits[Index] := Difference As i32
+            }
+        }
+        
+        this->Shrink()
+    }
+
+    static BigNumber* BaseSubtract(BigNumber* Left, BigNumber* Right, BigNumber* Result) {
+        i32 Borrow := 0
+
+        for (i32 Index := 0, Index < Right->DigitCount, Index++) {
+            i64 L := Left->Digits[Index]
+            i64 R := Right->Digits[Index]
+
+            i64 Difference := L - Borrow - R
+
+            if (Difference < 0) {
+                Difference += BIG_NUMBER_BASE
+                Borrow := 1
+            }
+
+            Result->Digits[Index] := Difference As i32
+        }
+
+        while (Borrow != 0 && Index < Left->DigitCount) {
+            i64 Difference := Left->Digits[Index] - Borrow
+
+            if (Difference < 0) {
+                Difference += BIG_NUMBER_BASE
+                Result->Digits[Index] := Difference As i32
+            }
+            else {
+                Result->Digits[Index++] := Difference As i32
+            }
+
+            Index++
+        }
+
+        Left->Release()
+        Right->Release()
+
+        return Result->Shrink()
+    }
+
+    static BigNumber* BaseSubtract(BigNumber* Left, BigNumber* Right) {
+        BigNumber* Result := new BigNumber(Left)
+        
+        return self:BaseSubtract(Left, Right, Result)
+    }
+
+    static BigNumber* Subtract(BigNumber* Left, BigNumber* Right) {
+        if (Left->Negative != Right->Negative) {
+            return Left->Add(Right->Negate())
+        }
+
+        ComparisonResult Comparison := BigNumber:CompareAbsoluteValue(Left, Right)
+
+        if (Comparison = ComparisonResult::Equal || Comparison = ComparisonResult::Greater) {
+            return self:BaseSubtract(Left, Right)
+        }
+        else {
+            BigNumber* Result := self:BaseSubtract(Right, Left)
+            Result->Negative := !Left->Negative
+            return Result
+        }
+    }
+
+    define BigNumber* Subtract(BigNumber* Right) {
+        return self:Subtract(this, Right)
+    }
+
+    static BigNumber* AbsoluteValue(BigNumber* In) {
+        BigNumber* Result := new BigNumber(In)
+
+        Result->Negative := false
+        In->Release()
+
+        return Result
+    }
+    define BigNumber* AbsoluteValue() {
+        return self:AbsoluteValue(this)
+    }
+
+
+    static BigNumber* BaseMultiply(BigNumber* Left, BigNumber* Right) {
+        BigNumber* Result := self:WithDigits(Left->DigitCount + Right->DigitCount)
+
+        i64 Carry := 0
+
+        for (i32 OuterIndex := 0, OuterIndex < Left->DigitCount, OuterIndex++) {
+            i64 OuterDigit := Left->Digits[OuterIndex]
+
+            for (i32 InnerIndex := 0, InnerIndex < Right->DigitCount, InnerIndex++) {
+                i64 InnerDigit := Right->Digits[InnerIndex]
+
+                i64 Product := (OuterDigit * InnerDigit) + Result->Digits[OuterIndex + InnerIndex]
+
+                Carry := Product / BIG_NUMBER_BASE
+
+                Result->Digits[OuterIndex + InnerIndex] := (Product - (Carry * BIG_NUMBER_BASE)) As i32
+                Result->Digits[OuterIndex + InnerIndex + 1] += Carry As i32
+            }
+        }
+
+        Left->Release()
+        Right->Release()
+
+        return Result->Shrink()
+    }
+
+    static BigNumber* Multiply(BigNumber* Left, BigNumber* Right) {
+        i8 Negative := Left->Negative + Right->Negative = 1
+
+        BigNumber* Result := self:BaseMultiply(Left, Right)
+
+        Result->Negative := Negative
+
+        return Result
+    }
+    define BigNumber* Multiply(BigNumber* Right) {
+        return self:Multiply(this, Right)
+    }
+
+    define i8 IsGreaterThan(BigNumber* Other) {
+        return self:Compare(this, Other) = ComparisonResult::Greater
+    }
+    define i8 IsGreaterThanOrEqualTo(BigNumber* Other) {
+        ComparisonResult Result := self:Compare(this, Other)
+
+        return Result = ComparisonResult::Greater || Result = ComparisonResult::Equal
+    }
+
+    static BigNumber* DivideBySubtract(BigNumber* Numerator, BigNumber* Denominator, BigNumber** OutRemainder) {
+        BigNumber* Quotient := new BigNumber(0)
+        BigNumber* Remainder := new BigNumber(Numerator)
+
+        while (Remainder->IsGreaterThanOrEqualTo(Denominator)) {
+            Print("%bn-digits - %bn-digits = ", Remainder, Denominator)
+            self:BaseSubtract(Remainder->Reference(), Denominator->Reference(), Remainder)
+            Print("%bn-digits\n", Remainder)
+            Quotient->_Increment(1)
+        }
+
+        *OutRemainder := Remainder
+        return Quotient
+    }
+
+    static BigNumber* BaseDivide(BigNumber* Numerator, BigNumber* Denominator, BigNumber** OutRemainder) {
+        ComparisonResult Comparison := self:CompareAbsoluteValue(Numerator, Denominator)
+
+        if (Comparison = ComparisonResult::Equal) {
+            Numerator->Release()
+            Denominator->Release()
+
+            *OutRemainder := new BigNumber(0)
+
+            if (Numerator->Negative != Denominator->Negative) {
+                return new BigNumber(1)
+            }
+            else {
+                return new BigNumber(-1)
+            }
+        }
+        else if (Comparison = ComparisonResult::Less) {
+            Denominator->Release()
+            *OutRemainder := Numerator
+
+            return new BigNumber(0)
+        }
+
+        BigNumber* Part := BigNumber:WithDigits(Numerator->DigitCount)
+        BigNumber* Result := BigNumber:WithDigits(0)
+
+        i32 Index := Numerator->DigitCount
+
+        while (Index) {
+            Part->Prepend(Numerator->Digits[--Index])
+            Part->Shrink()
+
+            if (self:CompareAbsoluteValue(Part, Denominator) = ComparisonResult::Less) {
+                Result->Push(0)
+            }
+
+            i32 PartLength := Part->DigitCount
+            i64 PartDigits := Part->Digits[PartLength - 1] * BIG_NUMBER_BASE
+            PartDigits += Part->Digits[PartLength - 2]
+
+            i32 NumeratorLength := Numerator->DigitCount
+            i64 NumeratorDigits := Numerator->Digits[NumeratorLength - 1] * BIG_NUMBER_BASE
+            NumeratorDigits += Numerator->Digits[NumeratorLength - 2]
+
+            if (PartLength > NumeratorLength) {
+                PartDigits := (PartDigits + 1) * BIG_NUMBER_BASE
+            }
+
+            BigNumber* Guess := new BigNumber(PartDigits / NumeratorDigits)
+
+            if (PartDigits % NumeratorDigits) {
+                Guess->_Increment(1)
+            }
+
+            BigNumber* Check := null
+
+            loop {
+                Check := self:Multiply(Denominator->Reference(), Guess->Reference())
+
+                ComparisonResult CheckComparison := self:CompareAbsoluteValue(Check, Part)
+
+                if (CheckComparison = ComparisonResult::Less || CheckComparison = ComparisonResult::Equal) {
+                    break
+                }
+
+                Guess->_Decrement(1)
+
+                if (Guess = 0) {
+                    break
+                }
+            }
+
+            Result->Prepend(Guess->Digits[0])
+
+            Part := Part->Subtract(Check)
+        }
+
+        return Result
+    }
+}
+
+define void DoPrintBigNumberDigits(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+	BigNumber* N := Parameters[*ParameterIndex] As void*
+
+    if (N->Negative) {
+        this->Print("-")
+    }
+
+    this->Print("[")
+
+    for (i32 Index := N->DigitCount - 1, Index >= 0, Index--) {
+        this->Print("%i", N->Digits[Index])
+
+        if (Index - 1 >= 0) {
+            this->Print(", ")
+        }
+    }
+
+    this->Print("]")
+	
+	
+	*ParameterIndex += 1
+}
+
+PrintFormatPrototype BigNumberDigitsPrintPrototype {
+	Name: "bn-digits",
+	Format: &DoPrintBigNumberDigits
+}
+
+i32 BIG_NUMBER_DIGITS_PRINT_PROTOTYPE_ID := AddPrintFormat(&BigNumberDigitsPrintPrototype)
+
+define void Main() {
+
+    BigNumber* A := new BigNumber(200)
+    BigNumber* B := new BigNumber(6)
+
+    ;ComparisonResult CR := BigNumber:Compare(L, R)
+
+    ;Print("%bn-digits is %s than %bn-digits\n", L, nameof:(CR), R)
+
+    ;BigNumber* E := new BigNumber(33)
+    ;Print("%bn-digits\n", E)
+    ;BigNumber:BaseSubtract(E->Reference(), B->Reference(), E)
+    ;E := E->Reference()->Subtract(B->Reference())
+    ;E->_Decrement(12)
+    ;Print("%bn-digits\n", E)
+
+    ;return
+
+    ;BigNumber* S := BigNumber:Add(L->Reference(), R->AbsoluteValue())
+    BigNumber* R := null
+    BigNumber* S := BigNumber:DivideBySubtract(A->Reference(), B->Reference(), &R)
+
+    Print("%bn-digits / %bn-digits = %bn-digits (r %bn-digits)\n", A, B, S, R)
+}
