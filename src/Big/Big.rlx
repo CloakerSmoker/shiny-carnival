@@ -654,7 +654,10 @@ struct BigNumber {
         if (In->DigitCount = 1) {
             i32 Single := In->Digits[0]
 
-            if (Single = 2 || Single = 3 || single = 5) {
+            if (Single = 1) {
+                return false
+            }
+            else if (Single = 2 || Single = 3 || Single = 5) {
                 return true
             }
         }
@@ -735,9 +738,16 @@ define void Main() {
     R->Release()
     S->Release()
 
-    BigNumber* C := new BigNumber(7)
-    Print("%bn-rd, %i\n", C, BigNumber:MightBeBasicPrime(C))
-    C->Release()
+    for (i32 Index := 0, Index < 49, Index++) {
+        BigNumber* C := new BigNumber(Index)
+
+        if (BigNumber:MightBeBasicPrime(C)) {
+            Print("%bn-rd ", C)
+        }
+
+        ;Print("%bn-rd, %i\n", C, BigNumber:MightBeBasicPrime(C))
+        C->Release()
+    }
 
     for (i32 Index := 0, Index < NEXT_BIG_NUMBER_ID, Index++) {
         BigNumber* N := BIG_NUMBERS[Index]
