@@ -13,6 +13,8 @@ enum ComparisonResult {
 BigNumber** BIG_NUMBERS := Alloc(1024)
 i32 NEXT_BIG_NUMBER_ID := 0
 
+BigNumber** BIG_NUMBER_CONSTANT_POOL := Alloc(200 * #void*)
+
 struct BigNumber {
     i32* Digits
 
@@ -22,6 +24,7 @@ struct BigNumber {
     i32 DigitCount
     i32 ReferenceCount
     i8 Negative
+    i8 Constant
 
     define self* Reference() {
         this->ReferenceCount += 1
@@ -32,7 +35,7 @@ struct BigNumber {
     define self* Release() {
         this->ReferenceCount -= 1
 
-        if (this->ReferenceCount <= 0) {
+        if (this->ReferenceCount <= 0 && !this->Constant) {
             BIG_NUMBERS[this->ID] := null
 
             Free(this->Digits)
@@ -78,8 +81,23 @@ struct BigNumber {
         return this->Reference()
     }
 
+    static self* New() {
+        return self:WithDigits(1)
+    }
+
     static self* New(i64 Value) {
+        i8 FitsConstantPool := Value >= 0 && Value < 200
+
+        if (FitsConstantPool && BIG_NUMBER_CONSTANT_POOL[Value] != null) {
+            return BIG_NUMBER_CONSTANT_POOL[Value]
+        }
+
         self* this := Alloc(#self)
+
+        if (FitsConstantPool) {
+            BIG_NUMBER_CONSTANT_POOL[Value] := this
+            this->Constant := true
+        }
 
         this->ID := NEXT_BIG_NUMBER_ID++
         this->AllocationTrace := CaptureStackTrace()
@@ -106,6 +124,16 @@ struct BigNumber {
         }
 
         return this->Reference()
+    }
+
+    static BigNumber* Zero() {
+        return new self(0)
+    }
+    static BigNumber* One() {
+        return new self(1)
+    }
+    static BigNumber* Constant(i32 Value) {
+        return new self(Value)
     }
 
     static self* New(BigNumber* CloneSource) {
@@ -225,6 +253,10 @@ struct BigNumber {
     }
 
     define void _Increment(i64 Carry) {
+        if (this->Constant) {
+            Throw('shit')
+        }
+
         for (i32 Index := 0, Index < this->DigitCount, Index++) {
             i64 Sum := this->Digits[Index] + Carry
 
@@ -304,6 +336,10 @@ struct BigNumber {
     }
 
     define void _Decrement(i64 Value) {
+        if (this->Constant) {
+            Throw('shit2')
+        }
+
         i32 Borrow := 0
         i64 Carry := -Value
 
@@ -441,10 +477,24 @@ struct BigNumber {
         return self:Multiply(this, Right)
     }
 
-    define i8 IsZero() {
+    define i8 Equals(i32 SingleDigit) {
         this->Shrink()
 
-        return this->DigitCount = 1 && this->Digits[0] = 0
+        return this->DigitCount = 1 && this->Digits[0] = SingleDigit
+    }
+    define i8 Equals(BigNumber* Other) {
+        return self:Compare(this, Other) = ComparisonResult::Equal
+    }
+
+    define i8 IsOdd() {
+        return (this->Digits[0] & 1) As i8
+    }
+    define i8 IsEven() {
+        return !this->IsOdd()
+    }
+
+    define i8 IsZero() {
+        return this->Equals(0)
     }
     define i8 IsNotZero() {
         return !this->IsZero()
@@ -464,7 +514,7 @@ struct BigNumber {
     }
 
     static BigNumber* DivideBySubtract(BigNumber* Numerator, BigNumber* Denominator, BigNumber** OutRemainder) {
-        BigNumber* Quotient := new BigNumber(0)
+        BigNumber* Quotient := new BigNumber()
         BigNumber* Remainder := new BigNumber(Numerator)
 
         while (Remainder->IsGreaterThanOrEqualTo(Denominator)) {
@@ -575,6 +625,55 @@ struct BigNumber {
         return self:Divide(this, Denominator, OutRemainder)
     }
 
+    define BigNumber* Quotient(BigNumber* Denominator) {
+        BigNumber* Remainder := null
+        BigNumber* Quotient := this->Divide(Denominator, &Remainder)
+        Remainder->Release()
+
+        return Quotient
+    }
+
+    define BigNumber* Remainder(BigNumber* Denominator) {
+        BigNumber* Remainder := null
+        this->Divide(Denominator, &Remainder)->Release()
+
+        return Remainder
+    }
+
+    define i8 DivisibleBy(BigNumber* Factor) {
+        BigNumber* Remainder := this->Remainder(Factor)
+        i8 Result := Remainder->IsZero()
+        Remainder->Release()
+
+        return Result
+    }
+
+    static i8 MightBeBasicPrime(BigNumber* In) {
+        In->Shrink()
+
+        if (In->DigitCount = 1) {
+            i32 Single := In->Digits[0]
+
+            if (Single = 2 || Single = 3 || single = 5) {
+                return true
+            }
+        }
+
+        if (In->IsEven()) {
+            return false
+        }
+
+        if (In->DivisibleBy(self:Constant(3)) || In->DivisibleBy(self:Constant(5))) {
+            return false
+        }
+
+        if (In->IsLessThan(self:Constant(49))) {
+            return true
+        }
+
+        return false
+    }
+
     static BigNumber* New(i8* String, i32 Length, i32 RawBase) {
         BigNumber* Base := new BigNumber(RawBase)
         BigNumber* Result := new BigNumber(0)
@@ -636,10 +735,14 @@ define void Main() {
     R->Release()
     S->Release()
 
+    BigNumber* C := new BigNumber(7)
+    Print("%bn-rd, %i\n", C, BigNumber:MightBeBasicPrime(C))
+    C->Release()
+
     for (i32 Index := 0, Index < NEXT_BIG_NUMBER_ID, Index++) {
         BigNumber* N := BIG_NUMBERS[Index]
 
-        if (N) {
+        if (N && !N->Constant) {
             Print("BN #%i was leaked with refcount %i, allocated at:\n", Index, N->ReferenceCount)
             N->AllocationTrace->Print()
         }
