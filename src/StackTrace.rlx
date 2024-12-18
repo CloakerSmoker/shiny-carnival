@@ -1,0 +1,85 @@
+
+#Require "$/ExceptionBase.rlx"
+
+struct StackTraceFrame {
+    void* RIP
+    i8* Name
+}
+
+struct StackTrace {
+    i32 Count
+    StackTraceFrame[0] Frames
+
+    define void Print() {
+        for (i32 Index := 0, Index < this->Count, Index++) {
+            StackTraceFrame* Frame := this->Frames[Index]
+
+            if (Frame->Name) {
+                Print(" [%i] %s\n", Index, Frame->Name)
+            }
+            else {
+                Print(" [%i] returns to %x\n", Index, Frame->RIP)
+            }
+        }
+    }
+}
+
+define StackTrace* CaptureStackTrace(i32 IgnoreFrames) {
+    StackFrame* Next := GetRBP() As StackFrame*
+    i32 Count := 0
+    i32 Ignore := IgnoreFrames
+	
+	while (Next) {
+		if (Next->LastFrame & 1) {
+			Next := Next->LastFrame - 1
+		}
+		else {
+			if (Ignore) {
+				Ignore -= 1
+			}
+			else {
+				Count += 1
+			}
+			
+			Next := Next->LastFrame
+		}
+	}
+
+    StackTrace* Trace := Alloc(#StackTrace + (Count * #StackFrame))
+    Trace->Count := Count
+
+    StackFrame* Next := GetRBP() As StackFrame*
+    i32 Index := 0
+    i32 Ignore := IgnoreFrames
+	
+	while (Next) {
+		if (Next->LastFrame & 1) {
+			Next := Next->LastFrame - 1
+		}
+		else {
+			if (Ignore) {
+				Ignore -= 1
+			}
+            else {
+                i64* MaybeMagic := (Next - 0x8) As i64*
+                i8** MaybeName := (Next - 0x10) As i8**
+
+                StackTraceFrame* Frame := Trace->Frames[Index++]
+
+                Frame->RIP := Next->ReturnAddress
+
+                if (*MaybeMagic = 0x12345678) {
+                    Frame->Name := *MaybeName
+                }    
+            }
+
+            Next := Next->LastFrame
+		}
+	}
+
+    return Trace
+}
+
+define StackTrace* CaptureStackTrace() {
+    return CaptureStackTrace(2)
+}
