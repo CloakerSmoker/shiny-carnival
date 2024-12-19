@@ -605,10 +605,10 @@ struct BigNumber {
             *OutRemainder := new BigNumber(0)
 
             if (Numerator->Negative != Denominator->Negative) {
-                return new BigNumber(1)
+                return new BigNumber(-1)
             }
             else {
-                return new BigNumber(-1)
+                return new BigNumber(1)
             }
         }
         else if (Comparison = ComparisonResult::Less) {
@@ -717,15 +717,73 @@ struct BigNumber {
         return self:New(String, 10)
     }
 
+    static BigNumber* PowerModulo(BigNumber* Base, BigNumber* Exponent, BigNumber* Modulus) {
+        BigNumber* Result := self:One()
+        BigNumber* BaseMod := Base->Reference()->Remainder(Modulus->Reference())
 
+        while (Exponent->IsGreaterThan(self:Zero())) {
+            if (Exponent->IsOdd()) {
+                Result := Result->Multiply(BaseMod->Reference())->Remainder(Modulus->Reference())
+            }
+
+            BigNumber* Remainder := null
+            Exponent := Exponent->Divide(self:Constant(2), &Remainder)
+            Remainder->Release()
+
+            BaseMod := BaseMod->Multiply(BaseMod->Reference())->Remainder(Modulus->Reference())
+        }
+
+        Base->Release()
+        Exponent->Release()
+        Modulus->Release()
+        BaseMod->Release()
+
+        return Result
+    }
 }
 
 #Require "./src/Big/Print.rlx"
 
+define void TestPowerModulo() {
+    BigNumber* Base := new BigNumber(10)
+    BigNumber* Exponent := new BigNumber(2)
+    BigNumber* Modulus := new BigNumber(6)
+    BigNumber* Result := BigNumber:PowerModulo(Base->Reference(), Exponent->Reference(), Modulus->Reference())
+    if (Result->Equals(4)) {
+        Print("modpow(10, 2, 6) = 4: PASS\n")
+    } else {
+        Print("modpow(10, 2, 6) = %bn-rd: FAIL\n", Result)
+    }
+    Result->Release()
+
+    Base := new BigNumber(2)
+    Exponent := new BigNumber(3)
+    Modulus := new BigNumber(5)
+    Result := BigNumber:PowerModulo(Base->Reference(), Exponent->Reference(), Modulus->Reference())
+    if (Result->Equals(3)) {
+        Print("modpow(2, 3, 5) = 3: PASS\n")
+    } else {
+        Print("modpow(2, 3, 5) = %bn-rd: FAIL\n", Result)
+    }
+    Result->Release()
+
+    Base := new BigNumber("197238712398") ; 2**32
+    Exponent := new BigNumber("39874") ; 2**32 + 1
+    Modulus := new BigNumber("2873282") ; 2**32 - 1
+    Result := BigNumber:PowerModulo(Base->Reference(), Exponent->Reference(), Modulus->Reference())
+    if (Result->Equals(653646)) {
+        Print("modpow(197238712398, 90187239874, 2873282) = 1: PASS\n")
+    } else {
+        Print("modpow(197238712398, 90187239874, 2873282) = %bn-rd: FAIL\n", Result)
+    }
+    Result->Release()
+}
 
 define void Main() {
 
-    BigNumber* A := new BigNumber("123456789123456789123456789123456789")
+    TestPowerModulo()
+
+    /* BigNumber* A := new BigNumber("123456789123456789123456789123456789")
     BigNumber* B := new BigNumber(2)
 
     BigNumber* R := null
@@ -757,7 +815,7 @@ define void Main() {
             N->AllocationTrace->Print()
         }
     }
-
+ */
     ;Print("%bn-base-10\n", A)
 
     ;ComparisonResult CR := BigNumber:Compare(L, R)
