@@ -1,6 +1,6 @@
 #Require "$/Console.rlx"
 
-i64 BIG_NUMBER_BASE := 10 ;0x7FFF_FFFF
+i64 BIG_NUMBER_BASE := 10000000 ;0x7FFF_FFFF
 
 enum ComparisonResult {
     Less
@@ -10,16 +10,23 @@ enum ComparisonResult {
 
 #Require "./src/StackTrace.rlx"
 
-BigNumber** BIG_NUMBERS := Alloc(1024)
+BigNumber* FIRST_BIG_NUMBER := null
+BigNumber** BIG_NUMBERS_TAIL := null
+
 i32 NEXT_BIG_NUMBER_ID := 0
 
-BigNumber** BIG_NUMBER_CONSTANT_POOL := Alloc(200 * #void*)
+i32 BIG_NUMBER_CONSTANT_POOL_SIZE := 2
+BigNumber** BIG_NUMBER_CONSTANT_POOL := Alloc(BIG_NUMBER_CONSTANT_POOL_SIZE * #void*)
+
+declare void Walk()
 
 struct BigNumber {
     i32* Digits
 
     i32 ID
     StackTrace* AllocationTrace
+    BigNumber** pThis
+    BigNumber* Next
 
     i32 DigitCount
     i32 ReferenceCount
@@ -33,12 +40,29 @@ struct BigNumber {
     }
 
     define self* Release() {
+        if (this->Constant) {
+            return this
+        }
+
         this->ReferenceCount -= 1
 
-        if (this->ReferenceCount <= 0 && !this->Constant) {
-            BIG_NUMBERS[this->ID] := null
+        if (this->ReferenceCount < 0) {
+            Print("REFERENCE COUNT BELOW ZERO %bn-rd\n", this)
+            *null := 0
+        }
+        else if (this->ReferenceCount = 0) {
+            if (this->Next) {
+                this->Next->pThis := this->pThis
+            }
+
+            *this->pThis := this->Next
+
+            if (BIG_NUMBERS_TAIL = this~>Next) {
+                BIG_NUMBERS_TAIL := this->pThis
+            }
 
             Free(this->Digits)
+            Free(this->AllocationTrace)
             Free(this)
         }
 
@@ -68,12 +92,20 @@ struct BigNumber {
         this->Digits[0] := SingleDigit
     }
 
-    static self* WithDigits(i32 DigitCount) {
-        self* this := Alloc(#self)
+    define void Initialize() {
+        *BIG_NUMBERS_TAIL := this
+        this->pThis := BIG_NUMBERS_TAIL
+
+        BIG_NUMBERS_TAIL := this~>Next
 
         this->ID := NEXT_BIG_NUMBER_ID++
         this->AllocationTrace := CaptureStackTrace()
-        BIG_NUMBERS[this->ID] := this
+    }
+
+    static self* WithDigits(i32 DigitCount) {
+        self* this := Alloc(#self)
+
+        this->Initialize()
 
         this->DigitCount := DigitCount
         this->Digits := Alloc((DigitCount + 1) * 4)
@@ -86,7 +118,7 @@ struct BigNumber {
     }
 
     static self* New(i64 Value) {
-        i8 FitsConstantPool := Value >= 0 && Value < 200
+        i8 FitsConstantPool := Value >= 0 && Value < BIG_NUMBER_CONSTANT_POOL_SIZE
 
         if (FitsConstantPool && BIG_NUMBER_CONSTANT_POOL[Value] != null) {
             return BIG_NUMBER_CONSTANT_POOL[Value]
@@ -99,9 +131,7 @@ struct BigNumber {
             this->Constant := true
         }
 
-        this->ID := NEXT_BIG_NUMBER_ID++
-        this->AllocationTrace := CaptureStackTrace()
-        BIG_NUMBERS[this->ID] := this
+        this->Initialize()
 
         this->Digits := Alloc(4)
 
@@ -195,6 +225,9 @@ struct BigNumber {
     }
 
     static ComparisonResult Compare(BigNumber* Left, BigNumber* Right) {
+        Left->Shrink()
+        Right->Shrink()
+
         if (Left->Negative != Right->Negative) {
             if (Left->Negative) {
                 return ComparisonResult::Less
@@ -362,7 +395,7 @@ struct BigNumber {
     }
 
     static BigNumber* BaseSubtract(BigNumber* Left, BigNumber* Right, BigNumber* Result) {
-        i32 Borrow := 0
+        i64 Borrow := 0
 
         for (i32 Index := 0, Index < Right->DigitCount, Index++) {
             i64 L := Left->Digits[Index]
@@ -374,21 +407,29 @@ struct BigNumber {
                 Difference += BIG_NUMBER_BASE
                 Borrow := 1
             }
+            else {
+                Borrow := 0
+            }
 
             Result->Digits[Index] := Difference As i32
         }
 
-        while (Borrow != 0 && Index < Left->DigitCount) {
+        for (Index := Right->DigitCount, Index < Left->DigitCount, Index++) {
             i64 Difference := Left->Digits[Index] - Borrow
 
             if (Difference < 0) {
                 Difference += BIG_NUMBER_BASE
-                Result->Digits[Index] := Difference As i32
             }
             else {
                 Result->Digits[Index++] := Difference As i32
+                break
             }
 
+            Result->Digits[Index] := Difference As i32
+        }
+
+        while (Index < Left->DigitCount) {
+            Result->Digits[Index] := Left->Digits[Index]
             Index++
         }
 
@@ -477,10 +518,26 @@ struct BigNumber {
         return self:Multiply(this, Right)
     }
 
-    define i8 Equals(i32 SingleDigit) {
+    define i8 Equals(i64 Value) {
         this->Shrink()
 
-        return this->DigitCount = 1 && this->Digits[0] = SingleDigit
+        if (Value = 0 && this->DigitCount = 1) {
+            return this->Digits[0] = 0
+        }
+
+        i32 Index := 0
+
+        while (Value != 0) {
+            i64 Digit := Value % BIG_NUMBER_BASE
+
+            if (Digit != this->Digits[Index++]) {
+                return false
+            }
+
+            Value /= BIG_NUMBER_BASE
+        }
+
+        return Index = this->DigitCount
     }
     define i8 Equals(BigNumber* Other) {
         return self:Compare(this, Other) = ComparisonResult::Equal
@@ -527,8 +584,8 @@ struct BigNumber {
         Numerator->Release()
         Denominator->Release()
 
-        *OutRemainder := Remainder
-        return Quotient
+        *OutRemainder := Remainder->Shrink()
+        return Quotient->Shrink()
     }
 
     static BigNumber* LongDivide(BigNumber* Numerator, BigNumber* Denominator, BigNumber** OutRemainder) {
@@ -545,6 +602,8 @@ struct BigNumber {
 
             if (Part->IsGreaterThanOrEqualTo(Denominator)) {
                 ;Print("%bn-rd >= %bn-rd\n", Part, Denominator)
+
+                Part->Shrink()
 
                 BigNumber* PartialRemainder := null
                 BigNumber* PartialQuotient := self:DivideBySubtract(Part->Reference(), Denominator->Reference(), &PartialRemainder)
@@ -570,6 +629,8 @@ struct BigNumber {
                 }
 
                 ;Print("Overall quotient after: %bn-rd\n", Quotient)
+
+                ;Print("%bn-rd\n", Quotient)
                                 
                 Part->DigitCount := 0
 
@@ -638,6 +699,9 @@ struct BigNumber {
         this->Divide(Denominator, &Remainder)->Release()
 
         return Remainder
+    }
+    define BigNumber* Modulo(BigNumber* Denominator) {
+        return this->Remainder(Denominator)
     }
 
     define i8 DivisibleBy(BigNumber* Factor) {
@@ -717,123 +781,151 @@ struct BigNumber {
         return self:New(String, 10)
     }
 
-    static BigNumber* PowerModulo(BigNumber* Base, BigNumber* Exponent, BigNumber* Modulus) {
-        BigNumber* Result := self:One()
-        BigNumber* BaseMod := Base->Reference()->Remainder(Modulus->Reference())
+    static BigNumber* Square(BigNumber* In) {
+        BigNumber* Result := self:WithDigits(In->DigitCount * 2)
 
-        while (Exponent->IsGreaterThan(self:Zero())) {
-            if (Exponent->IsOdd()) {
-                Result := Result->Multiply(BaseMod->Reference())->Remainder(Modulus->Reference())
+        i64 Carry := 0
+
+        for (i32 Index := 0, Index < In->DigitCount, Index++) {
+            i64 Digit := In->Digits[Index]
+
+            for (i32 InnerIndex := 0, InnerIndex < In->DigitCount, InnerIndex++) {
+                i64 InnerDigit := In->Digits[InnerIndex]
+
+                i64 Product := (Digit * InnerDigit) + Result->Digits[Index + InnerIndex]
+
+                Carry := Product / BIG_NUMBER_BASE
+
+                Result->Digits[Index + InnerIndex] := (Product - (Carry * BIG_NUMBER_BASE)) As i32
+                Result->Digits[Index + InnerIndex + 1] += Carry As i32
+            }
+        }
+
+        In->Release()
+
+        return Result->Shrink()
+    }
+
+    define BigNumber* Square() {
+        return self:Square(this)
+    }
+
+    define BigNumber* Power(i32 Exponent) {
+        BigNumber* Result := self:One()
+        BigNumber* Base := this->Reference()
+
+        while (Exponent > 0) {
+            if (Exponent & 1) {
+                Result := Result->Multiply(Base->Reference())
             }
 
-            BigNumber* Remainder := null
-            Exponent := Exponent->Divide(self:Constant(2), &Remainder)
-            Remainder->Release()
+            Base := Base->Square()
+            Exponent /= 2
+        }
 
-            BaseMod := BaseMod->Multiply(BaseMod->Reference())->Remainder(Modulus->Reference())
+        Base->Release()
+
+        return Result
+    }
+
+    static BigNumber* PowerModulo(BigNumber* Base, BigNumber* Exponent, BigNumber* Modulus) {
+        BigNumber* Result := self:One()
+        
+        ;Base := Base->Remainder(Modulus->Reference())
+
+        while (Exponent->IsGreaterThan(self:Zero())) {
+            ;Print("Before: %bn-rd %bn-rd %bn-rd\n", Base, Exponent, Result)
+
+            if (Exponent->IsOdd()) {
+                Result := Result->Multiply(Base->Reference())->Modulo(Modulus->Reference())
+                ;Print("E & 1: %bn-rd\n", Result)
+            }
+
+            Base := Base->Square()->Modulo(Modulus->Reference())
+            Exponent := Exponent->Quotient(self:Constant(2))
+
+            ;Print("After: %bn-rd %bn-rd\n", Base, Exponent)
         }
 
         Base->Release()
         Exponent->Release()
         Modulus->Release()
-        BaseMod->Release()
 
         return Result
     }
+
+    static BigNumber* Power(BigNumber* Base, BigNumber* RawExponent) {
+        BigNumber* Result := self:One()
+        BigNumber* Exponent := new BigNumber(RawExponent)
+
+        while (Exponent->IsGreaterThan(self:Zero())) {
+            Result := Result->Multiply(Base->Reference())
+            Exponent->_Decrement(1)
+        }
+
+        Base->Release()
+        Exponent->Release()
+        RawExponent->Release()
+
+        return Result
+    }
+
+    define BigNumber* Power(BigNumber* Exponent) {
+        return self:Power(this, Exponent)
+    }
+
+    static BigNumber* Logarithm(BigNumber* N, BigNumber* Base) {
+        BigNumber* Result := new BigNumber(self:One())
+        BigNumber* Current := Base->Reference()
+
+        while (N->IsGreaterThanOrEqualTo(Current)) {
+            Current := Current->Multiply(Base->Reference())
+            Result->_Increment(1)
+        }
+
+        return Result
+    }
+
+    static i8 Initialize() {
+        FIRST_BIG_NUMBER := null
+        BIG_NUMBERS_TAIL := &FIRST_BIG_NUMBER
+
+        for (i32 Index := 0, Index < BIG_NUMBER_CONSTANT_POOL_SIZE, Index++) {
+            BIG_NUMBER_CONSTANT_POOL[Index] := new BigNumber(Index)
+        }
+
+        return true
+    }
+}
+
+i8 BIG_NUMBER_INITIALIZED := BigNumber:Initialize()
+
+define void Walk() {
+    BigNumber* Current := FIRST_BIG_NUMBER
+
+    while (Current != null) {
+        Print("#%i: %bn-rd\n", Current->ID, Current)
+
+        Current := Current->Next
+    }
+}
+
+define i8 HadLeaks() {
+    BigNumber* Current := FIRST_BIG_NUMBER
+
+    while (Current != null) {
+        if (!Current->Constant) {
+            Print("BN #%i was leaked with refcount %i, allocated at:\n", Current->ID, Current->ReferenceCount)
+            Current->AllocationTrace->Print()
+        }
+
+        ;Print("%x %x\n", Current, Current->Next)
+
+        Current := Current->Next
+    }
+
+    return false
 }
 
 #Require "./src/Big/Print.rlx"
 
-define void TestPowerModulo() {
-    BigNumber* Base := new BigNumber(10)
-    BigNumber* Exponent := new BigNumber(2)
-    BigNumber* Modulus := new BigNumber(6)
-    BigNumber* Result := BigNumber:PowerModulo(Base->Reference(), Exponent->Reference(), Modulus->Reference())
-    if (Result->Equals(4)) {
-        Print("modpow(10, 2, 6) = 4: PASS\n")
-    } else {
-        Print("modpow(10, 2, 6) = %bn-rd: FAIL\n", Result)
-    }
-    Result->Release()
-
-    Base := new BigNumber(2)
-    Exponent := new BigNumber(3)
-    Modulus := new BigNumber(5)
-    Result := BigNumber:PowerModulo(Base->Reference(), Exponent->Reference(), Modulus->Reference())
-    if (Result->Equals(3)) {
-        Print("modpow(2, 3, 5) = 3: PASS\n")
-    } else {
-        Print("modpow(2, 3, 5) = %bn-rd: FAIL\n", Result)
-    }
-    Result->Release()
-
-    Base := new BigNumber("197238712398") ; 2**32
-    Exponent := new BigNumber("39874") ; 2**32 + 1
-    Modulus := new BigNumber("2873282") ; 2**32 - 1
-    Result := BigNumber:PowerModulo(Base->Reference(), Exponent->Reference(), Modulus->Reference())
-    if (Result->Equals(653646)) {
-        Print("modpow(197238712398, 90187239874, 2873282) = 1: PASS\n")
-    } else {
-        Print("modpow(197238712398, 90187239874, 2873282) = %bn-rd: FAIL\n", Result)
-    }
-    Result->Release()
-}
-
-define void Main() {
-
-    TestPowerModulo()
-
-    /* BigNumber* A := new BigNumber("123456789123456789123456789123456789")
-    BigNumber* B := new BigNumber(2)
-
-    BigNumber* R := null
-    BigNumber* S := BigNumber:Divide(A->Reference(), B->Reference(), &R)
-
-    Print("%bn-rd / %bn-rd = %bn-rd (r %bn-rd)\n", A, B, S, R)
-
-    A->Release()
-    B->Release()
-    R->Release()
-    S->Release()
-
-    for (i32 Index := 0, Index < 49, Index++) {
-        BigNumber* C := new BigNumber(Index)
-
-        if (BigNumber:MightBeBasicPrime(C)) {
-            Print("%bn-rd ", C)
-        }
-
-        ;Print("%bn-rd, %i\n", C, BigNumber:MightBeBasicPrime(C))
-        C->Release()
-    }
-
-    for (i32 Index := 0, Index < NEXT_BIG_NUMBER_ID, Index++) {
-        BigNumber* N := BIG_NUMBERS[Index]
-
-        if (N && !N->Constant) {
-            Print("BN #%i was leaked with refcount %i, allocated at:\n", Index, N->ReferenceCount)
-            N->AllocationTrace->Print()
-        }
-    }
- */
-    ;Print("%bn-base-10\n", A)
-
-    ;ComparisonResult CR := BigNumber:Compare(L, R)
-
-    ;Print("%bn-digits is %s than %bn-digits\n", L, nameof:(CR), R)
-
-    ;BigNumber* E := new BigNumber(33)
-    ;Print("%bn-digits\n", E)
-    ;BigNumber:BaseSubtract(E->Reference(), B->Reference(), E)
-    ;E := E->Reference()->Subtract(B->Reference())
-    ;E->_Decrement(12)
-    ;Print("%bn-digits\n", E)
-
-    ;return
-
-    ;BigNumber* S := BigNumber:Add(L->Reference(), R->AbsoluteValue())
-    ;BigNumber* R := null
-    ;BigNumber* S := BigNumber:Divide(A->Reference(), B->Reference(), &R)
-
-    ;Print("%bn-digits / %bn-digits = %bn-base-10 (r %bn-digits)\n", A, B, S, R)
-}
