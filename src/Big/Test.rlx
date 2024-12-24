@@ -1,0 +1,248 @@
+#Require "$/Console.rlx"
+#Require "./src/Big/Big.rlx"
+
+i64 LFSR := 0xACE1
+
+define i64 Random() {
+    LFSR ^= LFSR << 13
+    LFSR ^= LFSR >> 7
+    LFSR ^= LFSR << 17
+
+    return LFSR & 0x0FFF_FFFF_FFFF_FFFF
+}
+
+define void TestSubtract(i64 Iterations) {
+    for (i32 Index := 0, Index < Iterations, Index++) {
+        i64 RawA := Random()
+        i64 RawB := Random()
+
+        BigNumber* A := new BigNumber(RawA)
+        BigNumber* B := new BigNumber(RawB)
+        BigNumber* Expected := new BigNumber(RawA - RawB)
+
+        BigNumber* S := BigNumber:Subtract(A->Reference(), B->Reference())
+
+        if (!S->Equals(Expected)) {
+            Print("%bn-rd - %bn-rd = %bn-rd, not %bn-rd\n", A, B, Expected, S)
+        }
+        else {
+            Print(".")
+        }
+
+        Expected->Release()
+        A->Release()
+        B->Release()
+        S->Release()
+
+        if (HadLeaks()) {
+            break
+        }
+    }
+}
+
+define void TestMultiply(i64 Iterations) {
+    for (i32 Index := 0, Index < Iterations, Index++) {
+        i64 RawA := Random() & 0x7FFF_FFFF
+        i64 RawB := Random() & 0x7FFF_FFFF
+
+        BigNumber* A := new BigNumber(RawA)
+        BigNumber* B := new BigNumber(RawB)
+        BigNumber* Expected := new BigNumber(RawA * RawB)
+
+        BigNumber* M := A->Reference()->Multiply(B->Reference())
+
+        if (!M->Equals(Expected)) {
+            Print("%bn-rd * %bn-rd = %bn-rd, not %bn-rd\n", A, B, Expected, M)
+        }
+        else {
+            Print(".")
+        }
+
+        A->Release()
+        B->Release()
+        M->Release()
+        Expected->Release()
+
+        if (HadLeaks()) {
+            break
+        }
+    }
+}
+
+define void TestSmallDivide(i64 Iterations) {
+    for (i32 Index := 0, Index < Iterations, Index++) {
+        i64 RawA := Random()
+        i64 RawB := Index + 1
+
+        BigNumber* A := new BigNumber(RawA)
+        BigNumber* B := new BigNumber(RawB)
+        BigNumber* Expected := new BigNumber(RawA / RawB)
+
+        BigNumber* R := null
+        BigNumber* S := BigNumber:Divide(A->Reference(), B->Reference(), &R)
+
+        if (!S->Equals(Expected)) {
+            Print("%bn-rd / %bn-rd = %bn-rd, not %bn-rd\n", A, B, S, Expected, R)
+        }
+        else {
+            Print(".")
+        }
+
+        Expected->Release()
+        A->Release()
+        B->Release()
+        R->Release()
+        S->Release()
+
+        if (HadLeaks()) {
+            break
+        }
+    }
+}
+
+define void TestDivide(i64 Iterations) {
+    for (i32 Index := 0, Index < Iterations, Index++) {
+        i64 RawA := Random()
+        i64 RawB := Random()
+
+        BigNumber* A := new BigNumber(RawA)
+        BigNumber* B := new BigNumber(RawB)
+
+        BigNumber* ExpectedS := new BigNumber(RawA / RawB)
+        BigNumber* ExpectedR := new BigNumber(RawA % RawB)
+
+        BigNumber* R := null
+        BigNumber* S := BigNumber:Divide(A->Reference(), B->Reference(), &R)
+
+        if !(S->Equals(ExpectedS) && R->Equals(ExpectedR)) {
+            Print("%bn-rd / %bn-rd = %bn-rd r %bn-rd, not %bn-rd r %bn-rd\n", A, B, ExpectedS, ExpectedR, S, R)
+        }
+        else {
+            Print(".")
+        }
+
+        ExpectedS->Release()
+        ExpectedR->Release()
+
+        A->Release()
+        B->Release()
+        R->Release()
+        S->Release()
+
+        if (HadLeaks()) {
+            break
+        }
+    }
+}
+
+define void TestSquare(i64 Iterations) {
+    for (i32 Index := 0, Index < Iterations, Index++) {
+        i64 RawA := Random() & 0x7FFF_FFFF
+
+        BigNumber* A := new BigNumber(RawA)
+        BigNumber* Expected := new BigNumber(RawA * RawA)
+
+        BigNumber* S := A->Reference()->Square()
+
+        if (!S->Equals(Expected)) {
+            Print("%bn-rd^2 = %bn-rd, not %bn-rd\n", A, Expected, S)
+        }
+        else {
+            Print(".")
+        }
+
+        A->Release()
+        S->Release()
+        Expected->Release()
+
+        if (HadLeaks()) {
+            break
+        }
+    }
+}
+
+define i64 PowerModulo(i64 Base, i64 Exponent, i64 Modulus) {
+    i64 Result := 1
+
+    while (Exponent > 0) {
+        ;Print("Before: %i %i %i\n", Base, Exponent, Result)
+
+        if (Exponent & 1) {
+            Result := (Result * Base) % Modulus
+           ; Print("E & 1: %i\n", Result)
+        }
+
+        Base := (Base * Base) % Modulus
+        Exponent /= 2
+
+        ;Print("After: %i %i\n", Base, Exponent)
+    }
+
+    return Result
+}
+
+define void TestPowerModulo(i64 Iterations) {
+    for (i32 Index := 0, Index < Iterations, Index++) {
+        i64 Base := Random() & 0x7FFF_FFFF
+        i64 Exponent := Random() & 0x7FFF_FFFF
+        i64 Modulus := Random() & 0x7FFF_FFFF
+
+        i64 Expected := PowerModulo(Base, Exponent, Modulus)
+        BigNumber* Result := BigNumber:PowerModulo(new BigNumber(Base), new BigNumber(Exponent), new BigNumber(Modulus))
+
+        if (!Result->Equals(Expected)) {
+            Print("pow(%i, %i, %i) = %i, not %bn-rd\n", Base, Exponent, Modulus, Expected, Result)
+        }
+        else {
+            Print(".")
+        }
+        
+        Result->Release()
+
+        if (HadLeaks()) {
+            break
+        }
+    }
+}
+
+define i32 Main(i64 ArgC, i8** ArgV) {
+
+    i64 Iterations := 1000
+
+    for (i32 Index := 1, Index < ArgC, Index++) {
+        i8* Arg := ArgV[Index]
+
+        if (StringEquals(Arg, "-i") || StringEquals(Arg, "--iterations")) {
+            Iterations := AToI(ArgV[++Index])
+        }
+        else if (StringEquals(Arg, "sub")) {
+            TestSubtract(Iterations)
+        }
+        else if (StringEquals(Arg, "mul")) {
+            TestMultiply(Iterations)
+        }
+        else if (StringEquals(Arg, "sqr")) {
+            TestSquare(Iterations)
+        }
+        else if (StringEquals(Arg, "sdiv")) {
+            TestSmallDivide(Iterations)
+        }
+        else if (StringEquals(Arg, "div")) {
+            TestDivide(Iterations)
+        }
+        else if (StringEquals(Arg, "powmod")) {
+            TestPowerModulo(Iterations)
+        }
+        else if (StringEquals(Arg, "all")) {
+            TestSubtract(Iterations)
+            TestMultiply(Iterations)
+            TestSquare(Iterations)
+            TestSmallDivide(Iterations)
+            TestDivide(Iterations)
+            TestPowerModulo(Iterations)
+        }
+    }
+
+    return 0
+}
+

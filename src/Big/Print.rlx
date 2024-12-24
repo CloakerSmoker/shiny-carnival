@@ -1,0 +1,105 @@
+define void DoPrintBigNumberDigits(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+	BigNumber* N := Parameters[*ParameterIndex] As void*
+
+    if (N->Negative) {
+        this->Print("-")
+    }
+
+    this->Print("[")
+
+    for (i32 Index := N->DigitCount - 1, Index >= 0, Index--) {
+        this->Print("%i", N->Digits[Index])
+
+        if (Index - 1 >= 0) {
+            this->Print(", ")
+        }
+    }
+
+    this->Print("]")
+	
+	
+	*ParameterIndex += 1
+}
+
+PrintFormatPrototype BigNumberDigitsPrintPrototype {
+	Name: "bn-digits",
+	Format: &DoPrintBigNumberDigits
+}
+
+i32 BIG_NUMBER_DIGITS_PRINT_PROTOTYPE_ID := AddPrintFormat(&BigNumberDigitsPrintPrototype)
+
+
+define void DoPrintBigNumberRawDigits(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+	BigNumber* N := Parameters[*ParameterIndex] As void*
+
+    if (N->Negative) {
+        this->Print("-")
+    }
+    
+    for (i32 Index := N->DigitCount - 1, Index >= 0, Index--) {
+        this->Print("%i", N->Digits[Index])
+    }
+	
+	*ParameterIndex += 1
+}
+
+PrintFormatPrototype BigNumberRawDigitsPrintPrototype {
+	Name: "bn-rd",
+	Format: &DoPrintBigNumberRawDigits
+}
+
+i32 BIG_NUMBER_RAW_DIGITS_PRINT_PROTOTYPE_ID := AddPrintFormat(&BigNumberRawDigitsPrintPrototype)
+
+
+define void DoPrintBigNumberBase(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+    i32 FormatLength := StringLength(Format)
+    i32 Index := 1 + *FormatIndex
+
+    i32 RawBase := 0
+
+    while (IsNumeric(Format[Index])) {
+        RawBase *= 10
+        RawBase += GetCharacterValue(Format[Index++])
+    }
+
+    *FormatIndex := Index - 1
+
+    BigNumber* N := Parameters[*ParameterIndex] As void*
+    BigNumber* Base := new BigNumber(RawBase)
+
+    *ParameterIndex += 1
+
+    if (RawBase <= 1 || RawBase >= 37) {
+        this->Print("<Invalid big number base %i>", RawBase)
+        return
+    }
+
+    i8* Buffer := Alloc((35 - RawBase) * N->DigitCount)
+
+    BigNumber* Value := N->Reference()->AbsoluteValue()
+
+    for (i32 Index := 0, Value->IsNotZero(), Index++) {
+        BigNumber* Remainder := null
+        Value := Value->Divide(Base->Reference(), &Remainder)
+
+        Buffer[Index] := NumberToCharacter(Remainder->Digits[0] As i8)
+        Remainder->Release()
+    }
+
+    Value->Release()
+    Base->Release()
+
+    if (N->Negative) {
+        Buffer[Index++] := '-'
+    }
+
+    MemoryReverse(Buffer, Index)
+    this->DoPrintCharacters(Buffer, Index)
+}
+
+PrintFormatPrototype BigNumberBasePrintPrototype {
+	Name: "bn-base-",
+	Format: &DoPrintBigNumberBase
+}
+
+i32 BIG_NUMBER_BASE_PRINT_PROTOTYPE_ID := AddPrintFormat(&BigNumberBasePrintPrototype)

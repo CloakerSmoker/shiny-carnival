@@ -1,0 +1,24 @@
+
+#Require "./src/Big/Big.rlx"
+
+define i32 Main() {
+    ;Walk()
+
+    BigNumber* A := new BigNumber("2")
+
+    ;Walk()
+
+    BigNumber* E := new BigNumber("8192")
+
+    ;Walk()
+
+    BigNumber* R := A->Reference()->Power(E->Reference())
+
+    Print("%i\n", R->DigitCount)
+
+    Print("2 ** 64 = %bn-base-10\n", R)
+
+    HadLeaks()
+
+    return 0
+}
