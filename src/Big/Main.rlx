@@ -6,7 +6,7 @@
 define i32 Main() {
     Table* T := new Table()
 
-    T->DefineColumn("Name", "%s")->Align(ColumnAlignment::Right)
+    T->DefineColumn("Name", "%s")->Align(ColumnAlignment::Right, '.')
     T->DefineColumn("Age", "%i")
     T->DefineColumn("Description", "%s")->AlignValue(ColumnAlignment::Right)
 
@@ -15,7 +15,7 @@ define i32 Main() {
     T->Row("Charlie", 35, "Yet another person")
     T->Row("David", 40, "Still another person")
 
-    T->Print(Printer)
+    Print("%table\n", T)
     
 
     ;Walk()

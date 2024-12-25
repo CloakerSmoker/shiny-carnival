@@ -10,26 +10,49 @@ struct TableColumn {
     i8* Name
     ColumnAlignment NameAlignment
 
+    i8* Format
+    ColumnAlignment ValueAlignment
+    i8 ValueAlignmentCharacter
+
+    i32 MaxLength
+
+    static self* New(i8* Name, i8* Format) {
+        TableColumn* this := Alloc(#TableColumn)
+
+        this->Name := Name
+        this->Format := Format
+        this->ValueAlignmentCharacter := ' '
+        this->MaxLength := StringLength(Name)
+
+        return this
+    }
+
     define self* AlignName(ColumnAlignment Alignment) {
         this->NameAlignment := Alignment
         return this
     }
 
-    i8* Format
-    ColumnAlignment ValueAlignment
-
+    define self* AlignValue(ColumnAlignment Alignment, i8 Character) {
+        this->ValueAlignment := Alignment
+        this->ValueAlignmentCharacter := Character
+        return this
+    }
     define self* AlignValue(ColumnAlignment Alignment) {
         this->ValueAlignment := Alignment
         return this
     }
 
+    define self* Align(ColumnAlignment Alignment, i8 Character) {
+        this->NameAlignment := Alignment
+        this->ValueAlignment := Alignment
+        this->ValueAlignmentCharacter := Character
+        return this
+    }
     define self* Align(ColumnAlignment Alignment) {
         this->NameAlignment := Alignment
         this->ValueAlignment := Alignment
         return this
     }
-
-    i32 MaxLength
 }
 
 struct TableRow {
@@ -51,11 +74,7 @@ struct Table {
     }
 
     define TableColumn* DefineColumn(i8* Name, i8* Format) {
-        TableColumn* Column := Alloc(#TableColumn)
-
-        Column->Name := Name
-        Column->Format := Format
-        Column->MaxLength := StringLength(Name)
+        TableColumn* Column := new TableColumn(Name, Format)
 
         this->Columns->Push(Column)
 
@@ -120,22 +139,39 @@ struct Table {
                 TableColumn* Column := this->Columns->At(ColumnIndex)
                 i8* Formatted := Row->ColumnsFormatted->At(ColumnIndex)
 
+                Out->Print(" ")
+
                 if (Column->ValueAlignment = ColumnAlignment::Left) {
-                    Out->Print(" %s ", Formatted)
+                    Out->Print("%s", Formatted)
                 }
 
                 for (i32 PaddingIndex := StringLength(Formatted), PaddingIndex < Column->MaxLength, PaddingIndex++) {
-                    Out->Print(" ")
+                    Out->Print("%c", Column->ValueAlignmentCharacter)
                 }
 
                 if (Column->ValueAlignment = ColumnAlignment::Right) {
-                    Out->Print(" %s ", Formatted)
+                    Out->Print("%s", Formatted)
                 }
 
-                Out->Print("|")
+                Out->Print(" |")
             }
 
             Out->Print("\n")
         }
     }
 }
+
+define void DoPrintTable(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+	Table* T := Parameters[*ParameterIndex] As void*
+
+    T->Print(this)
+	
+	*ParameterIndex += 1
+}
+
+PrintFormatPrototype TablePrintPrototype {
+	Name: "table",
+	Format: &DoPrintTable
+}
+
+i32 TABLE_PRINT_PROTOTYPE_ID := AddPrintFormat(&TablePrintPrototype)
