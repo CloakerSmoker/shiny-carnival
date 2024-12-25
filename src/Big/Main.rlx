@@ -1,24 +1,40 @@
 
 #Require "./src/Big/Big.rlx"
 
+#Require "./src/Table.rlx"
+
 define i32 Main() {
+    Table* T := new Table()
+
+    T->DefineColumn("Name", "%s")->Align(ColumnAlignment::Right)
+    T->DefineColumn("Age", "%i")
+    T->DefineColumn("Description", "%s")->AlignValue(ColumnAlignment::Right)
+
+    T->Row("Alice", 25, "A person")
+    T->Row("Bob", 30, "Another person")
+    T->Row("Charlie", 35, "Yet another person")
+    T->Row("David", 40, "Still another person")
+
+    T->Print(Printer)
+    
+
     ;Walk()
 
-    BigNumber* A := new BigNumber("2")
+    ;BigNumber* A := new BigNumber("2")
 
     ;Walk()
 
-    BigNumber* E := new BigNumber("8192")
+    ;BigNumber* E := new BigNumber("8192")
 
     ;Walk()
 
-    BigNumber* R := A->Reference()->Power(E->Reference())
+    ;BigNumber* R := A->Reference()->Power(E->Reference())
 
-    Print("%i\n", R->DigitCount)
+    ;Print("%i\n", R->DigitCount)
 
-    Print("2 ** 64 = %bn-base-10\n", R)
+    ;Print("2 ** 64 = %bn-base-10\n", R)
 
-    HadLeaks()
+    ;HadLeaks()
 
     return 0
 }

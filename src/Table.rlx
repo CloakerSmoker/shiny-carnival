@@ -1,0 +1,141 @@
+
+#Require "$/PointerArray.rlx"
+
+enum ColumnAlignment {
+    Left,
+    Right
+}
+
+struct TableColumn {
+    i8* Name
+    ColumnAlignment NameAlignment
+
+    define self* AlignName(ColumnAlignment Alignment) {
+        this->NameAlignment := Alignment
+        return this
+    }
+
+    i8* Format
+    ColumnAlignment ValueAlignment
+
+    define self* AlignValue(ColumnAlignment Alignment) {
+        this->ValueAlignment := Alignment
+        return this
+    }
+
+    define self* Align(ColumnAlignment Alignment) {
+        this->NameAlignment := Alignment
+        this->ValueAlignment := Alignment
+        return this
+    }
+
+    i32 MaxLength
+}
+
+struct TableRow {
+    PointerArray* Columns ; <void*>
+    PointerArray* ColumnsFormatted ; <i8*>
+}
+
+struct Table {
+    PointerArray* Columns ; <TableColumn*>
+    PointerArray* Rows ; <TableRow*>
+
+    static self* New() {
+        Table* this := Alloc(#Table)
+
+        this->Columns := new PointerArray()
+        this->Rows := new PointerArray()
+
+        return this
+    }
+
+    define TableColumn* DefineColumn(i8* Name, i8* Format) {
+        TableColumn* Column := Alloc(#TableColumn)
+
+        Column->Name := Name
+        Column->Format := Format
+        Column->MaxLength := StringLength(Name)
+
+        this->Columns->Push(Column)
+
+        return Column
+    }
+
+    define void Row(... Fields) {
+        i64 Count := Fields[0] As i64
+        void** Values := &Fields[1] As void**
+
+        TableRow* Row := Alloc(#TableRow)
+        Row->Columns := new PointerArray()
+        Row->ColumnsFormatted := new PointerArray()
+        this->Rows->Push(Row)
+
+        for (i32 Index := 0, Index < Count, Index++) {
+            TableColumn* Column := this->Columns->At(Index)
+            void* Value := Values[Index]
+
+            Row->Columns->Push(Value)
+
+            i8* Formatted := FormatString(Column->Format, Value)
+            Row->ColumnsFormatted->Push(Formatted)
+
+            i32 FormattedLength := StringLength(Formatted)
+
+            if (FormattedLength > Column->MaxLength) {
+                Column->MaxLength := FormattedLength
+            }
+        }
+    }
+
+    define void Print(PrintOutputAdapterPrototype* Out) {
+        Out->Print("|")
+
+        for (i32 ColumnIndex := 0, ColumnIndex < this->Columns->Count(), ColumnIndex++) {
+            TableColumn* Column := this->Columns->At(ColumnIndex)
+
+            if (Column->NameAlignment = ColumnAlignment::Left) {
+                Out->Print(" %s ", Column->Name)
+            }
+
+            for (i32 PaddingIndex := StringLength(Column->Name), PaddingIndex < Column->MaxLength, PaddingIndex++) {
+                Out->Print(" ")
+            }
+
+            if (Column->NameAlignment = ColumnAlignment::Right) {
+                Out->Print(" %s ", Column->Name)
+            }
+
+            Out->Print("|")
+        }
+
+        Out->Print("\n")
+
+        for (i32 RowIndex := 0, RowIndex < this->Rows->Count(), RowIndex++) {
+            TableRow* Row := this->Rows->At(RowIndex)
+
+            Out->Print("|")
+
+            for (i32 ColumnIndex := 0, ColumnIndex < Row->Columns->Count(), ColumnIndex++) {
+                TableColumn* Column := this->Columns->At(ColumnIndex)
+                i8* Formatted := Row->ColumnsFormatted->At(ColumnIndex)
+
+                if (Column->ValueAlignment = ColumnAlignment::Left) {
+                    Out->Print(" %s ", Formatted)
+                }
+
+                for (i32 PaddingIndex := StringLength(Formatted), PaddingIndex < Column->MaxLength, PaddingIndex++) {
+                    Out->Print(" ")
+                }
+
+                if (Column->ValueAlignment = ColumnAlignment::Right) {
+                    Out->Print(" %s ", Formatted)
+                }
+
+                Out->Print("|")
+            }
+
+            Out->Print("\n")
+        }
+    }
+}
