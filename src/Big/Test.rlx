@@ -12,6 +12,7 @@ define i64 Random() {
 }
 
 define void TestSubtract(i64 Iterations) {
+    Print("\nTestSubtract:")
     for (i32 Index := 0, Index < Iterations, Index++) {
         i64 RawA := Random()
         i64 RawB := Random()
@@ -41,6 +42,7 @@ define void TestSubtract(i64 Iterations) {
 }
 
 define void TestMultiply(i64 Iterations) {
+    Print("\nTestMultiply:")
     for (i32 Index := 0, Index < Iterations, Index++) {
         i64 RawA := Random() & 0x7FFF_FFFF
         i64 RawB := Random() & 0x7FFF_FFFF
@@ -70,6 +72,7 @@ define void TestMultiply(i64 Iterations) {
 }
 
 define void TestSmallDivide(i64 Iterations) {
+    Print("\nTestSmallDivide:")
     for (i32 Index := 0, Index < Iterations, Index++) {
         i64 RawA := Random()
         i64 RawB := Index + 1
@@ -101,9 +104,10 @@ define void TestSmallDivide(i64 Iterations) {
 }
 
 define void TestDivide(i64 Iterations) {
+    Print("\nTestDivide:")
     for (i32 Index := 0, Index < Iterations, Index++) {
         i64 RawA := Random()
-        i64 RawB := Random()
+        i64 RawB := Random() / ((Index + 1) * 1000)
 
         BigNumber* A := new BigNumber(RawA)
         BigNumber* B := new BigNumber(RawB)
@@ -136,6 +140,7 @@ define void TestDivide(i64 Iterations) {
 }
 
 define void TestSquare(i64 Iterations) {
+    Print("\nTestSquare:")
     for (i32 Index := 0, Index < Iterations, Index++) {
         i64 RawA := Random() & 0x7FFF_FFFF
 
@@ -182,6 +187,7 @@ define i64 PowerModulo(i64 Base, i64 Exponent, i64 Modulus) {
 }
 
 define void TestPowerModulo(i64 Iterations) {
+    Print("\nTestPowerModul:")
     for (i32 Index := 0, Index < Iterations, Index++) {
         i64 Base := Random() & 0x7FFF_FFFF
         i64 Exponent := Random() & 0x7FFF_FFFF
@@ -245,4 +251,3 @@ define i32 Main(i64 ArgC, i8** ArgV) {
 
     return 0
 }
-

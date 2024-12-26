@@ -4,7 +4,7 @@
 #Require "./src/Table.rlx"
 
 define i32 Main() {
-    Table* T := new Table()
+    /*Table* T := new Table()
 
     T->DefineColumn("Name", "%s")->Align(ColumnAlignment::Right, '.')
     T->DefineColumn("Age", "%i")
@@ -15,7 +15,15 @@ define i32 Main() {
     T->Row("Charlie", 35, "Yet another person")
     T->Row("David", 40, "Still another person")
 
-    Print("%table\n", T)
+    Print("%table\n", T)*/
+
+    BigNumber* N := new BigNumber("12")
+    BigNumber* D := new BigNumber("5")
+
+    BigNumber* R := null
+    BigNumber* Q := BigNumber:DivideByGuessCheck(N, D, &R)
+
+    Print("%bn-rd / %bn-rd = %bn-rd (r %bn-rd)\n", N, D, Q, R)
     
 
     ;Walk()

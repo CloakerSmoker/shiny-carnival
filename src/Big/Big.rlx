@@ -478,6 +478,27 @@ struct BigNumber {
         return self:AbsoluteValue(this)
     }
 
+    static BigNumber* MultiplyBySingleDigit(BigNumber* Left, i64 Right) {
+        BigNumber* Result := self:WithDigits(Left->DigitCount + 1)
+
+        i64 Carry := 0
+
+        for (i32 Index := 0, Index < Left->DigitCount, Index++) {
+            i64 Product := (Left->Digits[Index] * Right) + Carry
+
+            Carry := Product / BIG_NUMBER_BASE
+
+            Result->Digits[Index] := (Product - (Carry * BIG_NUMBER_BASE)) As i32
+        }
+
+        while (Carry) {
+            Result->Digits[Index++] := (Carry % BIG_NUMBER_BASE) As i32
+            Carry /= BIG_NUMBER_BASE
+        }
+
+        return Result->Shrink()
+    }
+
 
     static BigNumber* BaseMultiply(BigNumber* Left, BigNumber* Right) {
         BigNumber* Result := self:WithDigits(Left->DigitCount + Right->DigitCount)
@@ -499,18 +520,28 @@ struct BigNumber {
             }
         }
 
-        Left->Release()
-        Right->Release()
-
         return Result->Shrink()
     }
 
     static BigNumber* Multiply(BigNumber* Left, BigNumber* Right) {
         i8 Negative := Left->Negative + Right->Negative = 1
 
-        BigNumber* Result := self:BaseMultiply(Left, Right)
+        BigNumber* Result := null
+
+        if (Left->DigitCount = 1) {
+            Result := self:MultiplyBySingleDigit(Right, Left->Digits[0])
+        }
+        else if (Right->DigitCount = 1) {
+            Result := self:MultiplyBySingleDigit(Left, Right->Digits[0])
+        }
+        else {
+            Result := self:BaseMultiply(Left, Right)
+        }
 
         Result->Negative := Negative
+
+        Left->Release()
+        Right->Release()
 
         return Result
     }
@@ -560,6 +591,11 @@ struct BigNumber {
     define i8 IsLessThan(BigNumber* Other) {
         return self:Compare(this, Other) = ComparisonResult::Less
     }
+    define i8 IsLessThanOrEqualTo(BigNumber* Other) {
+        ComparisonResult Result := self:Compare(this, Other)
+
+        return Result = ComparisonResult::Less || Result = ComparisonResult::Equal
+    }
 
     define i8 IsGreaterThan(BigNumber* Other) {
         return self:Compare(this, Other) = ComparisonResult::Greater
@@ -568,6 +604,91 @@ struct BigNumber {
         ComparisonResult Result := self:Compare(this, Other)
 
         return Result = ComparisonResult::Greater || Result = ComparisonResult::Equal
+    }
+
+    static BigNumber* DivideBySingleDigit(BigNumber* Dividend, i64 Divisor, BigNumber** OutRemainder) {
+        BigNumber* Quotient := new BigNumber(Dividend)
+
+        i64 Carry := 0
+        i64 Remainder := 0
+
+        for (i32 Index := Dividend->DigitCount - 1, Index >= 0, Index--) {
+            i64 Digit := Dividend->Digits[Index]
+
+            i64 InnerDivisor := (Remainder * BIG_NUMBER_BASE) + Digit
+            i64 InnerQuotient := InnerDivisor / Divisor
+
+            Remainder := InnerDivisor - InnerQuotient * Divisor
+
+            Quotient->Digits[Index] := InnerQuotient As i32
+        }
+
+        *OutRemainder := new BigNumber(Remainder)
+
+        return Quotient->Shrink()
+    }
+
+    static BigNumber* DivideByGuessCheck(BigNumber* Dividend, BigNumber* Denominator, BigNumber** OutRemainder) {
+        BigNumber* Result := BigNumber:WithDigits(0)
+        BigNumber* Part := BigNumber:WithDigits(0)
+
+        i32 DividendLength := Dividend->DigitCount
+
+        i64 DivisorHigh := Denominator->Digits[Denominator->DigitCount - 1] * BIG_NUMBER_BASE
+        DivisorHigh += Denominator->Digits[Denominator->DigitCount - 2]
+
+        while (DividendLength) {
+            Part->Prepend(Dividend->Digits[--DividendLength])
+
+            Part->Shrink()
+
+            if (Part->IsLessThan(Denominator)) {
+                Result->Push(0)
+                continue
+            }
+
+            i32 PartLength := Part->DigitCount
+            i64 PartHigh := Part->Digits[PartLength - 1] * BIG_NUMBER_BASE
+
+            if (PartLength >= 2) {
+                PartHigh += Part->Digits[PartLength - 2]
+            }
+
+            if (PartLength > Denominator->DigitCount) {
+                PartHigh := (PartHigh + 1) * BIG_NUMBER_BASE
+            }
+
+            i64 Guess := PartHigh / DivisorHigh
+
+            loop {
+                BigNumber* Check := self:MultiplyBySingleDigit(Denominator, Guess)
+
+                if (Check->IsLessThanOrEqualTo(Part)) {
+                    break
+                }
+
+                if (--Guess = 0) {
+                    break
+                }
+
+                Check->Release()
+            }
+
+            Result->Push(Guess As i32)
+            Part := Part->Subtract(Check)
+        }
+
+        BigNumber* ActualResult := BigNumber:WithDigits(Result->DigitCount)
+
+        for (i32 Index := 0, Index < Result->DigitCount, Index++) {
+            ActualResult->Digits[Index] := Result->Digits[Result->DigitCount - Index - 1]
+        }
+
+        Result->Release()
+
+        *OutRemainder := Part->Shrink()
+
+        return ActualResult->Shrink()
     }
 
     static BigNumber* DivideBySubtract(BigNumber* Numerator, BigNumber* Denominator, BigNumber** OutRemainder) {
@@ -580,9 +701,6 @@ struct BigNumber {
             ;Print("%bn-digits\n", Remainder)
             Quotient->_Increment(1)
         }
-
-        Numerator->Release()
-        Denominator->Release()
 
         *OutRemainder := Remainder->Shrink()
         return Quotient->Shrink()
@@ -606,7 +724,7 @@ struct BigNumber {
                 Part->Shrink()
 
                 BigNumber* PartialRemainder := null
-                BigNumber* PartialQuotient := self:DivideBySubtract(Part->Reference(), Denominator->Reference(), &PartialRemainder)
+                BigNumber* PartialQuotient := self:DivideByGuessCheck(Part, Denominator, &PartialRemainder)
 
                 ;Print("%bn-rd / %bn-rd = %bn-rd (R %bn-rd)\n", Part, Denominator, PartialQuotient, PartialRemainder)
 
@@ -646,10 +764,9 @@ struct BigNumber {
 
         ;Print("Rem %bn-rd\n", Remainder)
 
-        Numerator->Release()
-        Denominator->Release()
-
         ;Print("Rem %bn-rd\n", Remainder)
+
+        ;Print("%bn-rd / %bn-rd = %bn-rd (R %bn-rd)\n", Numerator, Denominator, Quotient, Remainder)
 
         *OutRemainder := Remainder->Shrink()
 
@@ -679,7 +796,19 @@ struct BigNumber {
             return new BigNumber(0)
         }
 
-        return self:LongDivide(Numerator, Denominator, OutRemainder)
+        BigNumber* Result := null
+
+        if (Denominator->Shrink()->DigitCount = 1) {
+            Result := self:DivideBySingleDigit(Numerator, Denominator->Digits[0], OutRemainder)
+        }
+        else {
+            Result := self:LongDivide(Numerator, Denominator, OutRemainder)
+        }
+
+        Numerator->Release()
+        Denominator->Release()
+
+        return Result
     }
     
     define BigNumber* Divide(BigNumber* Denominator, BigNumber** OutRemainder) {
@@ -838,6 +967,7 @@ struct BigNumber {
 
             if (Exponent->IsOdd()) {
                 Result := Result->Multiply(Base->Reference())->Modulo(Modulus->Reference())
+
                 ;Print("E & 1: %bn-rd\n", Result)
             }
 
