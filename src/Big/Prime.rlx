@@ -1,0 +1,51 @@
+
+#Require "./src/Big/Big.rlx"
+
+define i32 Main(i64 ArgC, i8** ArgV) {
+    i8 Deterministic := false
+    i64 Count := 1
+    BigNumber* Current := null
+
+    for (i32 Index := 1, Index < ArgC, Index++) {
+        i8* Arg := ArgV[Index]
+
+        if (StringEquals(Arg, "-c") || StringEquals(Arg, "--count")) {
+            Count := AToI(ArgV[++Index])
+        }
+        else if (StringEquals(Arg, "-d") || StringEquals(Arg, "--deterministic")) {
+            Deterministic := true
+        }
+        else {
+            Current := new BigNumber(Arg)
+        }
+    }
+
+    Print("First %i primes after %bn-base-10:\n", Count, Current)
+
+    if (Current->IsEven()) {
+        Current->_Increment(1)
+    }
+
+    if (Deterministic) {
+        while (Count) {
+            if (BigNumber:DeterministicMillerRabinTest(Current)) {
+                Print("%bn-base-10\n", Current)
+                Count--
+            }
+
+            Current->_Increment(2)
+        }
+    }
+    else {
+        while (Count) {
+            if (BigNumber:IsPrime(Current)) {
+                Print("%bn-base-10\n", Current)
+                Count--
+            }
+
+            Current->_Increment(2)
+        }
+    }
+
+    return 0
+}
