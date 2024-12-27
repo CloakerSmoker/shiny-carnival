@@ -1,9 +1,5 @@
 RLX=compiler/build/linux_compiler.elf
 RLX_FLAGS?=--linux --debug --dwarf
-
-pull-compiler:
-	cd compiler; git pull
-
 PROGRAM?=Main
 MAIN=src/$(PROGRAM).rlx
 DBG?=
@@ -39,3 +35,6 @@ depend dep deps:
 build: $(BINARY)
 
 rebuild: clean build
+
+pull-compiler:
+	cd compiler; git pull
