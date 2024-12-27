@@ -1,0 +1,170 @@
+
+#Require "$/Memory.rlx"
+#Require "$/PointerArray.rlx"
+#Require "$/String.rlx"
+
+#Require "./src/Big/Big.rlx"
+
+enum TokenType {
+    Identifier
+    Punctuation
+    Operator
+    Number
+}
+
+enum Punctuation {
+    OpenParenthesis := '('
+    CloseParenthesis := ')'
+}
+
+enum Operator {
+    Plus := '+',
+    Minus := '-',
+    Times := '*',
+    Divide := '/',
+    Remainder := '%',
+    Power := '^'
+}
+
+struct Token {
+    TokenType Type
+
+    union {
+        struct {
+            Punctuation PunctuationValue
+        }
+        struct {
+            Operator OperatorValue
+        }
+        struct {
+            i8* IdentifierValue
+        }
+        struct {
+            BigNumber* NumberValue
+        }
+    }
+
+    static self* New(TokenType Type) {
+        self* this := Alloc(#self)
+        this->Type := Type
+        return this
+    }
+
+    static self* New(i8* Identifier) {
+        self* this := new self(TokenType::Identifier)
+        this->IdentifierValue := Identifier
+        return this
+    }
+
+    static self* New(Punctuation P) {
+        self* this := new self(TokenType::Punctuation)
+        this->PunctuationValue := P
+        return this
+    }
+
+    static self* New(Operator O) {
+        self* this := new self(TokenType::Operator)
+        this->OperatorValue := O
+        return this
+    }
+
+    static self* New(BigNumber* N) {
+        self* this := new self(TokenType::Number)
+        this->NumberValue := N
+        return this
+    }
+}
+
+define PointerArray* Tokenize(i8* Source, i32 SourceLength) {
+    PointerArray* Tokens := new PointerArray() ; <Token*>
+
+    for (i32 Index := 0, Index < SourceLength, Index++) {
+        i8 Next := Source[Index]
+
+        if (IsWhiteSpace(Next)) {
+            continue
+        }
+        else if (nameof:(Next As Punctuation) != null) {
+            Tokens->Push(new Token(Next As Punctuation))
+        }
+        else if (nameof:(Next As Operator) != null) {
+            Tokens->Push(new Token(Next As Operator))
+        }
+        else if (IsNumeric(Next)) {
+            i32 Base := 10
+
+            if (Next = '0') {
+                i8 Peek := Source[++Index]
+
+                if (Peek = 'b') {
+                    Base := 2
+                }
+                else if (Peek = 'o') {
+                    Base := 8
+                }
+                else if (Peek = 'x') {
+                    Base := 16
+                }
+                else {
+                    Index--
+                }
+            }
+
+            i32 Start := Index
+
+            while (IsNumeric(Next, Base) || Next = '_' || Next = ',') {
+                Next := Source[++Index]
+            }
+
+            i32 Length := Index - Start
+            BigNumber* Value := new BigNumber(Source + Start, Length, Base)
+
+            Tokens->Push(new Token(Value))
+        }
+        else if (IsAlpha(Next)) {
+            i32 Start := Index
+
+            while (IsAlphaNumeric(Next)) {
+                Next := Source[++Index]
+            }
+
+            i32 Length := Index - Start - 1
+
+            i8* Identifier := Alloc(Length + 1)
+            MoveMemory(Identifier, Source + Start, Length)
+
+            Tokens->Push(new Token(Identifier))
+        }
+    }
+
+    return Tokens
+}
+
+define i32 Main(i64 ArgC, i8** ArgV) {
+    i8* Source := "1 + 2 * 3"
+    i32 Length := StringLength(Source)
+
+    PointerArray* Tokens := Tokenize(Source, Length)
+    i32 Count := Tokens->Count()
+
+    for (i32 Index := 0, Index < Count, Index++) {
+        Token* T := Tokens->At(Index)
+
+        Print("%s: ", nameof:(T->Type))
+
+        if (T->Type = TokenType::Identifier) {
+            Print("%s\n", T->IdentifierValue)
+        }
+        else if (T->Type = TokenType::Punctuation) {
+            Print("%s\n", nameof:(T->PunctuationValue))
+        }
+        else if (T->Type = TokenType::Operator) {
+            Print("%s\n", nameof:(T->OperatorValue))
+        }
+        else if (T->Type = TokenType::Number) {
+            Print("%bn-base-10\n", T->NumberValue)
+        }
+    }
+
+    return 0
+}
