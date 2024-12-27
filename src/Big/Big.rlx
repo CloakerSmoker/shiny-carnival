@@ -1,6 +1,6 @@
 #Require "$/Console.rlx"
 
-i64 BIG_NUMBER_BASE := 10000000 ;0x7FFF_FFFF
+i64 BIG_NUMBER_BASE := 1000000000 ;0x7FFF_FFFF
 
 enum ComparisonResult {
     Less
@@ -15,8 +15,81 @@ BigNumber** BIG_NUMBERS_TAIL := null
 
 i32 NEXT_BIG_NUMBER_ID := 0
 
-i32 BIG_NUMBER_CONSTANT_POOL_SIZE := 2
+i32 BIG_NUMBER_CONSTANT_POOL_SIZE := 175
 BigNumber** BIG_NUMBER_CONSTANT_POOL := Alloc(BIG_NUMBER_CONSTANT_POOL_SIZE * #void*)
+
+struct BigNumberMillerRabinShortcut {
+    i8* RawValue
+    i32* RawBases
+
+    BigNumber* Value
+    BigNumber** Bases
+    i32 BaseCount
+}
+
+enum Primality {
+    Prime
+    Composite
+    ProbablyPrime
+    Unknown
+}
+
+i32 MILLER_RABIN_SHORTCUTS_COUNT := 14
+
+BigNumberMillerRabinShortcut[14] MILLER_RABIN_SHORTCUTS {
+    {
+        RawValue: "2047",
+        RawBases: i32[2, 0]
+    },
+    {
+        RawValue: "1,373,653",
+        RawBases: i32[2, 3, 0]
+    },
+    {
+        RawValue: "9,080,191",
+        RawBases: i32[31, 73, 0]
+    },
+    {
+        RawValue: "25,326,001",
+        RawBases: i32[2, 3, 5, 0]
+    },
+    {
+        RawValue: "3,215,031,751",
+        RawBases: i32[2, 3, 5, 7, 0]
+    },
+    {
+        RawValue: "4,759,123,141",
+        RawBases: i32[2, 7, 61, 0]
+    },
+    {
+        RawValue: "1,122,004,669,633",
+        RawBases: i32[2, 13, 23, 1662803, 0]
+    },
+    {
+        RawValue: "2,152,302,898,747",
+        RawBases: i32[2, 3, 5, 7, 11, 0]
+    },
+    {
+        RawValue: "3,474,749,660,383",
+        RawBases: i32[2, 3, 5, 7, 11, 13, 0]
+    },
+    {
+        RawValue: "341,550,071,728,321",
+        RawBases: i32[2, 3, 5, 7, 11, 13, 17, 0]
+    },
+    {
+        RawValue: "3,825,123,056,546,413,051",
+        RawBases: i32[2, 3, 5, 7, 11, 13, 17, 19, 23, 0]
+    },
+    {
+        RawValue: "318,665,857,834,031,151,167,461",
+        RawBases: i32[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 0]
+    },
+    {
+        RawValue: "3,317,044,064,679,887,385,961,981",
+        RawBases: i32[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 0]
+    }
+}
 
 declare void Walk()
 
@@ -826,7 +899,7 @@ struct BigNumber {
     define BigNumber* Remainder(BigNumber* Denominator) {
         BigNumber* Remainder := null
         this->Divide(Denominator, &Remainder)->Release()
-
+/
         return Remainder
     }
     define BigNumber* Modulo(BigNumber* Denominator) {
@@ -834,40 +907,11 @@ struct BigNumber {
     }
 
     define i8 DivisibleBy(BigNumber* Factor) {
-        BigNumber* Remainder := this->Remainder(Factor)
+        BigNumber* Remainder := this->Reference()->Remainder(Factor->Reference())
         i8 Result := Remainder->IsZero()
         Remainder->Release()
 
         return Result
-    }
-
-    static i8 MightBeBasicPrime(BigNumber* In) {
-        In->Shrink()
-
-        if (In->DigitCount = 1) {
-            i32 Single := In->Digits[0]
-
-            if (Single = 1) {
-                return false
-            }
-            else if (Single = 2 || Single = 3 || Single = 5) {
-                return true
-            }
-        }
-
-        if (In->IsEven()) {
-            return false
-        }
-
-        if (In->DivisibleBy(self:Constant(3)) || In->DivisibleBy(self:Constant(5))) {
-            return false
-        }
-
-        if (In->IsLessThan(self:Constant(49))) {
-            return true
-        }
-
-        return false
     }
 
     static BigNumber* New(i8* String, i32 Length, i32 RawBase) {
@@ -1013,7 +1057,197 @@ struct BigNumber {
             Result->_Increment(1)
         }
 
+        Current->Release()
+        N->Release()
+        Base->Release()
+
         return Result
+    }
+
+    define BigNumber* Logarithm(BigNumber* Base) {
+        return self:Logarithm(this, Base)
+    }
+
+    static Primality IsBasicPrime(BigNumber* In) {
+        In->Shrink()
+
+        if (In->DigitCount = 1) {
+            i32 Single := In->Digits[0]
+
+            if (Single = 1) {
+                return Primality::Composite
+            }
+            else if (Single = 2 || Single = 3 || Single = 5) {
+                return Primality::Prime
+            }
+        }
+
+        if (In->IsEven()) {
+            return Primality::Composite
+        }
+
+        if (In->DivisibleBy(self:Constant(3)) || In->DivisibleBy(self:Constant(5))) {
+            return Primality::Composite
+        }
+
+        if (In->IsLessThan(self:Constant(49))) {
+            return Primality::Prime
+        }
+
+        return Primality::Unknown
+    }
+
+    static i8 MillerRabinTest(BigNumber* N, BigNumber** Bases, i32 BaseCount) {
+        BigNumber* MinusOne := N->Reference()->Subtract(self:Constant(1))
+
+        ;Print("N: %bn-rd, N - 1: %bn-rd\n", N, MinusOne)
+
+        BigNumber* B := MinusOne->Reference()
+        i32 R := 0
+
+        while (B->IsEven()) {
+            B := B->Quotient(self:Constant(2))
+            R++
+        }
+
+        ;Print("B: %bn-rd, R: %i\n", B, R)
+
+        for (i32 Index := 0, Index < BaseCount, Index++) {
+            BigNumber* Base := Bases[Index]
+
+            ;Print("\nCheck N: %bn-rd, Base: %bn-rd\n", N, Base)
+
+            if (N->IsLessThan(Base)) {
+                continue
+            }
+
+            BigNumber* X := self:PowerModulo(Base->Reference(), B->Reference(), N->Reference())
+
+            ;Print("pow(%bn-rd, %bn-rd, %bn-rd) = %bn-rd\n", Base, B, N, X)
+
+            if (X->Equals(1) || X->Equals(MinusOne)) {
+                ;Print(" = 1 or N-1\n")
+
+                X->Release()
+
+                continue
+            }
+
+            i8 XEqualsMinusOne := false
+
+            for (i32 D := R - 1, D != 0, D--) {
+                ;Print("pow(%bn-rd, 2, %bn-rd) = ", X, N)
+                X := X->Square()->Modulo(N->Reference())
+                ;Print("bn-rd\n", X)
+
+                if (X->Equals(1)) {
+                    X->Release()
+                    B->Release()
+                    MinusOne->Release()
+
+                    return false
+                }
+
+                if (X->Equals(MinusOne)) {
+                    XEqualsMinusOne := true
+                    break
+                }
+            }
+
+            X->Release()
+
+            if (XEqualsMinusOne) {
+                continue
+            }
+
+            B->Release()
+            MinusOne->Release()
+
+            return false
+        }
+
+        B->Release()
+        MinusOne->Release()
+
+        return true
+    }
+
+    static i8 DeterministicMillerRabinTest(BigNumber* N) {
+        BigNumber* BitCount := N->Reference()->Logarithm(self:Constant(2))->Add(self:One())
+        BigNumber* BitCountLogN := BitCount->Quotient(self:Constant(3))
+
+        BigNumber* Limit := BitCountLogN->Square()->Multiply(self:Constant(2))
+
+        if (Limit->Shrink()->DigitCount != 1) {
+            Print("PANIC!!! MILLER RABIN SUX!!!!!\n")
+            *null := 0
+        }
+
+        i32 BaseCount := Limit->Digits[0]
+        BigNumber** Bases := Alloc(BaseCount * #BigNumber*)
+
+        Limit->Release()
+
+        for (i32 Index := 0, Index < BaseCount, Index++) {
+            Bases[Index] := new BigNumber(Index + 2)
+        }
+
+        i8 Result := self:MillerRabinTest(N, Bases, BaseCount)
+
+        for (i32 Index := 0, Index < BaseCount, Index++) {
+            Bases[Index]->Release()
+        }
+
+        Free(Bases)
+
+        return Result
+    }
+
+    static Primality IsPrimeShortcut(BigNumber* N) {
+        for (i32 Index := 0, Index < MILLER_RABIN_SHORTCUTS_COUNT, Index++) {
+            BigNumberMillerRabinShortcut* Shortcut := MILLER_RABIN_SHORTCUTS[Index]
+
+            if (N->IsLessThan(Shortcut->Value)) {
+                if (self:MillerRabinTest(N, Shortcut->Bases, Shortcut->BaseCount)) {
+                    return Primality::Prime
+                }
+                else {
+                    return Primality::Composite
+                }
+            }
+        }
+
+        return Primality::Unknown
+    }
+
+    static i8 IsProbablyComposite(BigNumber* N) {
+
+    }
+
+    static i8 IsPrime(BigNumber* N) {
+        Primality Basic := self:IsBasicPrime(N)
+
+        if (Basic = Primality::Prime) {
+            return true
+        }
+        else if (Basic = Primality::Composite) {
+            return false
+        }
+
+        /*Primality Shortcut := self:IsPrimeShortcut(N)
+
+        if (Shortcut = Primality::Prime) {
+            return true
+        }
+        else if (Shortcut = Primality::Composite) {
+            return false
+        }*/
+
+        if (self:DeterministicMillerRabinTest(N)) {
+            return true
+        }
+
+        return false
     }
 
     static i8 Initialize() {
@@ -1023,6 +1257,25 @@ struct BigNumber {
         for (i32 Index := 0, Index < BIG_NUMBER_CONSTANT_POOL_SIZE, Index++) {
             BIG_NUMBER_CONSTANT_POOL[Index] := new BigNumber(Index)
         }
+
+        /*for (i32 Index := 0, Index < MILLER_RABIN_SHORTCUTS_COUNT, Index++) {
+            BigNumberMillerRabinShortcut* Shortcut := MILLER_RABIN_SHORTCUTS[Index]
+
+            Shortcut->Value := new BigNumber(Shortcut->RawValue)
+            Shortcut->Value->Constant := true
+
+            i32 BaseCount := 0
+
+            for (i32 InnerIndex := 0, Shortcut->RawBases[InnerIndex] != 0, InnerIndex++) {
+                BaseCount++
+            }
+
+            Shortcut->Bases := Alloc(BaseCount * #BigNumber*)
+
+            for (i32 InnerIndex := 0, InnerIndex < BaseCount, InnerIndex++) {
+                Shortcut->Bases[InnerIndex] := new BigNumber(Shortcut->RawBases[InnerIndex])
+            }
+        }*/
 
         return true
     }

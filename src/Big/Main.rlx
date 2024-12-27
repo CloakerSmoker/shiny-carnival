@@ -17,13 +17,27 @@ define i32 Main() {
 
     Print("%table\n", T)*/
 
-    BigNumber* N := new BigNumber("12")
+    /*BigNumber* N := new BigNumber("12")
     BigNumber* D := new BigNumber("5")
 
     BigNumber* R := null
     BigNumber* Q := BigNumber:DivideByGuessCheck(N, D, &R)
 
-    Print("%bn-rd / %bn-rd = %bn-rd (r %bn-rd)\n", N, D, Q, R)
+    Print("%bn-rd / %bn-rd = %bn-rd (r %bn-rd)\n", N, D, Q, R)*/
+
+    BigNumber* N := new BigNumber("2")
+    i32 PrimeCount := 0
+
+    while (PrimeCount < 80) {
+        if (BigNumber:IsPrime(N)) {
+            Print("%bn-rd ", N)
+            PrimeCount++
+        }
+
+        N->_Increment(1)
+    }
+
+    HadLeaks()
     
 
     ;Walk()
