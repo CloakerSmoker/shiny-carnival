@@ -1,6 +1,8 @@
 
 #Require "./src/Big/Big.rlx"
 
+; Freeze on ./build/Big/Prime.elf -d 12761232222
+
 define i32 Main(i64 ArgC, i8** ArgV) {
     i8 Deterministic := false
     i64 Count := 1
