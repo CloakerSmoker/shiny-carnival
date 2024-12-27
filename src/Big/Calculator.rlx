@@ -73,6 +73,16 @@ struct Token {
         this->NumberValue := N
         return this
     }
+
+    define i8 Is(TokenType Type) {
+        return this->Type = Type
+    }
+    define i8 Is(Punctuation P) {
+        return this->Type = TokenType::Punctuation && this->PunctuationValue = P
+    }
+    define i8 Is(Operator O) {
+        return this->Type = TokenType::Operand && this->OperatorValue = O
+    }
 }
 
 define PointerArray* Tokenize(i8* Source, i32 SourceLength) {
@@ -138,6 +148,113 @@ define PointerArray* Tokenize(i8* Source, i32 SourceLength) {
     }
 
     return Tokens
+}
+
+enum ExpressionType {
+    Variable
+    Number
+    PrefixUnary
+    SuffixUnary
+    Binary
+}
+
+define i32 GetPrefixPrecedence(Operator O) {
+    if (O = Operator)
+}
+
+struct Expression {
+    ExpressionType Type
+
+    union {
+        Token* VariableName
+        BigNumber* NumberValue
+
+        struct {
+            Token* UnaryOperator
+            Expression* Operand
+        }
+
+        struct {
+            Token* BinaryOperator
+            Expression* Left
+            Expression* Right
+        }
+    }
+
+    static self* New(ExpressionType Type) {
+        self* this := Alloc(#self)
+        this->Type := Type
+        return this
+    }
+
+    static self* New(Token* VariableName) {
+        self* this := new self(ExpressionType::Variable)
+        this->VariableName := VariableName
+        return this
+    }
+    static self* New(BigNumber* Number) {
+        self* this := new self(ExpressionType::Number)
+        this->NumberValue := Number
+        return this
+    }
+    static self* New(Token* UnaryOperator, Expression* Operand) {
+        self* this := new self(ExpressionType::PrefixUnary)
+        this->UnaryOperator := UnaryOperator
+        this->Operand := Operand
+        return this
+    }
+    static self* New(Expression* Operand, Token* UnaryOperator) {
+        self* this := new self(ExpressionType::SuffixUnary)
+        tihs->Operand := Operand
+        tihs->UnaryOperator := UnaryOperator
+        return this
+    }
+    static self* New(Expression* Left, Token* BinaryOperator, Expression* Right) {
+        self* this := new self(ExpressionType::Binary)
+        this->Left := Left
+        this->BinaryOperator := Binary
+        this->Right := Right
+        return this
+    }
+}
+
+struct Parser {
+
+    PointerArray* Tokens
+    i32 Index
+
+    define void Expect(TokenType Type) {
+
+    }
+    define void Expect(Punctuation P) {
+
+    }
+
+    define Expression* ParseOperand() {
+        Token* Next := this->GetNextToken()
+
+        if (Next->Is(TokenType::Number)) {
+            return new Expression(Next->NumberValue)
+        }
+        else if (Next->Is(Punctuation::OpenParenthesis)) {
+            Expression* Result := this->ParseExpresion()
+
+            this->Expect(Punctuation::CloseParenthesis)
+
+            return Result
+        }
+        else if (Next->Is(TokenType::Operator)) {
+
+        }
+    }
+
+    define Expression* ParseExpresion(i32 Precedence) {
+        Expression* Left := this->ParseOperand()
+    }
+    
+    define Expression* ParseExpresion() {
+
+    }
 }
 
 define i32 Main(i64 ArgC, i8** ArgV) {
