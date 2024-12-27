@@ -18,77 +18,24 @@ i32 NEXT_BIG_NUMBER_ID := 0
 i32 BIG_NUMBER_CONSTANT_POOL_SIZE := 175
 BigNumber** BIG_NUMBER_CONSTANT_POOL := Alloc(BIG_NUMBER_CONSTANT_POOL_SIZE * #void*)
 
-struct BigNumberMillerRabinShortcut {
-    i8* RawValue
-    i32* RawBases
+#Require "$/AVLTree.rlx"
 
-    BigNumber* Value
+AVLTree* BIG_NUMBER_LARGE_CONSTANT_POOL := new AVLTree(#void*) ; <FNV1A(i8*), BigNumber*>
+
+#Require "$/PointerArray.rlx"
+
+struct MillerRabinShortcut {
+    BigNumber* Limit
     BigNumber** Bases
     i32 BaseCount
 }
 
+PointerArray* MILLER_RABIN_SHORTCUTS := new PointerArray() ; <MillerRabinShortcut*>
+
 enum Primality {
     Prime
     Composite
-    ProbablyPrime
-    Unknown
-}
-
-i32 MILLER_RABIN_SHORTCUTS_COUNT := 14
-
-BigNumberMillerRabinShortcut[14] MILLER_RABIN_SHORTCUTS {
-    {
-        RawValue: "2047",
-        RawBases: i32[2, 0]
-    },
-    {
-        RawValue: "1,373,653",
-        RawBases: i32[2, 3, 0]
-    },
-    {
-        RawValue: "9,080,191",
-        RawBases: i32[31, 73, 0]
-    },
-    {
-        RawValue: "25,326,001",
-        RawBases: i32[2, 3, 5, 0]
-    },
-    {
-        RawValue: "3,215,031,751",
-        RawBases: i32[2, 3, 5, 7, 0]
-    },
-    {
-        RawValue: "4,759,123,141",
-        RawBases: i32[2, 7, 61, 0]
-    },
-    {
-        RawValue: "1,122,004,669,633",
-        RawBases: i32[2, 13, 23, 1662803, 0]
-    },
-    {
-        RawValue: "2,152,302,898,747",
-        RawBases: i32[2, 3, 5, 7, 11, 0]
-    },
-    {
-        RawValue: "3,474,749,660,383",
-        RawBases: i32[2, 3, 5, 7, 11, 13, 0]
-    },
-    {
-        RawValue: "341,550,071,728,321",
-        RawBases: i32[2, 3, 5, 7, 11, 13, 17, 0]
-    },
-    {
-        RawValue: "3,825,123,056,546,413,051",
-        RawBases: i32[2, 3, 5, 7, 11, 13, 17, 19, 23, 0]
-    },
-    {
-        RawValue: "318,665,857,834,031,151,167,461",
-        RawBases: i32[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 0]
-    },
-    {
-        RawValue: "3,317,044,064,679,887,385,961,981",
-        RawBases: i32[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 0]
-    }
+    NotDefinitelyComposite
 }
 
 declare void Walk()
@@ -237,6 +184,24 @@ struct BigNumber {
     }
     static BigNumber* Constant(i32 Value) {
         return new self(Value)
+    }
+
+    static declare self* New(i8*)
+
+    static BigNumber* LargeConstant(i8* Value) {
+        i64 Hash := FNV1A(Value)
+        BigNumber* Result := BIG_NUMBER_LARGE_CONSTANT_POOL->GetPointer(Hash)
+
+        if (Result) {
+            return Result
+        }
+
+        BigNumber* Result := new self(Value)
+        Result->Constant := true
+
+        BIG_NUMBER_LARGE_CONSTANT_POOL->InsertPointer(Hash, Result)
+
+        return Result
     }
 
     static self* New(BigNumber* CloneSource) {
@@ -1203,25 +1168,71 @@ struct BigNumber {
         return Result
     }
 
-    static Primality IsPrimeShortcut(BigNumber* N) {
-        for (i32 Index := 0, Index < MILLER_RABIN_SHORTCUTS_COUNT, Index++) {
-            BigNumberMillerRabinShortcut* Shortcut := MILLER_RABIN_SHORTCUTS[Index]
+    static void DefineMillerRabinShortcut(i8* Limit, i32* Bases) {
+        MillerRabinShortcut* Shortcut := Alloc(#MillerRabinShortcut)
 
-            if (N->IsLessThan(Shortcut->Value)) {
-                if (self:MillerRabinTest(N, Shortcut->Bases, Shortcut->BaseCount)) {
-                    return Primality::Prime
-                }
-                else {
-                    return Primality::Composite
-                }
+        for (i32 BaseCount := 0, Bases[BaseCount] != 0, BaseCount++) {}
+
+        Shortcut->Limit := self:LargeConstant(Limit)
+        Shortcut->BaseCount := BaseCount
+        Shortcut->Bases := Alloc(BaseCount * #BigNumber*)
+
+        for (i32 Index := 0, Index < BaseCount, Index++) {
+            BigNumber* Base := new self(Bases[Index])
+            Base->Constant := true
+
+            Shortcut->Bases[Index] := Base
+        }
+
+        MILLER_RABIN_SHORTCUTS->Push(Shortcut)
+    }
+
+    static void InitializeMillerRabinShortcuts() {
+        self:DefineMillerRabinShortcut("2047", i32[2, 0])
+        self:DefineMillerRabinShortcut("1,373,653", i32[2, 3, 0])
+        self:DefineMillerRabinShortcut("9,080,191", i32[31, 73, 0])
+        self:DefineMillerRabinShortcut("25,326,001", i32[2, 3, 5, 0])
+        self:DefineMillerRabinShortcut("3,215,031,751", i32[2, 3, 5, 7, 0])
+        self:DefineMillerRabinShortcut("4,759,123,141", i32[2, 7, 61, 0])
+        self:DefineMillerRabinShortcut("1,122,004,669,633", i32[2, 13, 23, 1662803, 0])
+        self:DefineMillerRabinShortcut("2,152,302,898,747", i32[2, 3, 5, 7, 11, 0])
+        self:DefineMillerRabinShortcut("3,474,749,660,383", i32[2, 3, 5, 7, 11, 13, 0])
+        self:DefineMillerRabinShortcut("341,550,071,728,321", i32[2, 3, 5, 7, 11, 13, 17, 0])
+        self:DefineMillerRabinShortcut("3,825,123,056,546,413,051", i32[2, 3, 5, 7, 11, 13, 17, 19, 23, 0])
+        self:DefineMillerRabinShortcut("318,665,857,834,031,151,167,461", i32[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 0])
+        self:DefineMillerRabinShortcut("3,317,044,064,679,887,385,961,981", i32[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 0])
+    }
+
+    static Primality IsPrimeShortcut(BigNumber* N) {
+        i8 Confident := true
+        MillerRabinShortcut* BestShortcut := null
+
+        i32 Count := MILLER_RABIN_SHORTCUTS->Count()
+
+        for (i32 Index := 0, Index < Count, Index++) {
+            MillerRabinShortcut* Shortcut := MILLER_RABIN_SHORTCUTS->At(Index)
+
+            if (N->IsLessThan(Shortcut->Limit)) {
+                BestShortcut := Shortcut
+                break
             }
         }
 
-        return Primality::Unknown
-    }
+        if (BestShortcut = null) {
+            BestShortcut := MILLER_RABIN_SHORTCUTS->At(Count - 1)
+            Confident := false
+        }
 
-    static i8 IsProbablyComposite(BigNumber* N) {
-        return true
+        if (self:MillerRabinTest(N, BestShortcut->Bases, BestShortcut->BaseCount)) {
+            if (Confident) {
+                return Primality::Prime
+            }
+            else {
+                return Primality::NotDefinitelyComposite
+            }
+        }
+
+        return Primality::Composite
     }
 
     static i8 IsPrime(BigNumber* N) {
@@ -1234,14 +1245,14 @@ struct BigNumber {
             return false
         }
 
-        /*Primality Shortcut := self:IsPrimeShortcut(N)
+        Primality Shortcut := self:IsPrimeShortcut(N)
 
         if (Shortcut = Primality::Prime) {
             return true
         }
         else if (Shortcut = Primality::Composite) {
             return false
-        }*/
+        }
 
         if (self:DeterministicMillerRabinTest(N)) {
             return true
@@ -1257,6 +1268,8 @@ struct BigNumber {
         for (i32 Index := 0, Index < BIG_NUMBER_CONSTANT_POOL_SIZE, Index++) {
             BIG_NUMBER_CONSTANT_POOL[Index] := new BigNumber(Index)
         }
+
+        self:InitializeMillerRabinShortcuts()
 
         /*for (i32 Index := 0, Index < MILLER_RABIN_SHORTCUTS_COUNT, Index++) {
             BigNumberMillerRabinShortcut* Shortcut := MILLER_RABIN_SHORTCUTS[Index]
