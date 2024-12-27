@@ -1,8 +1,11 @@
-
 RLX=compiler/build/linux_compiler.elf
 RLX_FLAGS?=--linux --debug --dwarf
-MAIN=src/Main.rlx
-PROGRAM=Main
+
+pull-compiler:
+	cd compiler; git pull
+
+PROGRAM?=Main
+MAIN=src/$(PROGRAM).rlx
 DBG?=
 
 BUILD=./build

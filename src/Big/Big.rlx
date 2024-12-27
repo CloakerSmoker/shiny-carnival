@@ -899,7 +899,7 @@ struct BigNumber {
     define BigNumber* Remainder(BigNumber* Denominator) {
         BigNumber* Remainder := null
         this->Divide(Denominator, &Remainder)->Release()
-/
+
         return Remainder
     }
     define BigNumber* Modulo(BigNumber* Denominator) {
@@ -1221,7 +1221,7 @@ struct BigNumber {
     }
 
     static i8 IsProbablyComposite(BigNumber* N) {
-
+        return true
     }
 
     static i8 IsPrime(BigNumber* N) {
