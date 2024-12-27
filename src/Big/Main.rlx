@@ -25,12 +25,14 @@ define i32 Main() {
 
     Print("%bn-rd / %bn-rd = %bn-rd (r %bn-rd)\n", N, D, Q, R)*/
 
-    BigNumber* N := new BigNumber("2")
+    BigNumber* N := new BigNumber("2000000000")
     i32 PrimeCount := 0
 
-    while (PrimeCount < 80) {
+    Print("Primes from %bn-base-10:\n", N)
+
+    while (PrimeCount < 8000) {
         if (BigNumber:IsPrime(N)) {
-            Print("%bn-rd ", N)
+            Print("%bn-base-10 ", N)
             PrimeCount++
         }
 

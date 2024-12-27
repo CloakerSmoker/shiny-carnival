@@ -1059,7 +1059,7 @@ struct BigNumber {
             return Primality::Prime
         }
 
-        return Primality::Unknown
+        return Primality::NotDefinitelyComposite
     }
 
     static i8 MillerRabinTest(BigNumber* N, BigNumber** Bases, i32 BaseCount) {
@@ -1080,18 +1080,20 @@ struct BigNumber {
         for (i32 Index := 0, Index < BaseCount, Index++) {
             BigNumber* Base := Bases[Index]
 
-            ;Print("\nCheck N: %bn-rd, Base: %bn-rd\n", N, Base)
+            Print("\nCheck N: %bn-rd, Base: %bn-rd\n", N, Base)
 
             if (N->IsLessThan(Base)) {
                 continue
             }
 
+            Print("pow(%bn-rd, %bn-rd, %bn-rd) ", Base, B, N)
+
             BigNumber* X := self:PowerModulo(Base->Reference(), B->Reference(), N->Reference())
 
-            ;Print("pow(%bn-rd, %bn-rd, %bn-rd) = %bn-rd\n", Base, B, N, X)
+            Print("= %bn-rd\n", X)
 
             if (X->Equals(1) || X->Equals(MinusOne)) {
-                ;Print(" = 1 or N-1\n")
+                Print(" = 1 or N-1\n")
 
                 X->Release()
 
@@ -1101,9 +1103,9 @@ struct BigNumber {
             i8 XEqualsMinusOne := false
 
             for (i32 D := R - 1, D != 0, D--) {
-                ;Print("pow(%bn-rd, 2, %bn-rd) = ", X, N)
+                Print("pow(%bn-rd, 2, %bn-rd) = ", X, N)
                 X := X->Square()->Modulo(N->Reference())
-                ;Print("bn-rd\n", X)
+                Print("bn-rd\n", X)
 
                 if (X->Equals(1)) {
                     X->Release()
@@ -1142,6 +1144,8 @@ struct BigNumber {
         BigNumber* BitCountLogN := BitCount->Quotient(self:Constant(3))
 
         BigNumber* Limit := BitCountLogN->Square()->Multiply(self:Constant(2))
+
+        Print("%bn-base-10 miller rabin limit: %bn-base-10\n", N, Limit)
 
         if (Limit->Shrink()->DigitCount != 1) {
             Print("PANIC!!! MILLER RABIN SUX!!!!!\n")
