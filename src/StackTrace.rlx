@@ -24,7 +24,7 @@ struct StackTrace {
     }
 }
 
-define StackTrace* CaptureStackTrace(i32 IgnoreFrames) {
+define i32 CaptureStackTraceHeight(i32 IgnoreFrames) {
     StackFrame* Next := GetRBP() As StackFrame*
     i32 Count := 0
     i32 Ignore := IgnoreFrames
@@ -45,9 +45,10 @@ define StackTrace* CaptureStackTrace(i32 IgnoreFrames) {
 		}
 	}
 
-    StackTrace* Trace := Alloc(#StackTrace + (Count * #StackFrame))
-    Trace->Count := Count
+    return Count
+}
 
+define void CaptureStackTrace(i32 IgnoreFrames, StackTrace* Trace) {
     StackFrame* Next := GetRBP() As StackFrame*
     i32 Index := 0
     i32 Ignore := IgnoreFrames
@@ -76,8 +77,24 @@ define StackTrace* CaptureStackTrace(i32 IgnoreFrames) {
             Next := Next->LastFrame
 		}
 	}
+}
+
+define StackTrace* CaptureStackTrace(i32 IgnoreFrames) {
+    i32 Count := CaptureStackTraceHeight(IgnoreFrames)
+
+    StackTrace* Trace := Alloc(#StackTrace + (Count * #StackFrame))
+    Trace->Count := Count
+
+    CaptureStackTrace(IgnoreFrames, Trace)
 
     return Trace
+}
+
+define i32 CaptureStackTraceHeight() {
+    return CaptureStackTraceHeight(2)
+}
+define void CaptureStackTrace(StackTrace* Trace) {
+    CaptureStackTrace(2, Trace)
 }
 
 define StackTrace* CaptureStackTrace() {

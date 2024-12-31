@@ -44,14 +44,17 @@ struct BigNumber {
     i32* Digits
 
     i32 ID
-    StackTrace* AllocationTrace
     BigNumber** pThis
     BigNumber* Next
 
     i32 DigitCount
+    i32 DigitCapacity
+
     i32 ReferenceCount
     i8 Negative
     i8 Constant
+
+    StackTrace AllocationTrace
 
     define self* Reference() {
         this->ReferenceCount += 1
@@ -82,7 +85,6 @@ struct BigNumber {
             }
 
             Free(this->Digits)
-            Free(this->AllocationTrace)
             Free(this)
         }
 
@@ -91,7 +93,14 @@ struct BigNumber {
 
     define void Reserve(i32 NewDigitCount) {
         this->DigitCount := NewDigitCount
-        this->Digits := ReAlloc(this->Digits, NewDigitCount * 4)
+
+        if (this->DigitCount <= this->DigitCapacity) {
+            return
+        }
+
+        this->DigitCapacity := this->DigitCount * 2
+
+        this->Digits := ReAlloc(this->Digits, this->DigitCapacity * 4)
     }
 
     define void Push(i32 SingleDigit) {
@@ -112,20 +121,24 @@ struct BigNumber {
         this->Digits[0] := SingleDigit
     }
 
-    define void Initialize() {
+    static self* Allocate() {
+        i32 TraceHeight := CaptureStackTraceHeight()
+        self* this := Alloc(#self + (TraceHeight * #StackFrame))
+
+        CaptureStackTrace(this~>AllocationTrace)
+
         *BIG_NUMBERS_TAIL := this
         this->pThis := BIG_NUMBERS_TAIL
 
         BIG_NUMBERS_TAIL := this~>Next
 
         this->ID := NEXT_BIG_NUMBER_ID++
-        this->AllocationTrace := CaptureStackTrace()
+
+        return this
     }
 
     static self* WithDigits(i32 DigitCount) {
-        self* this := Alloc(#self)
-
-        this->Initialize()
+        self* this := self:Allocate()
 
         this->DigitCount := DigitCount
         this->Digits := Alloc((DigitCount + 1) * 4)
@@ -144,14 +157,12 @@ struct BigNumber {
             return BIG_NUMBER_CONSTANT_POOL[Value]
         }
 
-        self* this := Alloc(#self)
+        self* this := self:Allocate()
 
         if (FitsConstantPool) {
             BIG_NUMBER_CONSTANT_POOL[Value] := this
             this->Constant := true
         }
-
-        this->Initialize()
 
         this->Digits := Alloc(4)
 
