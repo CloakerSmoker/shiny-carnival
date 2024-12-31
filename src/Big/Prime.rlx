@@ -23,6 +23,7 @@ define i32 Main(i64 ArgC, i8** ArgV) {
     }
 
     Print("First %i primes after %bn-base-10:\n", Count, Current)
+    Print("Deterministic: %i\n", Deterministic)
 
     if (Current->IsEven()) {
         Current->_Increment(1)
@@ -40,10 +41,10 @@ define i32 Main(i64 ArgC, i8** ArgV) {
     }
     else {
         while (Count) {
-            if (BigNumber:IsPrime(Current)) {
-                Print("%bn-base-10\n", Current)
-                Count--
-            }
+            ;if (BigNumber:IsPrime(Current)) {
+            ;    Print("%bn-base-10\n", Current)
+            ;    Count--
+            ;}
 
             Current->_Increment(2)
         }
