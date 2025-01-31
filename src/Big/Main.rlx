@@ -25,6 +25,7 @@ define i32 Main() {
 
     Print("%bn-rd / %bn-rd = %bn-rd (r %bn-rd)\n", N, D, Q, R)*/
 
+    /*
     BigNumber* N := new BigNumber("2000000000")
     i32 PrimeCount := 0
 
@@ -38,6 +39,30 @@ define i32 Main() {
 
         N->_Increment(1)
     }
+    ;*/
+
+    BigNumber* A := new BigNumber("7341000402513752772839968579769700798139529526730564")
+    BigNumber* B := new BigNumber("127612323123098120981293867")
+
+    Print("%bn-digits / %bn-digits\n", A, B)
+
+    BigNumber* R := null
+    BigNumber* Q := BigNumber:DivideByGuessCheck(A, B, &R)
+
+    Print("%bn-base-10, %bn-base-10\n", Q, R)
+
+    /*
+    BigNumber* N := new BigNumber("1999999999")
+    
+    BigNumber* R := BigNumber:WithDigits(N->DigitCount + 1)
+
+    BigNumber:FastMultiplyBySingleDigit(N, 2, R)
+    BigNumber* R2 := BigNumber:MultiplyBySingleDigit(N, 2)
+
+    Print("%bn-base-10 * 2 = %bn-digits\n", N, R)
+    Print("%bn-base-10 * 2 = %bn-digits\n", N, R2)
+    ;*/
+
 
     HadLeaks()
     

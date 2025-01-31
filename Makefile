@@ -1,4 +1,4 @@
-RLX=compiler/build/linux_compiler.elf
+RLX?=compiler/build/linux_compiler.elf
 RLX_FLAGS?=--linux --debug --dwarf
 PROGRAM?=Main
 MAIN=src/$(PROGRAM).rlx

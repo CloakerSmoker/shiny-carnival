@@ -1,6 +1,6 @@
 #Require "$/Console.rlx"
 
-i64 BIG_NUMBER_BASE := 1000000000 ;0x7FFF_FFFF
+i64 BIG_NUMBER_BASE := 1000000 ;0x7FFF_FFFF
 
 enum ComparisonResult {
     Less
@@ -39,6 +39,7 @@ enum Primality {
 }
 
 declare void Walk()
+declare i8 HadLeaks()
 
 struct BigNumber {
     i32* Digits
@@ -125,6 +126,7 @@ struct BigNumber {
         i32 TraceHeight := CaptureStackTraceHeight()
         self* this := Alloc(#self + (TraceHeight * #StackFrame))
 
+        this~>AllocationTrace->Count := TraceHeight
         CaptureStackTrace(this~>AllocationTrace)
 
         *BIG_NUMBERS_TAIL := this
@@ -489,7 +491,7 @@ struct BigNumber {
     }
 
     static BigNumber* BaseSubtract(BigNumber* Left, BigNumber* Right) {
-        BigNumber* Result := new BigNumber(Left)
+        BigNumber* Result := BigNumber:WithDigits(Left->DigitCount)
         
         return self:BaseSubtract(Left, Right, Result)
     }
@@ -527,8 +529,61 @@ struct BigNumber {
         return self:AbsoluteValue(this)
     }
 
-    static BigNumber* MultiplyBySingleDigit(BigNumber* Left, i64 Right) {
-        BigNumber* Result := self:WithDigits(Left->DigitCount + 1)
+    static BigNumber* FastMultiplyBySingleDigit(BigNumber* Left, i64 Right, BigNumber* Result) asm {
+        push, rbp
+        mov, rbp, rsp
+
+        xor, rax, rax ; Carry
+
+        mov, ebx, {p1 + BigNumber.DigitCount} As i32* ; Left->DigitCount
+        xor, rcx, rcx
+
+        mov, r15, p3 ; preserve result
+
+        mov, r8, {p1 + BigNumber.Digits} As i64* ; Left->Digits
+        mov, r9, {p3 + BigNumber.Digits} As i64* ; Result->Digits
+
+    EachDigit:
+        mov, r10d, {r8[rcx * 4]} As i32*
+        imul, r10, p2
+        add, r10, rax ; (Digits[Index] * Right) + Carry
+
+        mov, rax, r10
+        cqo
+
+        mov, r11, 1000000
+        idiv, r11 ; Carry := Product / BIG_NUMBER_BASE
+
+        imul, r11, rax ; BIG_NUMBER_BASE * Carry
+        sub, r10, r11 ; Product - (Carry * BIG_NUMBER_BASE)
+
+        mov, {r9[rcx * 4]} As i32*, r10d
+
+        inc, rcx
+        cmp, rcx, rbx
+        jne, EachDigit
+    
+    WhileCarry:
+        cmp, rax, 0
+        jz, End
+
+        mov, r11, 1000000
+        cqo
+        idiv, r11 ; Carry /= BIG_NUMBER_BASE
+
+        mov, {r9[rcx * 4]} As i32*, edx
+        inc, rcx
+    
+    End:
+        mov, {r15 + BigNumber.DigitCount} As i32*, ecx
+        mov, rax, r15
+
+        leave
+        ret
+    }
+
+    static BigNumber* MultiplyBySingleDigit(BigNumber* Left, i64 Right, BigNumber* Result) {
+        Result->Reserve(Left->DigitCount + 1)
 
         i64 Carry := 0
 
@@ -545,7 +600,28 @@ struct BigNumber {
             Carry /= BIG_NUMBER_BASE
         }
 
+        Result->DigitCount := Index
+
         return Result->Shrink()
+    }
+
+    static BigNumber* MultiplyBySingleDigit(BigNumber* Left, i64 Right) {
+        BigNumber* Result := self:WithDigits(Left->DigitCount + 1)
+
+        self:MultiplyBySingleDigit(Left, Right, Result)
+
+        return Result
+    }
+
+    define void MultiplySelfBySingleDigit(i64 Right) {
+        this->Reserve(this->DigitCount + 1)
+
+        self:MultiplyBySingleDigit(this, Right, this)
+    }
+    define void CopyDigits(BigNumber* Source) {
+        this->Reserve(Source->DigitCount)
+
+        MoveMemory(this->Digits, Source->Digits, Source->DigitCount * 4)
     }
 
 
@@ -578,10 +654,12 @@ struct BigNumber {
         BigNumber* Result := null
 
         if (Left->DigitCount = 1) {
-            Result := self:MultiplyBySingleDigit(Right, Left->Digits[0])
+            Result := self:WithDigits(Right->DigitCount + 1)
+            self:FastMultiplyBySingleDigit(Right, Left->Digits[0], Result)
         }
         else if (Right->DigitCount = 1) {
-            Result := self:MultiplyBySingleDigit(Left, Right->Digits[0])
+            Result := self:WithDigits(Left->DigitCount + 1)
+            self:FastMultiplyBySingleDigit(Left, Right->Digits[0], Result)
         }
         else {
             Result := self:BaseMultiply(Left, Right)
@@ -686,10 +764,15 @@ struct BigNumber {
         i64 DivisorHigh := Denominator->Digits[Denominator->DigitCount - 1] * BIG_NUMBER_BASE
         DivisorHigh += Denominator->Digits[Denominator->DigitCount - 2]
 
+        BigNumber* Check := self:WithDigits(0)
+
         while (DividendLength) {
             Part->Prepend(Dividend->Digits[--DividendLength])
+            ;Part->Push(Dividend->Digits[--DividendLength])
 
             Part->Shrink()
+
+            ;Print("Part: %bn-digits\n", Part)
 
             if (Part->IsLessThan(Denominator)) {
                 Result->Push(0)
@@ -707,10 +790,27 @@ struct BigNumber {
                 PartHigh := (PartHigh + 1) * BIG_NUMBER_BASE
             }
 
+            ;Print("PartHigh: %i, DivisorHigh: %i\n", PartHigh, DivisorHigh)
+
             i64 Guess := PartHigh / DivisorHigh
 
+            if (PartHigh % DivisorHigh) {
+                Guess += 1
+            }
+
+            ;Print("Guess: %i\n", Guess)
+
             loop {
-                BigNumber* Check := self:MultiplyBySingleDigit(Denominator, Guess)
+                
+                /*
+                Check->Reserve(Denominator->DigitCount + 1)
+                ;Print("%bn-digits * %i =", Denominator, Guess)
+                self:FastMultiplyBySingleDigit(Denominator, Guess, Check)
+                ;Print("%bn-digits\n", Check)
+                ;*/
+                self:MultiplyBySingleDigit(Denominator, Guess, Check)
+
+                ;Print("Check %i: %bn-digits\n", Guess, Check)
 
                 if (Check->IsLessThanOrEqualTo(Part)) {
                     break
@@ -719,13 +819,14 @@ struct BigNumber {
                 if (--Guess = 0) {
                     break
                 }
-
-                Check->Release()
             }
 
             Result->Push(Guess As i32)
-            Part := Part->Subtract(Check)
+            Part := Part->Subtract(Check->Reference())
+            ;Print("New Part: %bn-digits\n", Part)
         }
+
+        Check->Release()
 
         BigNumber* ActualResult := BigNumber:WithDigits(Result->DigitCount)
 
@@ -851,7 +952,9 @@ struct BigNumber {
             Result := self:DivideBySingleDigit(Numerator, Denominator->Digits[0], OutRemainder)
         }
         else {
-            Result := self:LongDivide(Numerator, Denominator, OutRemainder)
+            ;Print("%bn-base-10 / %bn-base-10\n", Numerator, Denominator)
+            Result := self:DivideByGuessCheck(Numerator, Denominator, OutRemainder)
+            ;Result := self:LongDivide(Numerator, Denominator, OutRemainder)
         }
 
         Numerator->Release()
@@ -978,23 +1081,35 @@ struct BigNumber {
     }
 
     static BigNumber* PowerModulo(BigNumber* Base, BigNumber* Exponent, BigNumber* Modulus) {
+        ;Print("PowerModulo(%bn-base-10, %bn-base-10, %bn-base-10)\n", Base, Exponent, Modulus)
+
         BigNumber* Result := self:One()
         
-        ;Base := Base->Remainder(Modulus->Reference())
+        Base := Base->Remainder(Modulus->Reference())
 
         while (Exponent->IsGreaterThan(self:Zero())) {
-            ;Print("Before: %bn-rd %bn-rd %bn-rd\n", Base, Exponent, Result)
+            ;Print("Before: %bn-base-10 %bn-base-10 %bn-base-10\n", Base, Exponent, Result)
 
             if (Exponent->IsOdd()) {
                 Result := Result->Multiply(Base->Reference())->Modulo(Modulus->Reference())
 
-                ;Print("E & 1: %bn-rd\n", Result)
+                if (Result->IsGreaterThan(Modulus)) {
+                    ;Print("SOMEHOW %bn-digits is greater than modulus %bn-digits\n", Result, Modulus)
+                }
+
+                ;Print("E & 1: %bn-base-10\n", Result)
             }
 
-            Base := Base->Square()->Modulo(Modulus->Reference())
+            Base := Base->Square()
+            ;Print("Base**2: %bn-base-10\n", Base)
+            Base := Base->Modulo(Modulus->Reference())
             Exponent := Exponent->Quotient(self:Constant(2))
+            
+            if (Base->IsGreaterThan(Modulus)) {
+                Print("SOMEHOW %bn-digits is greater than modulus %bn-digits\n", Base, Modulus)
+            }
 
-            ;Print("After: %bn-rd %bn-rd\n", Base, Exponent)
+            ;Print("After: %bn-base-10 %bn-base-10\n", Base, Exponent)
         }
 
         Base->Release()
@@ -1097,14 +1212,14 @@ struct BigNumber {
                 continue
             }
 
-            Print("pow(%bn-rd, %bn-rd, %bn-rd) ", Base, B, N)
+            ;Print("pow(%bn-rd, %bn-rd, %bn-rd) ", Base, B, N)
 
             BigNumber* X := self:PowerModulo(Base->Reference(), B->Reference(), N->Reference())
 
-            Print("= %bn-rd\n", X)
+            ;Print("= %bn-rd\n", X)
 
             if (X->Equals(1) || X->Equals(MinusOne)) {
-                Print(" = 1 or N-1\n")
+                ;Print(" = 1 or N-1\n")
 
                 X->Release()
 
@@ -1114,9 +1229,9 @@ struct BigNumber {
             i8 XEqualsMinusOne := false
 
             for (i32 D := R - 1, D != 0, D--) {
-                Print("pow(%bn-rd, 2, %bn-rd) = ", X, N)
+                ;Print("pow(%bn-rd, 2, %bn-rd) = ", X, N)
                 X := X->Square()->Modulo(N->Reference())
-                Print("bn-rd\n", X)
+                ;Print("bn-rd\n", X)
 
                 if (X->Equals(1)) {
                     X->Release()
@@ -1327,7 +1442,7 @@ define i8 HadLeaks() {
     while (Current != null) {
         if (!Current->Constant) {
             Print("BN #%i was leaked with refcount %i, allocated at:\n", Current->ID, Current->ReferenceCount)
-            Current->AllocationTrace->Print()
+            Current~>AllocationTrace->Print()
         }
 
         ;Print("%x %x\n", Current, Current->Next)

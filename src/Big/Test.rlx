@@ -71,6 +71,76 @@ define void TestMultiply(i64 Iterations) {
     }
 }
 
+define void TestMultiplyBySingleDigit(i64 Iterations) {
+    Print("\nTestMultiplyBySingleDigit:")
+    for (i32 Index := 0, Index < Iterations, Index++) {
+        i32 NumberOfDigits := 1 + (Random() % 10) As i32
+
+        BigNumber* A := BigNumber:WithDigits(NumberOfDigits)
+
+        for (i32 DigitIndex := 0, DigitIndex < NumberOfDigits, DigitIndex++) {
+            A->Digits[DigitIndex] := (Random() % BIG_NUMBER_BASE) As i32
+        }
+
+        i64 B := Random() % BIG_NUMBER_BASE
+        BigNumber* Expected := A->Reference()->Multiply(new BigNumber(B))
+        BigNumber* Actual := BigNumber:MultiplyBySingleDigit(A, B)
+
+        if (!Actual->Equals(Expected)) {
+            Print("%bn-rd * %i = %bn-rd, not %bn-rd\n", A, B, Expected, Actual)
+        }
+        else {
+            Print(".")
+        }
+
+        A->Release()
+        Expected->Release()
+        Actual->Release()
+
+        if (HadLeaks()) {
+            break
+        }
+    }
+}
+
+define void TestFastMultiplyBySingleDigit(i64 Iterations) {
+    Print("\nTestFastMultiplyBySingleDigit:")
+    for (i32 Index := 0, Index < Iterations, Index++) {
+        i32 NumberOfDigits := 1 + (Random() % 10) As i32
+
+        if (NumberOfDigits > 10) {
+            Print("wtf %i\n", NumberOfDigits)
+        }
+
+        BigNumber* A := BigNumber:WithDigits(NumberOfDigits)
+
+        for (i32 DigitIndex := 0, DigitIndex < NumberOfDigits, DigitIndex++) {
+            A->Digits[DigitIndex] := (Random() % BIG_NUMBER_BASE) As i32
+        }
+
+        i64 B := Random() % BIG_NUMBER_BASE
+        BigNumber* Expected := A->Reference()->Multiply(new BigNumber(B))
+
+        BigNumber* Actual := BigNumber:WithDigits(NumberOfDigits + 1)
+        BigNumber:FastMultiplyBySingleDigit(A, B, Actual)
+
+        if (!Actual->Equals(Expected)) {
+            Print("%bn-rd * %i = %bn-rd, not %bn-rd\n", A, B, Expected, Actual)
+        }
+        else {
+            Print(".")
+        }
+
+        A->Release()
+        Expected->Release()
+        Actual->Release()
+
+        if (HadLeaks()) {
+            break
+        }
+    }
+}
+
 define void TestSmallDivide(i64 Iterations) {
     Print("\nTestSmallDivide:")
     for (i32 Index := 0, Index < Iterations, Index++) {
@@ -227,6 +297,12 @@ define i32 Main(i64 ArgC, i8** ArgV) {
         else if (StringEquals(Arg, "mul")) {
             TestMultiply(Iterations)
         }
+        else if (StringEquals(Arg, "smul")) {
+            TestMultiplyBySingleDigit(Iterations)
+        }
+        else if (StringEquals(Arg, "fsmul")) {
+            TestFastMultiplyBySingleDigit(Iterations)
+        }
         else if (StringEquals(Arg, "sqr")) {
             TestSquare(Iterations)
         }
@@ -242,6 +318,8 @@ define i32 Main(i64 ArgC, i8** ArgV) {
         else if (StringEquals(Arg, "all")) {
             TestSubtract(Iterations)
             TestMultiply(Iterations)
+            TestMultiplyBySingleDigit(Iterations)
+            TestFastMultiplyBySingleDigit(Iterations)
             TestSquare(Iterations)
             TestSmallDivide(Iterations)
             TestDivide(Iterations)
