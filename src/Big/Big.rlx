@@ -1,6 +1,6 @@
 #Require "$/Console.rlx"
 
-i64 BIG_NUMBER_BASE := 1000000 ;0x7FFF_FFFF
+i64 BIG_NUMBER_BASE := 16777216 ;16777216
 
 enum ComparisonResult {
     Less
@@ -76,13 +76,13 @@ struct BigNumber {
         }
         else if (this->ReferenceCount = 0) {
             if (this->Next) {
-                this->Next->pThis := this->pThis
+                ;this->Next->pThis := this->pThis
             }
 
-            *this->pThis := this->Next
+            ;*this->pThis := this->Next
 
             if (BIG_NUMBERS_TAIL = this~>Next) {
-                BIG_NUMBERS_TAIL := this->pThis
+                ;BIG_NUMBERS_TAIL := this->pThis
             }
 
             Free(this->Digits)
@@ -113,26 +113,30 @@ struct BigNumber {
         return this->Digits[--this->DigitCount]
     }
 
+    static void AVXCopyMemory(void* To, void* From, i64 Size) asm {
+        { 0x48, 0x83, 0xFA, 0x00, 0x74, 0x36, 0x48, 0x89, 0xD1, 0x48, 0xFF, 0xC9, 0x48, 0x01, 0xCE, 0x48, 0x01, 0xCF, 0x48, 0x89, 0xD1, 0x48, 0x83, 0xE1, 0x1F, 0xFD, 0xF3, 0xA4, 0xFC, 0x48, 0x89, 0xD1, 0x48, 0xC1, 0xF9, 0x05, 0x48, 0x83, 0xF9, 0x00, 0x74, 0x12, 0x48, 0x83, 0xEE, 0x20, 0x48, 0x83, 0xEF, 0x20, 0xC5, 0xFE, 0x6F, 0x0E, 0xC5, 0xFE, 0x7F, 0x0F, 0xE2, 0xEE, 0xC3 }
+    }
+
     define void Prepend(i32 SingleDigit) {
         i32 OldDigitCount := this->DigitCount
 
         this->Reserve(OldDigitCount + 1)
-        MoveMemory(&this->Digits[1], &this->Digits[0], OldDigitCount * 4)
+        self:AVXCopyMemory(&this->Digits[1], &this->Digits[0], OldDigitCount * 4)
 
         this->Digits[0] := SingleDigit
     }
 
     static self* Allocate() {
-        i32 TraceHeight := CaptureStackTraceHeight()
+        i32 TraceHeight := 0;CaptureStackTraceHeight()
         self* this := Alloc(#self + (TraceHeight * #StackFrame))
 
-        this~>AllocationTrace->Count := TraceHeight
-        CaptureStackTrace(this~>AllocationTrace)
+        ;this~>AllocationTrace->Count := TraceHeight
+        ;CaptureStackTrace(this~>AllocationTrace)
 
-        *BIG_NUMBERS_TAIL := this
-        this->pThis := BIG_NUMBERS_TAIL
+        ;*BIG_NUMBERS_TAIL := this
+        ;this->pThis := BIG_NUMBERS_TAIL
 
-        BIG_NUMBERS_TAIL := this~>Next
+        ;BIG_NUMBERS_TAIL := this~>Next
 
         this->ID := NEXT_BIG_NUMBER_ID++
 
@@ -462,10 +466,14 @@ struct BigNumber {
                 Borrow := 0
             }
 
+            ;Print("%i - %i - %i = %i\n", L, Borrow, R, Difference)
+
             Result->Digits[Index] := Difference As i32
         }
 
-        for (Index := Right->DigitCount, Index < Left->DigitCount, Index++) {
+        ;Print("Borrow: %i\n", Borrow)
+
+        for (i32 Index := Right->DigitCount, Index < Left->DigitCount, Index++) {
             i64 Difference := Left->Digits[Index] - Borrow
 
             if (Difference < 0) {
@@ -496,6 +504,92 @@ struct BigNumber {
         return self:BaseSubtract(Left, Right, Result)
     }
 
+    static BigNumber* FastBaseSubtract(BigNumber* Left, BigNumber* Right, BigNumber* Result) {
+        i64 Borrow := 0
+
+        asm (
+            rbx := 0x1_0000_0000 - Right->DigitCount,
+            rdi := Right->Digits,
+            rsi := Left->Digits,
+            rdx := Result->Digits,
+            r8 := &Borrow
+        ) {
+            clc
+            xor, eax, eax
+            mov, r15d, 16777216
+            mov, r12d, 1
+
+        EachDigit:
+            mov, r14d, {rsi[rcx * 4]} As i32*
+            sbb, r14d, {rdi[rcx * 4]} As i32*
+
+            { 0x0F, 0x92, 0xC0 } ; setc, a
+
+            mov, r13d, 0
+            cmovc, r13d, r15d
+
+            { 0xF3, 0x45, 0x0F, 0x38, 0xF6, 0xF5 } ; adox, r14d, r13d
+
+            mov, {rdx[rcx * 4]} As i32*, r14d
+
+            inc, rcx
+
+            { 0xF3, 0x41, 0x0F, 0x38, 0xF6, 0xDC } ; adox, ebx, r12d
+            jno, EachDigit
+
+            mov, {r8} As i32*, eax
+        }
+
+        ;Print("Bottor: %i\n", Borrow)
+
+        for (i32 Index := Right->DigitCount, Index < Left->DigitCount, Index++) {
+            i64 Difference := Left->Digits[Index] - Borrow
+
+            if (Difference < 0) {
+                Difference += BIG_NUMBER_BASE
+            }
+            else {
+                Result->Digits[Index++] := Difference As i32
+                break
+            }
+
+            Result->Digits[Index] := Difference As i32
+        }
+
+        while (Index < Left->DigitCount) {
+            Result->Digits[Index] := Left->Digits[Index]
+            Index++
+        }
+
+        Left->Release()
+        Right->Release()
+
+        return Result->Shrink()
+    }
+
+    static BigNumber* FastBaseSubtract(BigNumber* Left, BigNumber* Right) {
+        BigNumber* Result := BigNumber:WithDigits(Left->DigitCount)
+        
+        return self:FastBaseSubtract(Left, Right, Result)
+    }
+
+    static BigNumber* FastSubtract(BigNumber* Left, BigNumber* Right) {
+        if (Left->Negative != Right->Negative) {
+            return Left->Add(Right->Negate())
+        }
+
+        ComparisonResult Comparison := BigNumber:CompareAbsoluteValue(Left, Right)
+
+        if (Comparison = ComparisonResult::Equal || Comparison = ComparisonResult::Greater) {
+            return self:FastBaseSubtract(Left, Right)
+        }
+        else {
+            BigNumber* Result := self:FastBaseSubtract(Right, Left)
+            Result->Negative := !Left->Negative
+            return Result
+        }
+    }
+
     static BigNumber* Subtract(BigNumber* Left, BigNumber* Right) {
         if (Left->Negative != Right->Negative) {
             return Left->Add(Right->Negate())
@@ -504,10 +598,10 @@ struct BigNumber {
         ComparisonResult Comparison := BigNumber:CompareAbsoluteValue(Left, Right)
 
         if (Comparison = ComparisonResult::Equal || Comparison = ComparisonResult::Greater) {
-            return self:BaseSubtract(Left, Right)
+            return self:FastBaseSubtract(Left, Right)
         }
         else {
-            BigNumber* Result := self:BaseSubtract(Right, Left)
+            BigNumber* Result := self:FastBaseSubtract(Right, Left)
             Result->Negative := !Left->Negative
             return Result
         }
@@ -542,22 +636,20 @@ struct BigNumber {
 
         mov, r8, {p1 + BigNumber.Digits} As i64* ; Left->Digits
         mov, r9, {p3 + BigNumber.Digits} As i64* ; Result->Digits
+        
+        mov, r11, 16777216
 
     EachDigit:
         mov, r10d, {r8[rcx * 4]} As i32*
         imul, r10, p2
-        add, r10, rax ; (Digits[Index] * Right) + Carry
+        { 0xF3, 0x4C, 0x0F, 0x38, 0xF6, 0xD0 } ;adox, r10, rax ; (Digits[Index] * Right) + Carry
 
         mov, rax, r10
-        cqo
+        xor, rdx, rdx
 
-        mov, r11, 1000000
         idiv, r11 ; Carry := Product / BIG_NUMBER_BASE
 
-        imul, r11, rax ; BIG_NUMBER_BASE * Carry
-        sub, r10, r11 ; Product - (Carry * BIG_NUMBER_BASE)
-
-        mov, {r9[rcx * 4]} As i32*, r10d
+        mov, {r9[rcx * 4]} As i32*, edx
 
         inc, rcx
         cmp, rcx, rbx
@@ -567,8 +659,7 @@ struct BigNumber {
         cmp, rax, 0
         jz, End
 
-        mov, r11, 1000000
-        cqo
+        xor, rdx, rdx
         idiv, r11 ; Carry /= BIG_NUMBER_BASE
 
         mov, {r9[rcx * 4]} As i32*, edx
@@ -582,22 +673,42 @@ struct BigNumber {
         ret
     }
 
+    static i64 DivMod(i64 Dividend, i64 Divisor, i64* OutRemainder) asm {
+        push, rbp
+        mov, rbp, rsp
+
+        mov, r8, p3
+
+        mov, rax, p1
+        xor, rdx, rdx
+
+        idiv, p2
+
+        mov, {r8} As i64*, rdx
+
+        leave
+        ret
+    }
+
     static BigNumber* MultiplyBySingleDigit(BigNumber* Left, i64 Right, BigNumber* Result) {
         Result->Reserve(Left->DigitCount + 1)
 
         i64 Carry := 0
+        i64 Remainder := 0
 
         for (i32 Index := 0, Index < Left->DigitCount, Index++) {
             i64 Product := (Left->Digits[Index] * Right) + Carry
 
-            Carry := Product / BIG_NUMBER_BASE
+            Carry := self:DivMod(Product, BIG_NUMBER_BASE, &Remainder)
 
-            Result->Digits[Index] := (Product - (Carry * BIG_NUMBER_BASE)) As i32
+            Result->Digits[Index] := Remainder As i32
         }
 
         while (Carry) {
-            Result->Digits[Index++] := (Carry % BIG_NUMBER_BASE) As i32
-            Carry /= BIG_NUMBER_BASE
+            i64 Quotient := self:DivMod(Carry, BIG_NUMBER_BASE, &Remainder)
+
+            Result->Digits[Index++] := Remainder As i32
+            Carry := Quotient
         }
 
         Result->DigitCount := Index
@@ -755,6 +866,54 @@ struct BigNumber {
         return Quotient->Shrink()
     }
 
+    static i16 FNSTCW() asm {
+        xor, eax, eax
+        push, rax
+        { 0xD9, 0x3C, 0x24 } ; fnstcw WORD PTR [rsp]
+        pop, rax
+        ret
+    }
+
+    static void FLDCW(i16 Value) asm {
+        push, rdi
+        { 0xD9, 0x2C, 0x24 } ; fldcw WORD PTR [rsp]
+        pop, rdi
+        ret
+    }
+
+    static void FILD(i64 Value) asm {
+        push, rdi
+        { 0xDF, 0x2C, 0x24 } ; fild QWORD PTR [rsp]
+        pop, rdi
+        ret
+    }
+
+    static void FIMUL(i32 Value) asm {
+        push, rdi
+        { 0xDA, 0x0C, 0x24 } ; fimul DWORD PTR [rsp]
+        pop, rdi
+        ret
+    }
+
+    static void FIADD(i32 Value) asm {
+        push, rdi
+        { 0xDA, 0x04, 0x24 } ; fiadd DWORD PTR [rsp]
+        pop, rdi
+        ret
+    }
+
+    static void FDIVP() asm {
+        { 0xDE, 0xF9 } ; fdivp st(1), st(0)
+        ret
+    }
+
+    static i64 FISTP() asm {
+        push, rax
+        { 0xDF, 0x3C, 0x24 } ; fistp  QWORD PTR [rsp]
+        pop, rax
+        ret
+    }
+
     static BigNumber* DivideByGuessCheck(BigNumber* Dividend, BigNumber* Denominator, BigNumber** OutRemainder) {
         BigNumber* Result := BigNumber:WithDigits(0)
         BigNumber* Part := BigNumber:WithDigits(0)
@@ -786,9 +945,19 @@ struct BigNumber {
                 PartHigh += Part->Digits[PartLength - 2]
             }
 
+            self:FILD(PartHigh)
+
             if (PartLength > Denominator->DigitCount) {
                 PartHigh := (PartHigh + 1) * BIG_NUMBER_BASE
+
+                self:FIADD(1)
+                self:FIMUL(BIG_NUMBER_BASE As i32)
             }
+
+            self:FILD(DivisorHigh)
+            self:FDIVP()
+
+            i64 FPUGuess := self:FISTP()
 
             ;Print("PartHigh: %i, DivisorHigh: %i\n", PartHigh, DivisorHigh)
 
@@ -798,14 +967,20 @@ struct BigNumber {
                 Guess += 1
             }
 
+            Guess := FPUGuess
+
+            if (Guess != FPUGuess) {
+                ;Print("a %i, %i\n", Guess, FPUGuess)
+            }
+
             ;Print("Guess: %i\n", Guess)
 
             loop {
                 
-                /*
-                Check->Reserve(Denominator->DigitCount + 1)
+                ;/*
+                ;Check->Reserve(Denominator->DigitCount + 1)
                 ;Print("%bn-digits * %i =", Denominator, Guess)
-                self:FastMultiplyBySingleDigit(Denominator, Guess, Check)
+                ;self:FastMultiplyBySingleDigit(Denominator, Guess, Check)
                 ;Print("%bn-digits\n", Check)
                 ;*/
                 self:MultiplyBySingleDigit(Denominator, Guess, Check)
@@ -822,7 +997,8 @@ struct BigNumber {
             }
 
             Result->Push(Guess As i32)
-            Part := Part->Subtract(Check->Reference())
+            ;Part := Part->Subtract(Check->Reference())
+            self:FastBaseSubtract(Part->Reference(), Check->Reference(), Part)
             ;Print("New Part: %bn-digits\n", Part)
         }
 
@@ -1206,7 +1382,7 @@ struct BigNumber {
         for (i32 Index := 0, Index < BaseCount, Index++) {
             BigNumber* Base := Bases[Index]
 
-            Print("\nCheck N: %bn-rd, Base: %bn-rd\n", N, Base)
+            Print("\nCheck %i/%i: %bn-base-10, Base: %bn-base-10\n", Index, BaseCount, N, Base)
 
             if (N->IsLessThan(Base)) {
                 continue
@@ -1271,7 +1447,7 @@ struct BigNumber {
 
         BigNumber* Limit := BitCountLogN->Square()->Multiply(self:Constant(2))
 
-        Print("%bn-base-10 miller rabin limit: %bn-base-10\n", N, Limit)
+        ;Print("%bn-base-10 miller rabin limit: %bn-base-10\n", N, Limit)
 
         if (Limit->Shrink()->DigitCount != 1) {
             Print("PANIC!!! MILLER RABIN SUX!!!!!\n")
@@ -1400,6 +1576,12 @@ struct BigNumber {
         }
 
         self:InitializeMillerRabinShortcuts()
+
+        ; Set x87 FPU to round up
+        i32 CW := self:FNSTCW()
+        CW &= 0b111_1_00_11_1_1_1_1_1_1_1_1
+        CW |= 0b000_0_10_00_0_0_0_0_0_0_0_0
+        self:FLDCW(CW As i16)
 
         /*for (i32 Index := 0, Index < MILLER_RABIN_SHORTCUTS_COUNT, Index++) {
             BigNumberMillerRabinShortcut* Shortcut := MILLER_RABIN_SHORTCUTS[Index]

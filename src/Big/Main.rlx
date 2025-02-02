@@ -3,7 +3,44 @@
 
 #Require "./src/Table.rlx"
 
+define i64 SBB(i64 A, i64 B, i32* C) asm {
+   { 0x31, 0xC0, 0x19, 0xF7, 0x0F, 0x92, 0xC0, 0x89, 0x02, 0x48, 0x89, 0xF8, 0xC3 }
+}
+
 define i32 Main() {
+    ; 1053827034588979840 - 439389982947623109 = 614437051641356731, not 614437051640356731
+
+    ; [49753, 422863, 346302] - [115124, 166173, 88010] = [410624, 107426, 575656]
+
+    BigNumber* A := new BigNumber("1053827034588979840")
+    BigNumber* B := new BigNumber("439389982947623109")
+    BigNumber* R := BigNumber:FastBaseSubtract(A->Reference(), B->Reference())
+
+    BigNumber* Expected := new BigNumber("614437051641356731")
+
+    Print("Expecting: %bn-digits - %bn-digits = %bn-digits\n", A, B, Expected)
+
+    Print("%bn-base-10 - %bn-base-10 = %bn-base-10\n", A, B, R)
+    Print("%bn-digits\n", R)
+
+    BigNumber:BaseSubtract(A->Reference(), B->Reference())
+
+    if (R->Equals(Expected)) {
+        Print("Correct\n")
+    } else {
+        Print("Incorrect\n")
+    }
+
+    /*
+    i64 A := 1
+    i64 B := 1
+
+    i32 Br := 0
+    i64 R := SBB(A, B, &Br)
+
+    Print("%i - %i = %i (borrow %i)\n", A, B, (R As i32), Br)
+    */
+
     /*Table* T := new Table()
 
     T->DefineColumn("Name", "%s")->Align(ColumnAlignment::Right, '.')
@@ -41,6 +78,7 @@ define i32 Main() {
     }
     ;*/
 
+    /*
     BigNumber* A := new BigNumber("7341000402513752772839968579769700798139529526730564")
     BigNumber* B := new BigNumber("127612323123098120981293867")
 
@@ -50,6 +88,7 @@ define i32 Main() {
     BigNumber* Q := BigNumber:DivideByGuessCheck(A, B, &R)
 
     Print("%bn-base-10, %bn-base-10\n", Q, R)
+    ;*/
 
     /*
     BigNumber* N := new BigNumber("1999999999")
