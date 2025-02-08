@@ -3,10 +3,34 @@
 
 ; Freeze on ./build/Big/Prime.elf -d 12761232222
 
+i64 LFSR := 0xACE1
+
+define void InsecureFillRandom(void* RawBuffer, i32 Count) {
+    i8* Buffer := RawBuffer
+
+    for (i32 Index := 0, Index < Count, Index++) {
+        LFSR ^= LFSR << 13
+        LFSR ^= LFSR >> 7
+        LFSR ^= LFSR << 17
+
+        Buffer[Index] := (LFSR & 0xFF) As i8
+    }
+}
+
+i64 DevURandom := 0
+
+define void SecureFillRandom(void* Buffer, i32 Count) {
+    FileRead(DevURandom, Buffer, Count)
+}
+
 define i32 Main(i64 ArgC, i8** ArgV) {
     i8 Deterministic := false
+    i8 Random := false
+    i32 BitCount := 256
     i64 Count := 1
     BigNumber* Current := null
+
+    void(void*, i32) FillRandom := &InsecureFillRandom
 
     for (i32 Index := 1, Index < ArgC, Index++) {
         i8* Arg := ArgV[Index]
@@ -17,26 +41,88 @@ define i32 Main(i64 ArgC, i8** ArgV) {
         else if (StringEquals(Arg, "-d") || StringEquals(Arg, "--deterministic")) {
             Deterministic := true
         }
+        else if (StringEquals(Arg, "-r") || StringEquals(Arg, "--random")) {
+            Random := true
+            BitCount := AToI(ArgV[++Index]) As i32
+        }
+        else if (StringEquals(Arg, "-s") || StringEquals(Arg, "--secure")) {
+            DevURandom := FileOpen("/dev/urandom", FILE_READ)
+            FillRandom := &SecureFillRandom
+        }
         else {
             Current := new BigNumber(Arg)
         }
     }
 
-    Print("First %i primes after %bn-base-10:\n", Count, Current)
-    Print("Deterministic: %i\n", Deterministic)
+    if (Current) {
+        Print("First %i primes after %bn-base-10:\n", Count, Current)
+        Print("Deterministic: %i\n", Deterministic)
 
-    if (Current->IsEven()) {
-        Current->_Increment(1)
+        if (Current->IsEven()) {
+            Current->_Increment(1)
+        }
+    }
+    else {
+        i32 Bytes := BitCount / 8
+        i32 Digits := Bytes / 3
+
+        if (Bytes % 3) {
+            Digits++
+        }
+
+        Print("%i bits = %i bytes = %i digits\n", BitCount, Bytes, Digits)
+
+        Current := BigNumber:WithDigits(Digits * 2)
     }
 
     if (Deterministic) {
-        while (Count) {
-            if (BigNumber:DeterministicMillerRabinTest(Current)) {
-                Print("%bn-base-10\n", Current)
-                Count--
-            }
+        if (Random) {
+            while (Count) {
+                ;FastZeroMemory(Current->Digits, Current->DigitCapacity * 4)
+                
+                i32 Bytes := BitCount / 8
+                i32 FullDigits := Bytes / 3
+                i32 Remainder := Bytes % 3
 
-            Current->_Increment(2)
+                Current->DigitCount := Digits
+
+                for (i32 Index := 0, Index < FullDigits, Index++) {
+                    i32 Value := 0
+                    FillRandom(&Value, 3)
+
+                    Current->Digits[Index] := Value
+
+                    ;Print("Digit %i: %i\n", Index, Value)
+                }
+
+                if (Remainder) {
+                    i32 Value := 0
+                    FillRandom(&Value, Remainder)
+                    
+                    Current->Digits[Index++] := Value
+
+                    ;Print("Digit %i: %i\n", Index, Value)
+                }
+
+                Current->DigitCount := Index
+
+                Print("Trying %bn-base-10\n", Current)
+
+                if (BigNumber:DeterministicMillerRabinTest(Current)) {
+                    Print("\n%bn-base-10 is prime\n", Current)
+                    Count--
+                }
+            }
+        }
+        else {
+            while (Count) {
+                if (BigNumber:DeterministicMillerRabinTest(Current)) {
+                    Print("%bn-base-10\n", Current)
+                    Count--
+                }
+
+                Current->_Increment(2)
+            }
         }
     }
     else {

@@ -8,10 +8,27 @@ define i64 SBB(i64 A, i64 B, i32* C) asm {
 }
 
 define i32 Main() {
+
+    BigNumber* N := new BigNumber(3123)
+    BigNumber* M := new BigNumber(266666)
+
+    BigNumber* R := BigNumber:ModularInverse(N->Reference(), M->Reference())
+
+    Print("modinv(%bn-base-10, %bn-base-10) = %bn-base-10\n", N, M, R)
+
+    N->Release()
+    M->Release()
+    R->Release()
+
+    ;BigNumber* N := new BigNumber("99999999999999999999")
+
+    ;Print("φ(%bn-base-10) = %bn-base-10\n", N, BigNumber:EulerTotient(N->Reference()))
+
     ; 1053827034588979840 - 439389982947623109 = 614437051641356731, not 614437051640356731
 
     ; [49753, 422863, 346302] - [115124, 166173, 88010] = [410624, 107426, 575656]
 
+    /*
     BigNumber* A := new BigNumber("1053827034588979840")
     BigNumber* B := new BigNumber("439389982947623109")
     BigNumber* R := BigNumber:FastBaseSubtract(A->Reference(), B->Reference())
@@ -30,6 +47,7 @@ define i32 Main() {
     } else {
         Print("Incorrect\n")
     }
+    ;*/
 
     /*
     i64 A := 1

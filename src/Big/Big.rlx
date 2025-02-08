@@ -75,15 +75,17 @@ struct BigNumber {
             *null := 0
         }
         else if (this->ReferenceCount = 0) {
+            ;ENABLE_GC/*
             if (this->Next) {
-                ;this->Next->pThis := this->pThis
+                this->Next->pThis := this->pThis
             }
 
-            ;*this->pThis := this->Next
+            *this->pThis := this->Next
 
             if (BIG_NUMBERS_TAIL = this~>Next) {
-                ;BIG_NUMBERS_TAIL := this->pThis
+                BIG_NUMBERS_TAIL := this->pThis
             }
+            ;*/
 
             Free(this->Digits)
             Free(this)
@@ -127,16 +129,21 @@ struct BigNumber {
     }
 
     static self* Allocate() {
-        i32 TraceHeight := 0;CaptureStackTraceHeight()
+        i32 TraceHeight := 0
+        ;ENABLE_GC/*
+        + CaptureStackTraceHeight()
+        ;*/
         self* this := Alloc(#self + (TraceHeight * #StackFrame))
 
-        ;this~>AllocationTrace->Count := TraceHeight
-        ;CaptureStackTrace(this~>AllocationTrace)
+        ;ENABLE_GC/*
+        this~>AllocationTrace->Count := TraceHeight
+        CaptureStackTrace(this~>AllocationTrace)
 
-        ;*BIG_NUMBERS_TAIL := this
-        ;this->pThis := BIG_NUMBERS_TAIL
+        *BIG_NUMBERS_TAIL := this
+        this->pThis := BIG_NUMBERS_TAIL
 
-        ;BIG_NUMBERS_TAIL := this~>Next
+        BIG_NUMBERS_TAIL := this~>Next
+        ;*/
 
         this->ID := NEXT_BIG_NUMBER_ID++
 
@@ -1382,10 +1389,22 @@ struct BigNumber {
         for (i32 Index := 0, Index < BaseCount, Index++) {
             BigNumber* Base := Bases[Index]
 
-            Print("\nCheck %i/%i: %bn-base-10, Base: %bn-base-10\n", Index, BaseCount, N, Base)
+            Print("Check %i/%i: %bn-base-10, Base: %bn-base-10\n", Index, BaseCount, N, Base, 0xd)
 
             if (N->IsLessThan(Base)) {
                 continue
+            }
+
+            if (Base->DigitCount = 1) {
+                BigNumber* Remainder := null
+                BigNumber* Q := self:DivideBySingleDigit(N->Reference(), Base->Digits[0], &Remainder)
+
+                if (Remainder->IsZero()) {
+                    Q->Release()
+                    Remainder->Release()
+
+                    return false
+                }
             }
 
             ;Print("pow(%bn-rd, %bn-rd, %bn-rd) ", Base, B, N)
@@ -1442,6 +1461,10 @@ struct BigNumber {
     }
 
     static i8 DeterministicMillerRabinTest(BigNumber* N) {
+        if (N->IsEven()) {
+            return false
+        }
+
         BigNumber* BitCount := N->Reference()->Logarithm(self:Constant(2))->Add(self:One())
         BigNumber* BitCountLogN := BitCount->Quotient(self:Constant(3))
 
@@ -1460,7 +1483,7 @@ struct BigNumber {
         Limit->Release()
 
         for (i32 Index := 0, Index < BaseCount, Index++) {
-            Bases[Index] := new BigNumber(Index + 2)
+            Bases[Index] := new BigNumber(Index + 3)
         }
 
         i8 Result := self:MillerRabinTest(N, Bases, BaseCount)
@@ -1566,6 +1589,87 @@ struct BigNumber {
 
         return false
     }
+
+    static BigNumber* GreatestCommonDivisor(BigNumber* A, BigNumber* B) {
+        while (B->IsNotZero()) {
+            BigNumber* Temp := A->Remainder(B->Reference())
+            A := B
+            B := Temp
+        }
+
+        return A
+    }
+
+    static BigNumber* EulerTotient(BigNumber* N) {
+        BigNumber* Result := new self(N)
+        BigNumber* Index := self:Constant(2)
+
+        loop {
+            if (Index->Reference()->Square()->IsGreaterThan(N)) {
+                break
+            }
+
+            if (N->DivisibleBy(Index)) {
+                while (N->DivisibleBy(Index)) {
+                    N := N->Quotient(Index->Reference())
+                }
+
+                Result := Result->Subtract(Result->Reference()->Quotient(Index->Reference()))
+            }
+
+            Index := Index->Add(self:One())
+        }
+
+        if (N->IsGreaterThan(self:One())) {
+            Result := Result->Subtract(Result->Reference()->Quotient(N))
+        }
+
+        return Result
+    }
+
+    static BigNumber* LeastCommonMultiple(BigNumber* A, BigNumber* B) {
+        return A->Reference()->Multiply(B)->Quotient(self:GreatestCommonDivisor(A, B))
+    }
+
+    static BigNumber* ModularInverse(BigNumber* N, BigNumber* M) {
+        BigNumber* T := self:Zero()
+        BigNumber* NewT := self:One()
+
+        BigNumber* R := M->Reference()
+        BigNumber* NewR := N->Reference()
+
+        while (NewR->IsNotZero()) {
+            Print("Before: T: %bn-base-10, NewT: %bn-base-10, R: %bn-base-10, NewR: %bn-base-10\n", T, NewT, R, NewR)
+
+            BigNumber* Quotient := R->Reference()->Quotient(NewR->Reference())
+
+            Print("Quotient: %bn-base-10\n", Quotient)
+
+            BigNumber* Temp := T
+            T := NewT->Reference()
+            NewT := Temp->Subtract(Quotient->Reference()->Multiply(NewT))
+            
+            BigNumber* Temp := R
+            R := NewR->Reference()
+            NewR := Temp->Subtract(Quotient->Multiply(NewR))
+
+            Print("After: T: %bn-base-10, NewT: %bn-base-10, R: %bn-base-10, NewR: %bn-base-10\n", T, NewT, R, NewR)
+        }
+
+        if (T->IsZero()) {
+            T := T->Add(M)
+        }
+
+        NewT->Release()
+        R->Release()
+        NewR->Release()
+
+        N->Release()
+        M->Release()
+
+        return T
+    }
+    
 
     static i8 Initialize() {
         FIRST_BIG_NUMBER := null
