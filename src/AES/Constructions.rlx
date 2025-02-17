@@ -358,3 +358,315 @@ struct AES_CTR {
         this->EncryptBytes(0, Data, Size)
     }
 }
+
+struct AES_GCM_FinalBlock {
+    union {
+        struct {
+            i64 AuthenticatedDataLength
+            i64 PlainTextLength
+        }
+
+        i8[16] Bytes
+    }
+}
+
+#Require "./src/Endianess.rlx"
+
+struct AES_GCM {
+    AESBlockCipher* AES
+
+    i64 AuthenticatedDataLength
+    i64 PlainTextLength
+
+    i8[16] H
+    i8[16] Y0
+
+    union {
+        i8[16] Y
+
+        struct {
+            i8[12] _
+            i32 YCounter
+        }
+    }
+
+    i8[16] AuthenticationHash
+
+    static self* New(AESKeySize KeySize) {
+        self* this := Alloc(#self)
+
+        this->AES := new AESBlockCipher(KeySize)
+
+        return this
+    }
+
+    define void SetKey(void* Key) {
+        this->AES->SetKey(Key)
+        this->AES->EncryptBlock(this->H)
+
+        ;Print("h %dump", this->H, 16)
+    }
+
+    define void Xor(void* Left, void* Right) {
+        i8* LeftBytes := Left
+        i8* RightBytes := Right
+
+        for (i32 Index := 0, Index < 16, Index++) {
+            LeftBytes[Index] ^= RightBytes[Index]
+        }
+    }
+
+    define void RSH(void* Block) {
+        i8* Bytes := Block
+        i32 Carry := 0
+
+        for (i32 Index := 0, Index < 16, Index++) {
+            i8 Value := Bytes[Index]
+
+            if (Carry) {
+                Bytes[Index] := ((Value >> 1) | 0x80) As i8
+            }
+            else {
+                Bytes[Index] := (Value >> 1) As i8
+            }
+
+            Carry := Value & 1
+        }
+    }
+
+    define void GF128Multiply(void* RawX, void* RawY, void* Out) {
+        i8* X := RawX
+
+        i8[16] Z
+        FastZeroMemory(Z, 16)
+
+        i8[16] V
+        MoveMemory(V, RawY, 16)
+
+        for (i32 Index := 0, Index < 128, Index++) {
+            i32 ByteIndex := Index / 8
+            i32 BitIndex := Index % 8
+
+            i32 XAtIndex := (X[ByteIndex] >> (8 - BitIndex - 1)) & 1
+
+            if (XAtIndex = 1) {
+                this->Xor(Z, V)
+            }
+
+            i32 LSBV := V[15] & 0x1
+
+            this->RSH(V)
+
+            if (LSBV != 0) {
+                V[0] ^= 0xE1 As i8
+            }
+        }
+
+        MoveMemory(Out, Z, 16)
+    }
+
+    define void SetIV(void* IV, i32 Size) {
+        if (Size = 12) {
+            MoveMemory(this->Y, IV, 12)
+            this->Y[15] := 1
+        }
+        else {
+            i32 FullBlocks := Size / 16
+            i32 Remainder := Size % 16
+
+            for (i32 BlockIndex := 0, BlockIndex < FullBlocks, BlockIndex++) {
+                i8* Block := IV + (BlockIndex * 16)
+
+                this->Xor(this->Y, Block)
+                this->GF128Multiply(this->Y, this->H, this->Y)
+            }
+
+            if (Remainder) {
+                i8* RemainderBytes := IV + (BlockIndex * 16)
+
+                for (i32 Index := 0, Index < Remainder, Index++) {
+                    this->Y[Index] ^= RemainderBytes[Index]
+                }
+
+                this->GF128Multiply(this->Y, this->H, this->Y)
+            }
+
+            ;Print("Y XOR iv: %dump\n", this->Y, 16)
+
+            i32[4] LastBlock
+            FastZeroMemory(LastBlock, 16)
+            LastBlock[3] := NetworkInt(Size * 8)
+
+            ;Print("Final ctx->y: %dump\n", this->Y, 16)
+            ;Print("LastBlock: %dump\n", LastBlock, 16)
+
+            this->Xor(this->Y, LastBlock)
+            this->GF128Multiply(this->Y, this->H, this->Y)
+        }
+
+        ;Print("ctx->y %dump\n", this->Y, 16)
+
+        MoveMemory(this->Y0, this->Y, 16)
+        this->AES->EncryptBlock(this->Y0)
+
+        ;Print("ctx->y0 %dump\n", this->Y0, 16)
+    }
+
+    define void AuthenticateBlock(void* Block) {
+        this->Xor(this->AuthenticationHash, Block)
+        this->GF128Multiply(this->AuthenticationHash, this->H, this->AuthenticationHash)
+
+        this->AuthenticatedDataLength += 128
+    }
+
+    define void AuthenticateBytes(i8* Data, i32 Size) {
+        i32 FullBlocks := Size / 16
+        i32 Remainder := Size % 16
+
+        for (i32 Index := 0, Index < FullBlocks, Index++) {
+            this->AuthenticateBlock(Data + (Index * 16))
+        }
+
+        if (Remainder) {
+            i8* RemainderBytes := Data + (Index * 16)
+
+            for (i32 Index := 0, Index < Remainder, Index++) {
+                this->AuthenticationHash[Index] ^= RemainderBytes[Index]
+            }
+
+            this->GF128Multiply(this->AuthenticationHash, this->H, this->AuthenticationHash)
+
+            this->AuthenticatedDataLength += Remainder * 8
+        }
+    }
+
+    define void CryptBlock(i8 Encrypt, void* Block, i32 BlockSize) {
+        i8* BlockBytes := Block
+
+        this->YCounter := NetworkInt(NetworkInt(this->YCounter) + 1)
+
+        ;Print("y %dump", this->Y, 16)
+
+        i8[16] CodeBlock
+        MoveMemory(CodeBlock, this->Y, 16)
+
+        this->AES->EncryptBlock(CodeBlock)
+
+        ;Print("ectr %dump", CodeBlock, 16)
+
+        if (Encrypt) {
+            for (i32 Index := 0, Index < BlockSize, Index++) {
+                BlockBytes[Index] ^= CodeBlock[Index]
+                this->AuthenticationHash[Index] ^= BlockBytes[Index]
+            }
+        }
+        else {
+            for (i32 Index := 0, Index < BlockSize, Index++) {
+                this->AuthenticationHash[Index] ^= BlockBytes[Index]
+                BlockBytes[Index] ^= CodeBlock[Index]
+            }
+        }
+
+        ;Print("Before Times H: %dump", this->AuthenticationHash, 16)
+
+        this->GF128Multiply(this->AuthenticationHash, this->H, this->AuthenticationHash)
+
+        ;Print("After Times H: %dump", this->AuthenticationHash, 16)
+
+        this->PlainTextLength += BlockSize * 8
+    }
+
+    define void EncryptBlock(void* Block, i32 BlockSize) {
+        this->CryptBlock(true, Block, BlockSize)
+    }
+    define void EncryptBlock(void* Block) {
+        this->CryptBlock(true, Block, 16)
+    }
+
+    define void EncryptBytes(i8* Data, i32 Size) {
+        i32 FullBlocks := Size / 16
+        i32 Remainder := Size % 16
+
+        for (i32 Index := 0, Index < FullBlocks, Index++) {
+            this->EncryptBlock(Data + (Index * 16))
+        }
+
+        if (Remainder) {
+            i8* RemainderBytes := Data + (Index * 16)
+
+            this->EncryptBlock(RemainderBytes, Remainder)
+        }
+    }
+
+    define void DecryptBlock(void* Block, i32 BlockSize) {
+        this->CryptBlock(false, Block, BlockSize)
+    }
+    define void DecryptBlock(void* Block) {
+        this->CryptBlock(false, Block, 16)
+    }
+
+    define void DecryptBytes(i8* Data, i32 Size) {
+        i32 FullBlocks := Size / 16
+        i32 Remainder := Size % 16
+
+        for (i32 Index := 0, Index < FullBlocks, Index++) {
+            this->DecryptBlock(Data + (Index * 16))
+        }
+
+        if (Remainder) {
+            i8* RemainderBytes := Data + (Index * 16)
+
+            this->DecryptBlock(RemainderBytes, Remainder)
+        }
+    }
+
+    define void CalculateTag(void* RawTag, i32 Size) {
+        i8* Tag := RawTag
+        MoveMemory(Tag, this->Y0, Size)
+
+        Print("Finish %i, %i\n", this->AuthenticatedDataLength, this->PlainTextLength)
+        Print("Y0: %dump\n", this->Y0, 16)
+
+        if (this->AuthenticatedDataLength != 0 || this->PlainTextLength != 0) {
+            i64[2] FinalBlock {
+                NetworkLong(this->AuthenticatedDataLength),
+                NetworkLong(this->PlainTextLength)
+            }
+
+            ;Print("Final Block: %dump", &FinalBlock, 16)
+
+            this->Xor(this->AuthenticationHash, &FinalBlock)
+
+            ;Print("Auth Hash Before: %dump", this->AuthenticationHash, 16)
+            this->GF128Multiply(this->AuthenticationHash, this->H, this->AuthenticationHash)
+            ;Print("Auth Hash After: %dump", this->AuthenticationHash, 16)
+            
+            for (i32 Index := 0, Index < Size, Index++) {
+                ;Print("%B XOR %B = %B\n", Tag[Index], this->AuthenticationHash[Index], Tag[Index] ^ this->AuthenticationHash[Index])
+                Tag[Index] ^= this->AuthenticationHash[Index]
+            }
+        }
+    }
+}
+
+define void DoPrintDump(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+    i8* Buffer := Parameters[*ParameterIndex] As void*
+    i32 Size := Parameters[*ParameterIndex + 1] As i32
+
+    for (i32 Index := 0, Index < Size, Index++) {
+        this->Print("%B", Buffer[Index])
+
+        if (Index + 1 != Size) {
+            this->Print(" ")
+        }
+    }
+
+    *ParameterIndex += 2
+}
+
+PrintFormatPrototype DumpPrintPrototype {
+    Name: "dump",
+    Format: &DoPrintDump
+}
+
+i32 DUMP_PRINT_PROTOTYPE_ID := AddPrintFormat(&DumpPrintPrototype)
