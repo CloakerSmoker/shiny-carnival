@@ -29,7 +29,7 @@ clean-all: clean
 	-rm -f $(CLEAN_FILES)
 
 depend dep deps:
-	-rm -f $(BUILD)/*.d
+	-rm -f $(DEPS)
 	$(MAKE) secret-internal-deps
 
 build: $(BINARY)

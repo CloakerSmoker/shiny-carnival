@@ -107,6 +107,32 @@ struct Table {
         }
     }
 
+    define void Clear() {
+        for (i32 RowIndex := 0, RowIndex < this->Rows->Count(), RowIndex++) {
+            TableRow* Row := this->Rows->At(RowIndex)
+
+            for (i32 ColumnIndex := 0, ColumnIndex < Row->Columns->Count(), ColumnIndex++) {
+                TableColumn* Column := this->Columns->At(ColumnIndex)
+                i8* Formatted := Row->ColumnsFormatted->At(ColumnIndex)
+
+                Free(Formatted)
+            }
+
+            Row->Columns->Free()
+            Row->ColumnsFormatted->Free()
+
+            Free(Row)
+        }
+
+        this->Rows->Clear()
+
+        for (i32 ColumnIndex := 0, ColumnIndex < this->Columns->Count(), ColumnIndex++) {
+            TableColumn* Column := this->Columns->At(ColumnIndex)
+            
+            Column->MaxLength := StringLength(Column->Name)
+        }
+    }
+
     define void Print(PrintOutputAdapterPrototype* Out) {
         Out->Print("|")
 

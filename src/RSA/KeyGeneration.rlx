@@ -1,0 +1,46 @@
+
+struct RSAKeyPair {
+    ; In
+    BigInteger* P
+    BigInteger* Q
+
+    ; Out
+    BigInteger* N
+    BigInteger* LambdaN
+    BigInteger* E
+    BigInteger* D
+
+    define BigInteger* Encrypt(BigInteger* Message) {
+        return BigInteger:PowerModulo(Message, this->E->Reference(), this->N->Reference())
+    }
+
+    define BigInteger* Decrypt(BigInteger* Cipher) {
+        return BigInteger:PowerModulo(Cipher, this->D->Reference(), this->N->Reference())
+    }
+}
+
+
+
+struct RSAKeyGenerator {
+
+    static RSAKeyPair* GenerateKeysFromPrimes(BigInteger* P, BigInteger* Q, BigInteger* E) {
+        RSAKeyPair* Result := Alloc(#RSAKeyPair)
+
+        Result->P := P
+        Result->Q := Q
+
+        Result->N := P->Reference()->Multiply(Q->Reference())
+
+        BigInteger* PM1 := P->Reference()->Subtract(BigInteger:One())
+        BigInteger* QM1 := Q->Reference()->Subtract(BigInteger:One())
+
+        Result->LambdaN := BigInteger:LeastCommonMultiple(PM1, QM1)
+
+        Result->E := E
+
+        Result->D := BigInteger:ModularInverse(E->Reference(), Result->LambdaN->Reference())
+
+        return Result
+    }
+
+}
