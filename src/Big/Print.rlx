@@ -1,5 +1,5 @@
-define void DoPrintBigNumberDigits(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
-	BigNumber* N := Parameters[*ParameterIndex] As void*
+define void DoPrintBigIntegerDigits(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+	BigInteger* N := Parameters[*ParameterIndex] As void*
 
     if (N->Negative) {
         this->Print("-")
@@ -21,16 +21,16 @@ define void DoPrintBigNumberDigits(PrintOutputAdapterPrototype* this, i8* Format
 	*ParameterIndex += 1
 }
 
-PrintFormatPrototype BigNumberDigitsPrintPrototype {
+PrintFormatPrototype BigIntegerDigitsPrintPrototype {
 	Name: "bn-digits",
-	Format: &DoPrintBigNumberDigits
+	Format: &DoPrintBigIntegerDigits
 }
 
-i32 BIG_NUMBER_DIGITS_PRINT_PROTOTYPE_ID := AddPrintFormat(&BigNumberDigitsPrintPrototype)
+i32 BIG_NUMBER_DIGITS_PRINT_PROTOTYPE_ID := AddPrintFormat(&BigIntegerDigitsPrintPrototype)
 
 
-define void DoPrintBigNumberRawDigits(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
-	BigNumber* N := Parameters[*ParameterIndex] As void*
+define void DoPrintBigIntegerRawDigits(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+	BigInteger* N := Parameters[*ParameterIndex] As void*
 
     if (N->Negative) {
         this->Print("-")
@@ -43,15 +43,15 @@ define void DoPrintBigNumberRawDigits(PrintOutputAdapterPrototype* this, i8* For
 	*ParameterIndex += 1
 }
 
-PrintFormatPrototype BigNumberRawDigitsPrintPrototype {
+PrintFormatPrototype BigIntegerRawDigitsPrintPrototype {
 	Name: "bn-rd",
-	Format: &DoPrintBigNumberRawDigits
+	Format: &DoPrintBigIntegerRawDigits
 }
 
-i32 BIG_NUMBER_RAW_DIGITS_PRINT_PROTOTYPE_ID := AddPrintFormat(&BigNumberRawDigitsPrintPrototype)
+i32 BIG_NUMBER_RAW_DIGITS_PRINT_PROTOTYPE_ID := AddPrintFormat(&BigIntegerRawDigitsPrintPrototype)
 
 
-define void DoPrintBigNumberBase(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+define void DoPrintBigIntegerBase(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
     i32 FormatLength := StringLength(Format)
     i32 Index := 1 + *FormatIndex
 
@@ -64,8 +64,8 @@ define void DoPrintBigNumberBase(PrintOutputAdapterPrototype* this, i8* Format, 
 
     *FormatIndex := Index - 1
 
-    BigNumber* N := Parameters[*ParameterIndex] As void*
-    BigNumber* Base := new BigNumber(RawBase)
+    BigInteger* N := Parameters[*ParameterIndex] As void*
+    BigInteger* Base := new BigInteger(RawBase)
 
     *ParameterIndex += 1
 
@@ -76,10 +76,10 @@ define void DoPrintBigNumberBase(PrintOutputAdapterPrototype* this, i8* Format, 
 
     i8* Buffer := Alloc((35 - RawBase) * N->DigitCount)
 
-    BigNumber* Value := N->Reference()->AbsoluteValue()
+    BigInteger* Value := N->Reference()->AbsoluteValue()
 
     for (i32 Index := 0, Value->IsNotZero(), Index++) {
-        BigNumber* Remainder := null
+        BigInteger* Remainder := null
         Value := Value->Divide(Base->Reference(), &Remainder)
 
         Buffer[Index] := NumberToCharacter(Remainder->Digits[0] As i8)
@@ -97,9 +97,9 @@ define void DoPrintBigNumberBase(PrintOutputAdapterPrototype* this, i8* Format, 
     this->DoPrintCharacters(Buffer, Index)
 }
 
-PrintFormatPrototype BigNumberBasePrintPrototype {
+PrintFormatPrototype BigIntegerBasePrintPrototype {
 	Name: "bn-base-",
-	Format: &DoPrintBigNumberBase
+	Format: &DoPrintBigIntegerBase
 }
 
-i32 BIG_NUMBER_BASE_PRINT_PROTOTYPE_ID := AddPrintFormat(&BigNumberBasePrintPrototype)
+i32 BIG_NUMBER_BASE_PRINT_PROTOTYPE_ID := AddPrintFormat(&BigIntegerBasePrintPrototype)

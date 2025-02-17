@@ -7,40 +7,79 @@ define i64 SBB(i64 A, i64 B, i32* C) asm {
    { 0x31, 0xC0, 0x19, 0xF7, 0x0F, 0x92, 0xC0, 0x89, 0x02, 0x48, 0x89, 0xF8, 0xC3 }
 }
 
+#Require "./src/RSA/KeyGeneration.rlx"
+
 define i32 Main() {
+    ;/*
+    BigInteger* P := new BigInteger("619635984729372447118300487568059259052474619472922154148886554136678691756244961931327882031414823591094788466456121560589628950421213571506594351798489175181850380600294221801960719309375370395017181245218003085938786640219945884016061368401746583003897082584448066915423334488550230937927318396483409")
+    BigInteger* Q := new BigInteger("416180308296263639300566898312198413942838743998982999898329498283373190036094915315962279726986683209254254217319957426419068120744982832937724288953561035509913701064035501427426560430191753839967867448611580252307096988443656120610223064032727450824748684277687444690777920625852619397850736083098477")
+    BigInteger* E := new BigInteger("65537")
 
-    BigNumber* N := new BigNumber(3123)
-    BigNumber* M := new BigNumber(266666)
+    RSAKeyPair* Keys := RSAKeyGenerator:GenerateKeysFromPrimes(P, Q, E)
 
-    BigNumber* R := BigNumber:ModularInverse(N->Reference(), M->Reference())
+    P->Release()
+    Q->Release()
+    E->Release()
+
+    Print("N: %bn-base-10\n", Keys->N)
+    Print("LambdaN: %bn-base-10\n", Keys->LambdaN)
+    Print("E: %bn-base-10\n", Keys->E)
+    Print("D: %bn-base-10\n", Keys->D)
+
+    BigInteger* M := new BigInteger("65")
+
+    BigInteger* C := Keys->Encrypt(M->Reference())
+    BigInteger* P := Keys->Decrypt(C->Reference())
+
+    Print("M -> C -> P: %bn-base-10 -> %bn-base-10 -> %bn-base-10\n", M, C, P)
+
+    M->Release()
+    C->Release()
+    P->Release()
+
+    Keys->N->Release()
+    Keys->LambdaN->Release()
+    Keys->E->Release()
+    Keys->D->Release()
+    ;*/
+
+
+    /*
+    BigInteger* N := new BigInteger(3123)
+    BigInteger* M := new BigInteger(266666)
+
+    BigInteger* R := BigInteger:ModularInverse(N, M)
+
+    Print("%i, %i\n", N->ReferenceCount, M->ReferenceCount)
 
     Print("modinv(%bn-base-10, %bn-base-10) = %bn-base-10\n", N, M, R)
 
     N->Release()
     M->Release()
     R->Release()
+    ;*/
 
-    ;BigNumber* N := new BigNumber("99999999999999999999")
+    ;BigInteger* N := new BigInteger("99999999999999999999")
 
-    ;Print("φ(%bn-base-10) = %bn-base-10\n", N, BigNumber:EulerTotient(N->Reference()))
+    ;Print("φ(%bn-base-10) = %bn-base-10\n", N, BigInteger:EulerTotient(N->Reference()))
 
     ; 1053827034588979840 - 439389982947623109 = 614437051641356731, not 614437051640356731
 
     ; [49753, 422863, 346302] - [115124, 166173, 88010] = [410624, 107426, 575656]
 
     /*
-    BigNumber* A := new BigNumber("1053827034588979840")
-    BigNumber* B := new BigNumber("439389982947623109")
-    BigNumber* R := BigNumber:FastBaseSubtract(A->Reference(), B->Reference())
+    BigInteger* A := new BigInteger("1053827034588979840")
+    BigInteger* B := new BigInteger("439389982947623109")
+    BigInteger* R := BigInteger:FastBaseSubtract(A->Reference(), B->Reference())
 
-    BigNumber* Expected := new BigNumber("614437051641356731")
+    BigInteger* Expected := new BigInteger("614437051641356731")
 
     Print("Expecting: %bn-digits - %bn-digits = %bn-digits\n", A, B, Expected)
 
     Print("%bn-base-10 - %bn-base-10 = %bn-base-10\n", A, B, R)
     Print("%bn-digits\n", R)
 
-    BigNumber:BaseSubtract(A->Reference(), B->Reference())
+    BigInteger:BaseSubtract(A->Reference(), B->Reference())
 
     if (R->Equals(Expected)) {
         Print("Correct\n")
@@ -72,22 +111,22 @@ define i32 Main() {
 
     Print("%table\n", T)*/
 
-    /*BigNumber* N := new BigNumber("12")
-    BigNumber* D := new BigNumber("5")
+    /*BigInteger* N := new BigInteger("12")
+    BigInteger* D := new BigInteger("5")
 
-    BigNumber* R := null
-    BigNumber* Q := BigNumber:DivideByGuessCheck(N, D, &R)
+    BigInteger* R := null
+    BigInteger* Q := BigInteger:DivideByGuessCheck(N, D, &R)
 
     Print("%bn-rd / %bn-rd = %bn-rd (r %bn-rd)\n", N, D, Q, R)*/
 
     /*
-    BigNumber* N := new BigNumber("2000000000")
+    BigInteger* N := new BigInteger("2000000000")
     i32 PrimeCount := 0
 
     Print("Primes from %bn-base-10:\n", N)
 
     while (PrimeCount < 8000) {
-        if (BigNumber:IsPrime(N)) {
+        if (BigInteger:IsPrime(N)) {
             Print("%bn-base-10 ", N)
             PrimeCount++
         }
@@ -97,24 +136,24 @@ define i32 Main() {
     ;*/
 
     /*
-    BigNumber* A := new BigNumber("7341000402513752772839968579769700798139529526730564")
-    BigNumber* B := new BigNumber("127612323123098120981293867")
+    BigInteger* A := new BigInteger("7341000402513752772839968579769700798139529526730564")
+    BigInteger* B := new BigInteger("127612323123098120981293867")
 
     Print("%bn-digits / %bn-digits\n", A, B)
 
-    BigNumber* R := null
-    BigNumber* Q := BigNumber:DivideByGuessCheck(A, B, &R)
+    BigInteger* R := null
+    BigInteger* Q := BigInteger:DivideByGuessCheck(A, B, &R)
 
     Print("%bn-base-10, %bn-base-10\n", Q, R)
     ;*/
 
     /*
-    BigNumber* N := new BigNumber("1999999999")
+    BigInteger* N := new BigInteger("1999999999")
     
-    BigNumber* R := BigNumber:WithDigits(N->DigitCount + 1)
+    BigInteger* R := BigInteger:WithDigits(N->DigitCount + 1)
 
-    BigNumber:FastMultiplyBySingleDigit(N, 2, R)
-    BigNumber* R2 := BigNumber:MultiplyBySingleDigit(N, 2)
+    BigInteger:FastMultiplyBySingleDigit(N, 2, R)
+    BigInteger* R2 := BigInteger:MultiplyBySingleDigit(N, 2)
 
     Print("%bn-base-10 * 2 = %bn-digits\n", N, R)
     Print("%bn-base-10 * 2 = %bn-digits\n", N, R2)
@@ -126,15 +165,15 @@ define i32 Main() {
 
     ;Walk()
 
-    ;BigNumber* A := new BigNumber("2")
+    ;BigInteger* A := new BigInteger("2")
 
     ;Walk()
 
-    ;BigNumber* E := new BigNumber("8192")
+    ;BigInteger* E := new BigInteger("8192")
 
     ;Walk()
 
-    ;BigNumber* R := A->Reference()->Power(E->Reference())
+    ;BigInteger* R := A->Reference()->Power(E->Reference())
 
     ;Print("%i\n", R->DigitCount)
 

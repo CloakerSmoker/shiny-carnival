@@ -40,7 +40,7 @@ struct Token {
             i8* IdentifierValue
         }
         struct {
-            BigNumber* NumberValue
+            BigInteger* NumberValue
         }
     }
 
@@ -68,7 +68,7 @@ struct Token {
         return this
     }
 
-    static self* New(BigNumber* N) {
+    static self* New(BigInteger* N) {
         self* this := new self(TokenType::Number)
         this->NumberValue := N
         return this
@@ -127,7 +127,7 @@ define PointerArray* Tokenize(i8* Source, i32 SourceLength) {
             }
 
             i32 Length := Index - Start
-            BigNumber* Value := new BigNumber(Source + Start, Length, Base)
+            BigInteger* Value := new BigInteger(Source + Start, Length, Base)
 
             Tokens->Push(new Token(Value))
         }
@@ -167,7 +167,7 @@ struct Expression {
 
     union {
         Token* VariableName
-        BigNumber* NumberValue
+        BigInteger* NumberValue
 
         struct {
             Token* UnaryOperator
@@ -192,7 +192,7 @@ struct Expression {
         this->VariableName := VariableName
         return this
     }
-    static self* New(BigNumber* Number) {
+    static self* New(BigInteger* Number) {
         self* this := new self(ExpressionType::Number)
         this->NumberValue := Number
         return this

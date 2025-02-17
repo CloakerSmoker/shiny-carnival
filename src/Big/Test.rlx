@@ -17,11 +17,11 @@ define void TestSubtract(i64 Iterations) {
         i64 RawA := Random()
         i64 RawB := Random()
 
-        BigNumber* A := new BigNumber(RawA)
-        BigNumber* B := new BigNumber(RawB)
-        BigNumber* Expected := new BigNumber(RawA - RawB)
+        BigInteger* A := new BigInteger(RawA)
+        BigInteger* B := new BigInteger(RawB)
+        BigInteger* Expected := new BigInteger(RawA - RawB)
 
-        BigNumber* S := BigNumber:Subtract(A->Reference(), B->Reference())
+        BigInteger* S := BigInteger:Subtract(A->Reference(), B->Reference())
 
         if (!S->Equals(Expected)) {
             Print("%bn-base-10 - %bn-base-10 = %bn-base-10, not %bn-base-10\n", A, B, Expected, S)
@@ -47,11 +47,11 @@ define void TestMultiply(i64 Iterations) {
         i64 RawA := Random() & 0x7FFF_FFFF
         i64 RawB := Random() & 0x7FFF_FFFF
 
-        BigNumber* A := new BigNumber(RawA)
-        BigNumber* B := new BigNumber(RawB)
-        BigNumber* Expected := new BigNumber(RawA * RawB)
+        BigInteger* A := new BigInteger(RawA)
+        BigInteger* B := new BigInteger(RawB)
+        BigInteger* Expected := new BigInteger(RawA * RawB)
 
-        BigNumber* M := A->Reference()->Multiply(B->Reference())
+        BigInteger* M := A->Reference()->Multiply(B->Reference())
 
         if (!M->Equals(Expected)) {
             Print("%bn-rd * %bn-rd = %bn-rd, not %bn-rd\n", A, B, Expected, M)
@@ -76,7 +76,7 @@ define void TestMultiplyBySingleDigit(i64 Iterations) {
     for (i32 Index := 0, Index < Iterations, Index++) {
         i32 NumberOfDigits := 1 + (Random() % 1) As i32
 
-        BigNumber* A := BigNumber:WithDigits(NumberOfDigits)
+        BigInteger* A := BigInteger:WithDigits(NumberOfDigits)
 
         i64 RawA := 0
         i64 Power := 1
@@ -91,9 +91,9 @@ define void TestMultiplyBySingleDigit(i64 Iterations) {
         }
 
         i64 B := Random() % BIG_NUMBER_BASE
-        BigNumber* Expected := new BigNumber(RawA * B)
+        BigInteger* Expected := new BigInteger(RawA * B)
 
-        BigNumber* Actual := BigNumber:MultiplyBySingleDigit(A, B)
+        BigInteger* Actual := BigInteger:MultiplyBySingleDigit(A, B)
 
         if (!Actual->Equals(Expected)) {
             Print("%bn-rd * %i = %bn-rd, not %bn-rd\n", A, B, Expected, Actual)
@@ -117,7 +117,7 @@ define void TestFastMultiplyBySingleDigit(i64 Iterations) {
     for (i32 Index := 0, Index < Iterations, Index++) {
         i32 NumberOfDigits := 1 + (Random() % 2) As i32
 
-        BigNumber* A := BigNumber:WithDigits(NumberOfDigits)
+        BigInteger* A := BigInteger:WithDigits(NumberOfDigits)
 
         i64 RawA := 0
         i64 Power := 1
@@ -132,10 +132,10 @@ define void TestFastMultiplyBySingleDigit(i64 Iterations) {
         }
 
         i64 B := Random() % BIG_NUMBER_BASE
-        BigNumber* Expected := new BigNumber(RawA * B)
+        BigInteger* Expected := new BigInteger(RawA * B)
 
-        BigNumber* Actual := BigNumber:WithDigits(NumberOfDigits + 1)
-        BigNumber:FastMultiplyBySingleDigit(A, B, Actual)
+        BigInteger* Actual := BigInteger:WithDigits(NumberOfDigits + 1)
+        BigInteger:FastMultiplyBySingleDigit(A, B, Actual)
 
         if (!Actual->Equals(Expected)) {
             Print("%bn-rd * %i = %bn-rd, not %bn-rd\n", A, B, Expected, Actual)
@@ -160,12 +160,12 @@ define void TestSmallDivide(i64 Iterations) {
         i64 RawA := Random()
         i64 RawB := Index + 1
 
-        BigNumber* A := new BigNumber(RawA)
-        BigNumber* B := new BigNumber(RawB)
-        BigNumber* Expected := new BigNumber(RawA / RawB)
+        BigInteger* A := new BigInteger(RawA)
+        BigInteger* B := new BigInteger(RawB)
+        BigInteger* Expected := new BigInteger(RawA / RawB)
 
-        BigNumber* R := null
-        BigNumber* S := BigNumber:Divide(A->Reference(), B->Reference(), &R)
+        BigInteger* R := null
+        BigInteger* S := BigInteger:Divide(A->Reference(), B->Reference(), &R)
 
         if (!S->Equals(Expected)) {
             Print("%bn-rd / %bn-rd = %bn-rd, not %bn-rd\n", A, B, S, Expected, R)
@@ -192,14 +192,14 @@ define void TestDivide(i64 Iterations) {
         i64 RawA := Random()
         i64 RawB := Random() / ((Index + 1) * 1000)
 
-        BigNumber* A := new BigNumber(RawA)
-        BigNumber* B := new BigNumber(RawB)
+        BigInteger* A := new BigInteger(RawA)
+        BigInteger* B := new BigInteger(RawB)
 
-        BigNumber* ExpectedS := new BigNumber(RawA / RawB)
-        BigNumber* ExpectedR := new BigNumber(RawA % RawB)
+        BigInteger* ExpectedS := new BigInteger(RawA / RawB)
+        BigInteger* ExpectedR := new BigInteger(RawA % RawB)
 
-        BigNumber* R := null
-        BigNumber* S := BigNumber:Divide(A->Reference(), B->Reference(), &R)
+        BigInteger* R := null
+        BigInteger* S := BigInteger:Divide(A->Reference(), B->Reference(), &R)
 
         if !(S->Equals(ExpectedS) && R->Equals(ExpectedR)) {
             Print("%bn-rd / %bn-rd = %bn-rd r %bn-rd, not %bn-rd r %bn-rd\n", A, B, ExpectedS, ExpectedR, S, R)
@@ -227,10 +227,10 @@ define void TestSquare(i64 Iterations) {
     for (i32 Index := 0, Index < Iterations, Index++) {
         i64 RawA := Random() & 0x7FFF_FFFF
 
-        BigNumber* A := new BigNumber(RawA)
-        BigNumber* Expected := new BigNumber(RawA * RawA)
+        BigInteger* A := new BigInteger(RawA)
+        BigInteger* Expected := new BigInteger(RawA * RawA)
 
-        BigNumber* S := A->Reference()->Square()
+        BigInteger* S := A->Reference()->Square()
 
         if (!S->Equals(Expected)) {
             Print("%bn-rd^2 = %bn-rd, not %bn-rd\n", A, Expected, S)
@@ -277,7 +277,7 @@ define void TestPowerModulo(i64 Iterations) {
         i64 Modulus := Random() & 0x7FFF_FFFF
 
         i64 Expected := PowerModulo(Base, Exponent, Modulus)
-        BigNumber* Result := BigNumber:PowerModulo(new BigNumber(Base), new BigNumber(Exponent), new BigNumber(Modulus))
+        BigInteger* Result := BigInteger:PowerModulo(new BigInteger(Base), new BigInteger(Exponent), new BigInteger(Modulus))
 
         if (!Result->Equals(Expected)) {
             Print("pow(%i, %i, %i) = %i, not %bn-rd\n", Base, Exponent, Modulus, Expected, Result)

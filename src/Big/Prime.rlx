@@ -28,7 +28,7 @@ define i32 Main(i64 ArgC, i8** ArgV) {
     i8 Random := false
     i32 BitCount := 256
     i64 Count := 1
-    BigNumber* Current := null
+    BigInteger* Current := null
 
     void(void*, i32) FillRandom := &InsecureFillRandom
 
@@ -50,7 +50,7 @@ define i32 Main(i64 ArgC, i8** ArgV) {
             FillRandom := &SecureFillRandom
         }
         else {
-            Current := new BigNumber(Arg)
+            Current := new BigInteger(Arg)
         }
     }
 
@@ -72,7 +72,7 @@ define i32 Main(i64 ArgC, i8** ArgV) {
 
         Print("%i bits = %i bytes = %i digits\n", BitCount, Bytes, Digits)
 
-        Current := BigNumber:WithDigits(Digits * 2)
+        Current := BigInteger:WithDigits(Digits * 2)
     }
 
     if (Deterministic) {
@@ -108,7 +108,7 @@ define i32 Main(i64 ArgC, i8** ArgV) {
 
                 Print("Trying %bn-base-10\n", Current)
 
-                if (BigNumber:DeterministicMillerRabinTest(Current)) {
+                if (BigInteger:DeterministicMillerRabinTest(Current)) {
                     Print("\n%bn-base-10 is prime\n", Current)
                     Count--
                 }
@@ -116,7 +116,7 @@ define i32 Main(i64 ArgC, i8** ArgV) {
         }
         else {
             while (Count) {
-                if (BigNumber:DeterministicMillerRabinTest(Current)) {
+                if (BigInteger:DeterministicMillerRabinTest(Current)) {
                     Print("%bn-base-10\n", Current)
                     Count--
                 }
@@ -127,7 +127,7 @@ define i32 Main(i64 ArgC, i8** ArgV) {
     }
     else {
         while (Count) {
-            ;if (BigNumber:IsPrime(Current)) {
+            ;if (BigInteger:IsPrime(Current)) {
             ;    Print("%bn-base-10\n", Current)
             ;    Count--
             ;}

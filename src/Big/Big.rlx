@@ -10,23 +10,23 @@ enum ComparisonResult {
 
 #Require "./src/StackTrace.rlx"
 
-BigNumber* FIRST_BIG_NUMBER := null
-BigNumber** BIG_NUMBERS_TAIL := null
+BigInteger* FIRST_BIG_NUMBER := null
+BigInteger** BIG_NUMBERS_TAIL := null
 
 i32 NEXT_BIG_NUMBER_ID := 0
 
 i32 BIG_NUMBER_CONSTANT_POOL_SIZE := 175
-BigNumber** BIG_NUMBER_CONSTANT_POOL := Alloc(BIG_NUMBER_CONSTANT_POOL_SIZE * #void*)
+BigInteger** BIG_NUMBER_CONSTANT_POOL := Alloc(BIG_NUMBER_CONSTANT_POOL_SIZE * #void*)
 
 #Require "$/AVLTree.rlx"
 
-AVLTree* BIG_NUMBER_LARGE_CONSTANT_POOL := new AVLTree(#void*) ; <FNV1A(i8*), BigNumber*>
+AVLTree* BIG_NUMBER_LARGE_CONSTANT_POOL := new AVLTree(#void*) ; <FNV1A(i8*), BigInteger*>
 
 #Require "$/PointerArray.rlx"
 
 struct MillerRabinShortcut {
-    BigNumber* Limit
-    BigNumber** Bases
+    BigInteger* Limit
+    BigInteger** Bases
     i32 BaseCount
 }
 
@@ -41,12 +41,12 @@ enum Primality {
 declare void Walk()
 declare i8 HadLeaks()
 
-struct BigNumber {
+struct BigInteger {
     i32* Digits
 
     i32 ID
-    BigNumber** pThis
-    BigNumber* Next
+    BigInteger** pThis
+    BigInteger* Next
 
     i32 DigitCount
     i32 DigitCapacity
@@ -58,6 +58,22 @@ struct BigNumber {
     StackTrace AllocationTrace
 
     define self* Reference() {
+        if (this->Constant) {
+            return this
+        }
+
+        ;Print("Reference(%i) at refcount %i\n", this->ID, this->ReferenceCount)
+
+        if (this->ReferenceCount <= 0) {
+            Print("REFERENCE COUNT BELOW ZERO %x\n", this)
+            this~>AllocationTrace->Print()
+
+            Print("Referenced from\n")
+            CaptureStackTrace()->Print()
+
+            *null := 0
+        }
+
         this->ReferenceCount += 1
 
         return this
@@ -68,10 +84,15 @@ struct BigNumber {
             return this
         }
 
+        ;Print("Release(%i) at refcount %i\n", this->ID, this->ReferenceCount)
+
         this->ReferenceCount -= 1
 
         if (this->ReferenceCount < 0) {
-            Print("REFERENCE COUNT BELOW ZERO %bn-rd\n", this)
+            Print("REFERENCE COUNT BELOW ZERO %x\n", this)
+
+            Print("Released from\n")
+            CaptureStackTrace()->Print()
             *null := 0
         }
         else if (this->ReferenceCount = 0) {
@@ -155,8 +176,9 @@ struct BigNumber {
 
         this->DigitCount := DigitCount
         this->Digits := Alloc((DigitCount + 1) * 4)
+        this->ReferenceCount := 1
 
-        return this->Reference()
+        return this
     }
 
     static self* New() {
@@ -197,30 +219,32 @@ struct BigNumber {
             }
         }
 
-        return this->Reference()
+        this->ReferenceCount := 1
+
+        return this
     }
 
-    static BigNumber* Zero() {
+    static BigInteger* Zero() {
         return new self(0)
     }
-    static BigNumber* One() {
+    static BigInteger* One() {
         return new self(1)
     }
-    static BigNumber* Constant(i32 Value) {
+    static BigInteger* Constant(i32 Value) {
         return new self(Value)
     }
 
     static declare self* New(i8*)
 
-    static BigNumber* LargeConstant(i8* Value) {
+    static BigInteger* LargeConstant(i8* Value) {
         i64 Hash := FNV1A(Value)
-        BigNumber* Result := BIG_NUMBER_LARGE_CONSTANT_POOL->GetPointer(Hash)
+        BigInteger* Result := BIG_NUMBER_LARGE_CONSTANT_POOL->GetPointer(Hash)
 
         if (Result) {
             return Result
         }
 
-        BigNumber* Result := new self(Value)
+        BigInteger* Result := new self(Value)
         Result->Constant := true
 
         BIG_NUMBER_LARGE_CONSTANT_POOL->InsertPointer(Hash, Result)
@@ -228,7 +252,7 @@ struct BigNumber {
         return Result
     }
 
-    static self* New(BigNumber* CloneSource) {
+    static self* New(BigInteger* CloneSource) {
         self* this := self:WithDigits(CloneSource->DigitCount)
 
         this->Negative := CloneSource->Negative
@@ -262,7 +286,7 @@ struct BigNumber {
         return this->Digits[Index]
     }
 
-    static ComparisonResult CompareAbsoluteValue(BigNumber* Left, BigNumber* Right) {
+    static ComparisonResult CompareAbsoluteValue(BigInteger* Left, BigInteger* Right) {
         if (Left->DigitCount > Right->DigitCount) {
             return ComparisonResult::Greater
         }
@@ -286,7 +310,7 @@ struct BigNumber {
         }
     }
 
-    static ComparisonResult Compare(BigNumber* Left, BigNumber* Right) {
+    static ComparisonResult Compare(BigInteger* Left, BigInteger* Right) {
         Left->Shrink()
         Right->Shrink()
 
@@ -334,8 +358,8 @@ struct BigNumber {
         return ComparisonResult::Equal
     }
 
-    static BigNumber* Negate(BigNumber* In) {
-        BigNumber* Result := new BigNumber(In)
+    static BigInteger* Negate(BigInteger* In) {
+        BigInteger* Result := new BigInteger(In)
 
         Result->Negative := !In->Negative
 
@@ -343,7 +367,7 @@ struct BigNumber {
 
         return Result
     }
-    define BigNumber* Negate() {
+    define BigInteger* Negate() {
         return self:Negate(this)
     }
 
@@ -366,14 +390,14 @@ struct BigNumber {
         }
     }
 
-    static BigNumber* BaseAdd(BigNumber* Left, BigNumber* Right) {
+    static BigInteger* BaseAdd(BigInteger* Left, BigInteger* Right) {
         if (Right->DigitCount > Left->DigitCount) {
-            BigNumber* Temporary := Left
+            BigInteger* Temporary := Left
             Left := Right
             Right := Temporary
         }
 
-        BigNumber* Result := new BigNumber(Left)
+        BigInteger* Result := new BigInteger(Left)
         i32 Carry := 0
 
         for (i32 Index := 0, Index < Right->DigitCount, Index++) {
@@ -417,16 +441,16 @@ struct BigNumber {
         return Result
     }
 
-    declare BigNumber* Subtract(BigNumber*)
+    declare BigInteger* Subtract(BigInteger*)
 
-    static BigNumber* Add(BigNumber* Left, BigNumber* Right) {
+    static BigInteger* Add(BigInteger* Left, BigInteger* Right) {
         if (Left->Negative != Right->Negative) {
             return Left->Subtract(Right->Negate())
         }
 
-        return BigNumber:BaseAdd(Left, Right)
+        return BigInteger:BaseAdd(Left, Right)
     }
-    define BigNumber* Add(BigNumber* Right) {
+    define BigInteger* Add(BigInteger* Right) {
         return self:Add(this, Right)
     }
 
@@ -456,7 +480,7 @@ struct BigNumber {
         this->Shrink()
     }
 
-    static BigNumber* BaseSubtract(BigNumber* Left, BigNumber* Right, BigNumber* Result) {
+    static BigInteger* BaseSubtract(BigInteger* Left, BigInteger* Right, BigInteger* Result) {
         i64 Borrow := 0
 
         for (i32 Index := 0, Index < Right->DigitCount, Index++) {
@@ -505,13 +529,13 @@ struct BigNumber {
         return Result->Shrink()
     }
 
-    static BigNumber* BaseSubtract(BigNumber* Left, BigNumber* Right) {
-        BigNumber* Result := BigNumber:WithDigits(Left->DigitCount)
+    static BigInteger* BaseSubtract(BigInteger* Left, BigInteger* Right) {
+        BigInteger* Result := BigInteger:WithDigits(Left->DigitCount)
         
         return self:BaseSubtract(Left, Right, Result)
     }
 
-    static BigNumber* FastBaseSubtract(BigNumber* Left, BigNumber* Right, BigNumber* Result) {
+    static BigInteger* FastBaseSubtract(BigInteger* Left, BigInteger* Right, BigInteger* Result) {
         i64 Borrow := 0
 
         asm (
@@ -574,75 +598,77 @@ struct BigNumber {
         return Result->Shrink()
     }
 
-    static BigNumber* FastBaseSubtract(BigNumber* Left, BigNumber* Right) {
-        BigNumber* Result := BigNumber:WithDigits(Left->DigitCount)
+    static BigInteger* FastBaseSubtract(BigInteger* Left, BigInteger* Right) {
+        BigInteger* Result := BigInteger:WithDigits(Left->DigitCount)
         
         return self:FastBaseSubtract(Left, Right, Result)
     }
 
-    static BigNumber* FastSubtract(BigNumber* Left, BigNumber* Right) {
+    static BigInteger* FastSubtract(BigInteger* Left, BigInteger* Right) {
         if (Left->Negative != Right->Negative) {
             return Left->Add(Right->Negate())
         }
 
-        ComparisonResult Comparison := BigNumber:CompareAbsoluteValue(Left, Right)
+        ComparisonResult Comparison := BigInteger:CompareAbsoluteValue(Left, Right)
 
         if (Comparison = ComparisonResult::Equal || Comparison = ComparisonResult::Greater) {
             return self:FastBaseSubtract(Left, Right)
         }
         else {
-            BigNumber* Result := self:FastBaseSubtract(Right, Left)
+            BigInteger* Result := self:FastBaseSubtract(Right, Left)
             Result->Negative := !Left->Negative
             return Result
         }
     }
 
-    static BigNumber* Subtract(BigNumber* Left, BigNumber* Right) {
+    static BigInteger* Subtract(BigInteger* Left, BigInteger* Right) {
         if (Left->Negative != Right->Negative) {
             return Left->Add(Right->Negate())
         }
 
-        ComparisonResult Comparison := BigNumber:CompareAbsoluteValue(Left, Right)
+        ComparisonResult Comparison := BigInteger:CompareAbsoluteValue(Left, Right)
 
         if (Comparison = ComparisonResult::Equal || Comparison = ComparisonResult::Greater) {
             return self:FastBaseSubtract(Left, Right)
         }
         else {
-            BigNumber* Result := self:FastBaseSubtract(Right, Left)
-            Result->Negative := !Left->Negative
+            i8 Sign := !Left->Negative
+
+            BigInteger* Result := self:FastBaseSubtract(Right, Left)
+            Result->Negative := Sign
             return Result
         }
     }
 
-    define BigNumber* Subtract(BigNumber* Right) {
+    define BigInteger* Subtract(BigInteger* Right) {
         return self:Subtract(this, Right)
     }
 
-    static BigNumber* AbsoluteValue(BigNumber* In) {
-        BigNumber* Result := new BigNumber(In)
+    static BigInteger* AbsoluteValue(BigInteger* In) {
+        BigInteger* Result := new BigInteger(In)
 
         Result->Negative := false
         In->Release()
 
         return Result
     }
-    define BigNumber* AbsoluteValue() {
+    define BigInteger* AbsoluteValue() {
         return self:AbsoluteValue(this)
     }
 
-    static BigNumber* FastMultiplyBySingleDigit(BigNumber* Left, i64 Right, BigNumber* Result) asm {
+    static BigInteger* FastMultiplyBySingleDigit(BigInteger* Left, i64 Right, BigInteger* Result) asm {
         push, rbp
         mov, rbp, rsp
 
         xor, rax, rax ; Carry
 
-        mov, ebx, {p1 + BigNumber.DigitCount} As i32* ; Left->DigitCount
+        mov, ebx, {p1 + BigInteger.DigitCount} As i32* ; Left->DigitCount
         xor, rcx, rcx
 
         mov, r15, p3 ; preserve result
 
-        mov, r8, {p1 + BigNumber.Digits} As i64* ; Left->Digits
-        mov, r9, {p3 + BigNumber.Digits} As i64* ; Result->Digits
+        mov, r8, {p1 + BigInteger.Digits} As i64* ; Left->Digits
+        mov, r9, {p3 + BigInteger.Digits} As i64* ; Result->Digits
         
         mov, r11, 16777216
 
@@ -673,7 +699,7 @@ struct BigNumber {
         inc, rcx
     
     End:
-        mov, {r15 + BigNumber.DigitCount} As i32*, ecx
+        mov, {r15 + BigInteger.DigitCount} As i32*, ecx
         mov, rax, r15
 
         leave
@@ -697,7 +723,7 @@ struct BigNumber {
         ret
     }
 
-    static BigNumber* MultiplyBySingleDigit(BigNumber* Left, i64 Right, BigNumber* Result) {
+    static BigInteger* MultiplyBySingleDigit(BigInteger* Left, i64 Right, BigInteger* Result) {
         Result->Reserve(Left->DigitCount + 1)
 
         i64 Carry := 0
@@ -723,8 +749,8 @@ struct BigNumber {
         return Result->Shrink()
     }
 
-    static BigNumber* MultiplyBySingleDigit(BigNumber* Left, i64 Right) {
-        BigNumber* Result := self:WithDigits(Left->DigitCount + 1)
+    static BigInteger* MultiplyBySingleDigit(BigInteger* Left, i64 Right) {
+        BigInteger* Result := self:WithDigits(Left->DigitCount + 1)
 
         self:MultiplyBySingleDigit(Left, Right, Result)
 
@@ -736,15 +762,15 @@ struct BigNumber {
 
         self:MultiplyBySingleDigit(this, Right, this)
     }
-    define void CopyDigits(BigNumber* Source) {
+    define void CopyDigits(BigInteger* Source) {
         this->Reserve(Source->DigitCount)
 
         MoveMemory(this->Digits, Source->Digits, Source->DigitCount * 4)
     }
 
 
-    static BigNumber* BaseMultiply(BigNumber* Left, BigNumber* Right) {
-        BigNumber* Result := self:WithDigits(Left->DigitCount + Right->DigitCount)
+    static BigInteger* BaseMultiply(BigInteger* Left, BigInteger* Right) {
+        BigInteger* Result := self:WithDigits(Left->DigitCount + Right->DigitCount)
 
         i64 Carry := 0
 
@@ -766,10 +792,10 @@ struct BigNumber {
         return Result->Shrink()
     }
 
-    static BigNumber* Multiply(BigNumber* Left, BigNumber* Right) {
+    static BigInteger* Multiply(BigInteger* Left, BigInteger* Right) {
         i8 Negative := Left->Negative + Right->Negative = 1
 
-        BigNumber* Result := null
+        BigInteger* Result := null
 
         if (Left->DigitCount = 1) {
             Result := self:WithDigits(Right->DigitCount + 1)
@@ -790,7 +816,7 @@ struct BigNumber {
 
         return Result
     }
-    define BigNumber* Multiply(BigNumber* Right) {
+    define BigInteger* Multiply(BigInteger* Right) {
         return self:Multiply(this, Right)
     }
 
@@ -815,7 +841,7 @@ struct BigNumber {
 
         return Index = this->DigitCount
     }
-    define i8 Equals(BigNumber* Other) {
+    define i8 Equals(BigInteger* Other) {
         return self:Compare(this, Other) = ComparisonResult::Equal
     }
 
@@ -833,26 +859,26 @@ struct BigNumber {
         return !this->IsZero()
     }
 
-    define i8 IsLessThan(BigNumber* Other) {
+    define i8 IsLessThan(BigInteger* Other) {
         return self:Compare(this, Other) = ComparisonResult::Less
     }
-    define i8 IsLessThanOrEqualTo(BigNumber* Other) {
+    define i8 IsLessThanOrEqualTo(BigInteger* Other) {
         ComparisonResult Result := self:Compare(this, Other)
 
         return Result = ComparisonResult::Less || Result = ComparisonResult::Equal
     }
 
-    define i8 IsGreaterThan(BigNumber* Other) {
+    define i8 IsGreaterThan(BigInteger* Other) {
         return self:Compare(this, Other) = ComparisonResult::Greater
     }
-    define i8 IsGreaterThanOrEqualTo(BigNumber* Other) {
+    define i8 IsGreaterThanOrEqualTo(BigInteger* Other) {
         ComparisonResult Result := self:Compare(this, Other)
 
         return Result = ComparisonResult::Greater || Result = ComparisonResult::Equal
     }
 
-    static BigNumber* DivideBySingleDigit(BigNumber* Dividend, i64 Divisor, BigNumber** OutRemainder) {
-        BigNumber* Quotient := new BigNumber(Dividend)
+    static BigInteger* DivideBySingleDigit(BigInteger* Dividend, i64 Divisor, BigInteger** OutRemainder) {
+        BigInteger* Quotient := new BigInteger(Dividend)
 
         i64 Carry := 0
         i64 Remainder := 0
@@ -868,7 +894,7 @@ struct BigNumber {
             Quotient->Digits[Index] := InnerQuotient As i32
         }
 
-        *OutRemainder := new BigNumber(Remainder)
+        *OutRemainder := new BigInteger(Remainder)
 
         return Quotient->Shrink()
     }
@@ -921,16 +947,16 @@ struct BigNumber {
         ret
     }
 
-    static BigNumber* DivideByGuessCheck(BigNumber* Dividend, BigNumber* Denominator, BigNumber** OutRemainder) {
-        BigNumber* Result := BigNumber:WithDigits(0)
-        BigNumber* Part := BigNumber:WithDigits(0)
+    static BigInteger* DivideByGuessCheck(BigInteger* Dividend, BigInteger* Denominator, BigInteger** OutRemainder) {
+        BigInteger* Result := BigInteger:WithDigits(0)
+        BigInteger* Part := BigInteger:WithDigits(0)
 
         i32 DividendLength := Dividend->DigitCount
 
         i64 DivisorHigh := Denominator->Digits[Denominator->DigitCount - 1] * BIG_NUMBER_BASE
         DivisorHigh += Denominator->Digits[Denominator->DigitCount - 2]
 
-        BigNumber* Check := self:WithDigits(0)
+        BigInteger* Check := self:WithDigits(0)
 
         while (DividendLength) {
             Part->Prepend(Dividend->Digits[--DividendLength])
@@ -1011,7 +1037,7 @@ struct BigNumber {
 
         Check->Release()
 
-        BigNumber* ActualResult := BigNumber:WithDigits(Result->DigitCount)
+        BigInteger* ActualResult := BigInteger:WithDigits(Result->DigitCount)
 
         for (i32 Index := 0, Index < Result->DigitCount, Index++) {
             ActualResult->Digits[Index] := Result->Digits[Result->DigitCount - Index - 1]
@@ -1024,9 +1050,9 @@ struct BigNumber {
         return ActualResult->Shrink()
     }
 
-    static BigNumber* DivideBySubtract(BigNumber* Numerator, BigNumber* Denominator, BigNumber** OutRemainder) {
-        BigNumber* Quotient := new BigNumber()
-        BigNumber* Remainder := new BigNumber(Numerator)
+    static BigInteger* DivideBySubtract(BigInteger* Numerator, BigInteger* Denominator, BigInteger** OutRemainder) {
+        BigInteger* Quotient := new BigInteger()
+        BigInteger* Remainder := new BigInteger(Numerator)
 
         while (Remainder->IsGreaterThanOrEqualTo(Denominator)) {
             ;Print("%bn-digits - %bn-digits = ", Remainder, Denominator)
@@ -1039,11 +1065,11 @@ struct BigNumber {
         return Quotient->Shrink()
     }
 
-    static BigNumber* LongDivide(BigNumber* Numerator, BigNumber* Denominator, BigNumber** OutRemainder) {
-        BigNumber* Quotient := BigNumber:WithDigits(Numerator->DigitCount)
-        BigNumber* Remainder := new BigNumber(Numerator)
+    static BigInteger* LongDivide(BigInteger* Numerator, BigInteger* Denominator, BigInteger** OutRemainder) {
+        BigInteger* Quotient := BigInteger:WithDigits(Numerator->DigitCount)
+        BigInteger* Remainder := new BigInteger(Numerator)
 
-        BigNumber* Part := BigNumber:WithDigits(0)    
+        BigInteger* Part := BigInteger:WithDigits(0)    
 
         for (i32 Index := Remainder->DigitCount - 1, Index >= 0, Index--) {
             ;Print("%i\n", Index)
@@ -1056,8 +1082,8 @@ struct BigNumber {
 
                 Part->Shrink()
 
-                BigNumber* PartialRemainder := null
-                BigNumber* PartialQuotient := self:DivideByGuessCheck(Part, Denominator, &PartialRemainder)
+                BigInteger* PartialRemainder := null
+                BigInteger* PartialQuotient := self:DivideByGuessCheck(Part, Denominator, &PartialRemainder)
 
                 ;Print("%bn-rd / %bn-rd = %bn-rd (R %bn-rd)\n", Part, Denominator, PartialQuotient, PartialRemainder)
 
@@ -1106,30 +1132,30 @@ struct BigNumber {
         return Quotient->Shrink()
     }
 
-    static BigNumber* Divide(BigNumber* Numerator, BigNumber* Denominator, BigNumber** OutRemainder) {
+    static BigInteger* Divide(BigInteger* Numerator, BigInteger* Denominator, BigInteger** OutRemainder) {
         ComparisonResult Comparison := self:CompareAbsoluteValue(Numerator, Denominator)
 
         if (Comparison = ComparisonResult::Equal) {
             Numerator->Release()
             Denominator->Release()
 
-            *OutRemainder := new BigNumber(0)
+            *OutRemainder := new BigInteger(0)
 
             if (Numerator->Negative != Denominator->Negative) {
-                return new BigNumber(-1)
+                return new BigInteger(-1)
             }
             else {
-                return new BigNumber(1)
+                return new BigInteger(1)
             }
         }
         else if (Comparison = ComparisonResult::Less) {
             Denominator->Release()
             *OutRemainder := Numerator
 
-            return new BigNumber(0)
+            return new BigInteger(0)
         }
 
-        BigNumber* Result := null
+        BigInteger* Result := null
 
         if (Denominator->Shrink()->DigitCount = 1) {
             Result := self:DivideBySingleDigit(Numerator, Denominator->Digits[0], OutRemainder)
@@ -1146,39 +1172,39 @@ struct BigNumber {
         return Result
     }
     
-    define BigNumber* Divide(BigNumber* Denominator, BigNumber** OutRemainder) {
+    define BigInteger* Divide(BigInteger* Denominator, BigInteger** OutRemainder) {
         return self:Divide(this, Denominator, OutRemainder)
     }
 
-    define BigNumber* Quotient(BigNumber* Denominator) {
-        BigNumber* Remainder := null
-        BigNumber* Quotient := this->Divide(Denominator, &Remainder)
+    define BigInteger* Quotient(BigInteger* Denominator) {
+        BigInteger* Remainder := null
+        BigInteger* Quotient := this->Divide(Denominator, &Remainder)
         Remainder->Release()
 
         return Quotient
     }
 
-    define BigNumber* Remainder(BigNumber* Denominator) {
-        BigNumber* Remainder := null
+    define BigInteger* Remainder(BigInteger* Denominator) {
+        BigInteger* Remainder := null
         this->Divide(Denominator, &Remainder)->Release()
 
         return Remainder
     }
-    define BigNumber* Modulo(BigNumber* Denominator) {
+    define BigInteger* Modulo(BigInteger* Denominator) {
         return this->Remainder(Denominator)
     }
 
-    define i8 DivisibleBy(BigNumber* Factor) {
-        BigNumber* Remainder := this->Reference()->Remainder(Factor->Reference())
+    define i8 DivisibleBy(BigInteger* Factor) {
+        BigInteger* Remainder := this->Reference()->Remainder(Factor->Reference())
         i8 Result := Remainder->IsZero()
         Remainder->Release()
 
         return Result
     }
 
-    static BigNumber* New(i8* String, i32 Length, i32 RawBase) {
-        BigNumber* Base := new BigNumber(RawBase)
-        BigNumber* Result := new BigNumber(0)
+    static BigInteger* New(i8* String, i32 Length, i32 RawBase) {
+        BigInteger* Base := new BigInteger(RawBase)
+        BigInteger* Result := new BigInteger(0)
 
         if (String[0] = '-') {
             Result->Negative := true
@@ -1202,22 +1228,22 @@ struct BigNumber {
             }
 
             Result := Result->Multiply(Base->Reference())
-            Result := Result->Add(new BigNumber(GetCharacterValue(Next)))
+            Result := Result->Add(new BigInteger(GetCharacterValue(Next)))
         }
 
         Base->Release()
 
         return Result
     }
-    static BigNumber* New(i8* String, i32 RawBase) {
+    static BigInteger* New(i8* String, i32 RawBase) {
         return self:New(String, StringLength(String), RawBase)
     }
-    static BigNumber* New(i8* String) {
+    static BigInteger* New(i8* String) {
         return self:New(String, 10)
     }
 
-    static BigNumber* Square(BigNumber* In) {
-        BigNumber* Result := self:WithDigits(In->DigitCount * 2)
+    static BigInteger* Square(BigInteger* In) {
+        BigInteger* Result := self:WithDigits(In->DigitCount * 2)
 
         i64 Carry := 0
 
@@ -1241,13 +1267,13 @@ struct BigNumber {
         return Result->Shrink()
     }
 
-    define BigNumber* Square() {
+    define BigInteger* Square() {
         return self:Square(this)
     }
 
-    define BigNumber* Power(i32 Exponent) {
-        BigNumber* Result := self:One()
-        BigNumber* Base := this->Reference()
+    define BigInteger* Power(i32 Exponent) {
+        BigInteger* Result := self:One()
+        BigInteger* Base := this->Reference()
 
         while (Exponent > 0) {
             if (Exponent & 1) {
@@ -1263,10 +1289,10 @@ struct BigNumber {
         return Result
     }
 
-    static BigNumber* PowerModulo(BigNumber* Base, BigNumber* Exponent, BigNumber* Modulus) {
+    static BigInteger* PowerModulo(BigInteger* Base, BigInteger* Exponent, BigInteger* Modulus) {
         ;Print("PowerModulo(%bn-base-10, %bn-base-10, %bn-base-10)\n", Base, Exponent, Modulus)
 
-        BigNumber* Result := self:One()
+        BigInteger* Result := self:One()
         
         Base := Base->Remainder(Modulus->Reference())
 
@@ -1302,9 +1328,9 @@ struct BigNumber {
         return Result
     }
 
-    static BigNumber* Power(BigNumber* Base, BigNumber* RawExponent) {
-        BigNumber* Result := self:One()
-        BigNumber* Exponent := new BigNumber(RawExponent)
+    static BigInteger* Power(BigInteger* Base, BigInteger* RawExponent) {
+        BigInteger* Result := self:One()
+        BigInteger* Exponent := new BigInteger(RawExponent)
 
         while (Exponent->IsGreaterThan(self:Zero())) {
             Result := Result->Multiply(Base->Reference())
@@ -1318,13 +1344,13 @@ struct BigNumber {
         return Result
     }
 
-    define BigNumber* Power(BigNumber* Exponent) {
+    define BigInteger* Power(BigInteger* Exponent) {
         return self:Power(this, Exponent)
     }
 
-    static BigNumber* Logarithm(BigNumber* N, BigNumber* Base) {
-        BigNumber* Result := new BigNumber(self:One())
-        BigNumber* Current := Base->Reference()
+    static BigInteger* Logarithm(BigInteger* N, BigInteger* Base) {
+        BigInteger* Result := new BigInteger(self:One())
+        BigInteger* Current := Base->Reference()
 
         while (N->IsGreaterThanOrEqualTo(Current)) {
             Current := Current->Multiply(Base->Reference())
@@ -1338,11 +1364,11 @@ struct BigNumber {
         return Result
     }
 
-    define BigNumber* Logarithm(BigNumber* Base) {
+    define BigInteger* Logarithm(BigInteger* Base) {
         return self:Logarithm(this, Base)
     }
 
-    static Primality IsBasicPrime(BigNumber* In) {
+    static Primality IsBasicPrime(BigInteger* In) {
         In->Shrink()
 
         if (In->DigitCount = 1) {
@@ -1371,12 +1397,12 @@ struct BigNumber {
         return Primality::NotDefinitelyComposite
     }
 
-    static i8 MillerRabinTest(BigNumber* N, BigNumber** Bases, i32 BaseCount) {
-        BigNumber* MinusOne := N->Reference()->Subtract(self:Constant(1))
+    static i8 MillerRabinTest(BigInteger* N, BigInteger** Bases, i32 BaseCount) {
+        BigInteger* MinusOne := N->Reference()->Subtract(self:Constant(1))
 
         ;Print("N: %bn-rd, N - 1: %bn-rd\n", N, MinusOne)
 
-        BigNumber* B := MinusOne->Reference()
+        BigInteger* B := MinusOne->Reference()
         i32 R := 0
 
         while (B->IsEven()) {
@@ -1387,7 +1413,7 @@ struct BigNumber {
         ;Print("B: %bn-rd, R: %i\n", B, R)
 
         for (i32 Index := 0, Index < BaseCount, Index++) {
-            BigNumber* Base := Bases[Index]
+            BigInteger* Base := Bases[Index]
 
             Print("Check %i/%i: %bn-base-10, Base: %bn-base-10\n", Index, BaseCount, N, Base, 0xd)
 
@@ -1396,8 +1422,8 @@ struct BigNumber {
             }
 
             if (Base->DigitCount = 1) {
-                BigNumber* Remainder := null
-                BigNumber* Q := self:DivideBySingleDigit(N->Reference(), Base->Digits[0], &Remainder)
+                BigInteger* Remainder := null
+                BigInteger* Q := self:DivideBySingleDigit(N->Reference(), Base->Digits[0], &Remainder)
 
                 if (Remainder->IsZero()) {
                     Q->Release()
@@ -1409,7 +1435,7 @@ struct BigNumber {
 
             ;Print("pow(%bn-rd, %bn-rd, %bn-rd) ", Base, B, N)
 
-            BigNumber* X := self:PowerModulo(Base->Reference(), B->Reference(), N->Reference())
+            BigInteger* X := self:PowerModulo(Base->Reference(), B->Reference(), N->Reference())
 
             ;Print("= %bn-rd\n", X)
 
@@ -1460,15 +1486,15 @@ struct BigNumber {
         return true
     }
 
-    static i8 DeterministicMillerRabinTest(BigNumber* N) {
+    static i8 DeterministicMillerRabinTest(BigInteger* N) {
         if (N->IsEven()) {
             return false
         }
 
-        BigNumber* BitCount := N->Reference()->Logarithm(self:Constant(2))->Add(self:One())
-        BigNumber* BitCountLogN := BitCount->Quotient(self:Constant(3))
+        BigInteger* BitCount := N->Reference()->Logarithm(self:Constant(2))->Add(self:One())
+        BigInteger* BitCountLogN := BitCount->Quotient(self:Constant(3))
 
-        BigNumber* Limit := BitCountLogN->Square()->Multiply(self:Constant(2))
+        BigInteger* Limit := BitCountLogN->Square()->Multiply(self:Constant(2))
 
         ;Print("%bn-base-10 miller rabin limit: %bn-base-10\n", N, Limit)
 
@@ -1478,12 +1504,12 @@ struct BigNumber {
         }
 
         i32 BaseCount := Limit->Digits[0]
-        BigNumber** Bases := Alloc(BaseCount * #BigNumber*)
+        BigInteger** Bases := Alloc(BaseCount * #BigInteger*)
 
         Limit->Release()
 
         for (i32 Index := 0, Index < BaseCount, Index++) {
-            Bases[Index] := new BigNumber(Index + 3)
+            Bases[Index] := new BigInteger(Index + 3)
         }
 
         i8 Result := self:MillerRabinTest(N, Bases, BaseCount)
@@ -1504,10 +1530,10 @@ struct BigNumber {
 
         Shortcut->Limit := self:LargeConstant(Limit)
         Shortcut->BaseCount := BaseCount
-        Shortcut->Bases := Alloc(BaseCount * #BigNumber*)
+        Shortcut->Bases := Alloc(BaseCount * #BigInteger*)
 
         for (i32 Index := 0, Index < BaseCount, Index++) {
-            BigNumber* Base := new self(Bases[Index])
+            BigInteger* Base := new self(Bases[Index])
             Base->Constant := true
 
             Shortcut->Bases[Index] := Base
@@ -1532,7 +1558,7 @@ struct BigNumber {
         self:DefineMillerRabinShortcut("3,317,044,064,679,887,385,961,981", i32[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 0])
     }
 
-    static Primality IsPrimeShortcut(BigNumber* N) {
+    static Primality IsPrimeShortcut(BigInteger* N) {
         i8 Confident := true
         MillerRabinShortcut* BestShortcut := null
 
@@ -1564,7 +1590,7 @@ struct BigNumber {
         return Primality::Composite
     }
 
-    static i8 IsPrime(BigNumber* N) {
+    static i8 IsPrime(BigInteger* N) {
         Primality Basic := self:IsBasicPrime(N)
 
         if (Basic = Primality::Prime) {
@@ -1590,9 +1616,9 @@ struct BigNumber {
         return false
     }
 
-    static BigNumber* GreatestCommonDivisor(BigNumber* A, BigNumber* B) {
+    static BigInteger* GreatestCommonDivisor(BigInteger* A, BigInteger* B) {
         while (B->IsNotZero()) {
-            BigNumber* Temp := A->Remainder(B->Reference())
+            BigInteger* Temp := A->Remainder(B->Reference())
             A := B
             B := Temp
         }
@@ -1600,9 +1626,9 @@ struct BigNumber {
         return A
     }
 
-    static BigNumber* EulerTotient(BigNumber* N) {
-        BigNumber* Result := new self(N)
-        BigNumber* Index := self:Constant(2)
+    static BigInteger* EulerTotient(BigInteger* N) {
+        BigInteger* Result := new self(N)
+        BigInteger* Index := self:Constant(2)
 
         loop {
             if (Index->Reference()->Square()->IsGreaterThan(N)) {
@@ -1627,45 +1653,45 @@ struct BigNumber {
         return Result
     }
 
-    static BigNumber* LeastCommonMultiple(BigNumber* A, BigNumber* B) {
-        return A->Reference()->Multiply(B)->Quotient(self:GreatestCommonDivisor(A, B))
+    static BigInteger* LeastCommonMultiple(BigInteger* A, BigInteger* B) {
+        BigInteger* AxB := A->Reference()->Multiply(B->Reference())
+        BigInteger* GCD := self:GreatestCommonDivisor(A, B)
+
+        return AxB->Quotient(GCD)
     }
 
-    static BigNumber* ModularInverse(BigNumber* N, BigNumber* M) {
-        BigNumber* T := self:Zero()
-        BigNumber* NewT := self:One()
+    static BigInteger* ModularInverse(BigInteger* N, BigInteger* M) {
+        BigInteger* T := self:Zero()
+        BigInteger* NewT := self:One()
 
-        BigNumber* R := M->Reference()
-        BigNumber* NewR := N->Reference()
+        BigInteger* R := M->Reference()
+        BigInteger* NewR := N->Reference()->AbsoluteValue()
 
         while (NewR->IsNotZero()) {
-            Print("Before: T: %bn-base-10, NewT: %bn-base-10, R: %bn-base-10, NewR: %bn-base-10\n", T, NewT, R, NewR)
+            BigInteger* Quotient := R->Reference()->Quotient(NewR->Reference())
 
-            BigNumber* Quotient := R->Reference()->Quotient(NewR->Reference())
+            BigInteger* Temp := T
+            T := NewT
+            NewT := Temp->Subtract(Quotient->Reference()->Multiply(NewT->Reference()))
 
-            Print("Quotient: %bn-base-10\n", Quotient)
-
-            BigNumber* Temp := T
-            T := NewT->Reference()
-            NewT := Temp->Subtract(Quotient->Reference()->Multiply(NewT))
-            
-            BigNumber* Temp := R
-            R := NewR->Reference()
-            NewR := Temp->Subtract(Quotient->Multiply(NewR))
-
-            Print("After: T: %bn-base-10, NewT: %bn-base-10, R: %bn-base-10, NewR: %bn-base-10\n", T, NewT, R, NewR)
+            BigInteger* Temp := R
+            R := NewR
+            NewR := Temp->Subtract(Quotient->Multiply(NewR->Reference()))
         }
 
-        if (T->IsZero()) {
-            T := T->Add(M)
+        if (T->IsLessThan(self:Zero())) {
+            T := T->Add(M->Reference())
         }
 
         NewT->Release()
-        R->Release()
         NewR->Release()
+        R->Release()
 
-        N->Release()
         M->Release()
+
+        if (N->Negative) {
+            return T->Negate()
+        }
 
         return T
     }
@@ -1676,7 +1702,7 @@ struct BigNumber {
         BIG_NUMBERS_TAIL := &FIRST_BIG_NUMBER
 
         for (i32 Index := 0, Index < BIG_NUMBER_CONSTANT_POOL_SIZE, Index++) {
-            BIG_NUMBER_CONSTANT_POOL[Index] := new BigNumber(Index)
+            BIG_NUMBER_CONSTANT_POOL[Index] := new BigInteger(Index)
         }
 
         self:InitializeMillerRabinShortcuts()
@@ -1688,9 +1714,9 @@ struct BigNumber {
         self:FLDCW(CW As i16)
 
         /*for (i32 Index := 0, Index < MILLER_RABIN_SHORTCUTS_COUNT, Index++) {
-            BigNumberMillerRabinShortcut* Shortcut := MILLER_RABIN_SHORTCUTS[Index]
+            BigIntegerMillerRabinShortcut* Shortcut := MILLER_RABIN_SHORTCUTS[Index]
 
-            Shortcut->Value := new BigNumber(Shortcut->RawValue)
+            Shortcut->Value := new BigInteger(Shortcut->RawValue)
             Shortcut->Value->Constant := true
 
             i32 BaseCount := 0
@@ -1699,10 +1725,10 @@ struct BigNumber {
                 BaseCount++
             }
 
-            Shortcut->Bases := Alloc(BaseCount * #BigNumber*)
+            Shortcut->Bases := Alloc(BaseCount * #BigInteger*)
 
             for (i32 InnerIndex := 0, InnerIndex < BaseCount, InnerIndex++) {
-                Shortcut->Bases[InnerIndex] := new BigNumber(Shortcut->RawBases[InnerIndex])
+                Shortcut->Bases[InnerIndex] := new BigInteger(Shortcut->RawBases[InnerIndex])
             }
         }*/
 
@@ -1710,10 +1736,10 @@ struct BigNumber {
     }
 }
 
-i8 BIG_NUMBER_INITIALIZED := BigNumber:Initialize()
+i8 BIG_NUMBER_INITIALIZED := BigInteger:Initialize()
 
 define void Walk() {
-    BigNumber* Current := FIRST_BIG_NUMBER
+    BigInteger* Current := FIRST_BIG_NUMBER
 
     while (Current != null) {
         Print("#%i: %bn-rd\n", Current->ID, Current)
@@ -1723,7 +1749,7 @@ define void Walk() {
 }
 
 define i8 HadLeaks() {
-    BigNumber* Current := FIRST_BIG_NUMBER
+    BigInteger* Current := FIRST_BIG_NUMBER
 
     while (Current != null) {
         if (!Current->Constant) {
