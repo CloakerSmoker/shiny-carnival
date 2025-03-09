@@ -1,0 +1,32 @@
+
+interface INetworkOptions {
+
+}
+
+interface INetworkLayer {
+    virtual NetworkPacket* Enter(INetworkOptions*)
+    virtual void Leave(NetworkPacket*)
+
+    virtual void Process(NetworkPacket*)
+}
+
+namespace TLS {
+    enum VersionNumber As i32 {
+        SSL_3_0 := 0x0300
+        TLS_1_0 := 0x0301
+        TLS_1_1 := 0x0302
+        TLS_1_2 := 0x0303
+        TLS_1_3 := 0x0304
+
+        define i8 Major() {
+            return ((this As i32) >> 8) As i8
+        }
+        define i8 Minor() {
+            return ((this As i32) & 0xFF) As i8
+        }
+    }
+
+    enum CipherSuite As i16 {
+        TLS_RSA_WITH_AES_128_GCM_SHA256 := 0x9C00
+    }
+}

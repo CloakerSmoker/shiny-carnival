@@ -1,0 +1,65 @@
+
+#Require "$/Console.rlx"
+#Require "./src/TLS/RecordProtocol.rlx"
+#Require "./src/TLS/HandshakeProtocol.rlx"
+
+/*
+define NetworkPacket* ClientHello() {
+    ClientHelloLayer->SetRandom("thirty two bytes of random data.")
+    ClientHelloLayer->AddCipherSuite(TLS::CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256)
+    ClientHelloLayer->AddCompressionMethod(TLS::HandshakeProtocol::CompressionMethod::Null)
+
+    NetworkPacket* Packet := ClientHelloLayer->Enter(null)
+
+    ClientHelloLayer->Leave(Packet)
+
+    return Packet
+}
+
+define NetworkPacket* ServerHello() {
+    ServerHelloLayer->SetRandom("thirty two bytes of random data.")
+    ServerHelloLayer->SetCipherSuite(TLS::CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256)
+    ServerHelloLayer->SetCompressionMethod(TLS::HandshakeProtocol::CompressionMethod::Null)
+
+    NetworkPacket* Packet := ServerHelloLayer->Enter(null)
+
+    ServerHelloLayer->Leave(Packet)
+
+    return Packet
+}
+*/
+
+class Plumbing derives INew {
+    TLS::RecordProtocol::Layer* RecordLayer
+    TLS::HandshakeProtocol::Layer* HandshakeLayer
+    TLS::HandshakeProtocol::ClientHelloLayer* ClientHelloLayer
+    TLS::HandshakeProtocol::ServerHelloLayer* ServerHelloLayer
+
+    define void New() {
+        this->RecordLayer := new TLS::RecordProtocol::Layer()
+        this->RecordLayer->SetVersion(TLS::VersionNumber::TLS_1_0)
+
+        this->HandshakeLayer := new TLS::HandshakeProtocol::Layer(this->RecordLayer)
+        this->RecordLayer->RegisterContentType(TLS::RecordProtocol::ContentType::Handshake, this->HandshakeLayer)
+        this->HandshakeLayer->SetVersion(TLS::VersionNumber::TLS_1_2)
+
+        this->ClientHelloLayer := new TLS::HandshakeProtocol::ClientHelloLayer(this->HandshakeLayer)
+        this->HandshakeLayer->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ClientHello, this->ClientHelloLayer)
+
+        this->ServerHelloLayer := new TLS::HandshakeProtocol::ServerHelloLayer(this->HandshakeLayer)
+        this->HandshakeLayer->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerHello, this->ServerHelloLayer)
+    }
+}
+
+#Require "./src/TLS/tests/ServerHello_Cert_Kex_Done.rlx"
+
+define void Main() {
+    Plumbing* P := new Plumbing()
+
+    NetworkPacket* Packet := new NetworkPacket(SERVER_HELLO_TEST_SIZE + 1)
+    MoveMemory(Packet->Buffer, SERVER_HELLO_TEST, SERVER_HELLO_TEST_SIZE)
+
+    P->RecordLayer->Process(Packet)
+
+    Packet->DumpMarkers()
+}

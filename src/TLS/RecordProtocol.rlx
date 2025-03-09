@@ -1,0 +1,194 @@
+
+#Require "$/AVLTree.rlx"
+#Require "$/PointerArray.rlx"
+
+#Require "./src/Endianess.rlx"
+#Require "./src/network/Packet.rlx"
+
+#Require "./src/TLS/Core.rlx"
+
+namespace TLS::RecordProtocol {
+    enum ConnectionEnd {
+        Server,
+        Client
+    }
+
+    enum PRFAlgorithm {
+        TLS_PRF_SHA256
+    }
+
+    enum BulkCipherAlgorithm {
+        Null,
+        RC4,
+        3DES,
+        AES
+    }
+
+    enum CipherType {
+        Stream,
+        Block,
+        AEAD
+    }
+
+    enum MACAlgorithm {
+        Null,
+        MD5,
+        SHA1,
+        SHA256,
+        SHA384,
+        SHA512
+    }
+
+    enum CompressionAlgorithm {
+        Null
+    }
+
+    struct SecurityParameters {
+        ConnectionEnd Entity
+        PRFAlgorithm PRF
+        BulkCipherAlgorithm BulkCipher
+        CipherType CipherType
+
+        i8 EncryptionKeyLength
+        i8 BlockLength
+        i8 FixedIVLength
+        i8 RecordIVLength
+
+        MACAlgorithm MAC
+        i8 MACLength
+        i8 MACKeyLength
+
+        CompressionAlgorithm Compression
+
+        i8[48] MasterSecret
+        i8[32] ClientRandom
+        i8[32] ServerRandom
+    }
+
+    struct GeneratedSecurityParameters {
+        void* ClientWriteMACKey
+        void* ServerWriteMACKey
+
+        void* ClientWriteEncryptionKey
+        void* ServerWriteEncryptionKey
+
+        void* ClientWriteIV
+        void* ServerWriteIV
+    }
+
+    struct ProtocolVersion {
+        i8 Major
+        i8 Minor
+    }
+
+    enum ContentType As i8 {
+        ChangeCipherSpec := 20
+        Alert := 21
+        Handshake := 22
+        ApplicationData := 23
+    }
+
+    struct RecordHeader unaligned {
+        ContentType Type
+        ProtocolVersion Version
+        i16 Length
+    }
+
+    struct CipherTextRecord {
+        ContentType Type
+        ProtocolVersion Version
+        i16 Length
+    }
+
+    class LayerOptions implements INetworkOptions {
+        ContentType Type
+    }
+
+    class Layer implements INetworkLayer, derives INew {
+        ProtocolVersion Version
+
+        define void SetVersion(VersionNumber Version) {
+            this~>Version->Major := Version.Major()
+            this~>Version->Minor := Version.Minor()
+        }
+
+        define NetworkPacket* Enter(INetworkOptions* RawOptions) {
+            LayerOptions* Options := RawOptions
+
+            NetworkPacket* Packet := new NetworkPacket(PAGE_SIZE)
+
+            RecordHeader* Header := Packet->Mark("TLS::RecordProtocol::Record", #RecordHeader)
+
+            MoveMemory(Header~>Version, this~>Version, #ProtocolVersion)
+            Header->Type := Options->Type
+
+            return Packet
+        }
+
+        define void Leave(NetworkPacket* Packet) {
+            RecordHeader* Header := Packet->Get("TLS::RecordProtocol::Record")
+
+            Print("Record Length: %i\n", Packet->Offset)
+
+            Header->Length := Swap16((Packet->Offset - #RecordHeader) As i16)
+
+            Packet->End()
+        }
+
+        AVLTree* ContentTypeHandlers ; <INetworkLayer*>
+
+        define void RegisterContentType(ContentType Type, INetworkLayer* Handler) {
+            this->ContentTypeHandlers->InsertPointer(Type As i32, Handler)
+        }
+
+        define void Process(NetworkPacket* Packet) {
+            while (Packet->Offset < Packet->Size) {
+                RecordHeader* Header := Packet->Mark("TLS::RecordProtocol::Record", #RecordHeader)
+                
+                Header->Length := Swap16(Header->Length)
+                Packet->Extend("TLS::RecordProtocol::Record", Header->Length)
+
+
+                ContentType Type := Header->Type
+                INetworkLayer* Handler := this->ContentTypeHandlers->GetPointer(Type As i32)
+
+                if (Handler) {
+                    Handler->Process(Packet)
+                }
+                else {
+                    Print("No handler for content type %i (%s)\n", Type, nameof:(Type))
+                }
+
+                Packet->Seek(Packet->GetEndOffset("TLS::RecordProtocol::Record"))
+
+                Print("%x/%x\n", Packet->Offset, Packet->Size)
+            }
+        }
+
+        define void New() {
+            this->ContentTypeHandlers := new AVLTree(#void*)
+        }
+    }
+}
+
+define void DoPrintDump(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+    i8* Buffer := Parameters[*ParameterIndex] As void*
+    i32 Size := Parameters[*ParameterIndex + 1] As i32
+
+    for (i32 Index := 0, Index < Size, Index++) {
+        this->Print("%B", Buffer[Index])
+
+        if (Index + 1 != Size) {
+            this->Print(" ")
+        }
+    }
+
+    *ParameterIndex += 2
+}
+
+PrintFormatPrototype DumpPrintPrototype {
+    Name: "dump",
+    Format: &DoPrintDump
+}
+
+i32 DUMP_PRINT_PROTOTYPE_ID := AddPrintFormat(&DumpPrintPrototype)
