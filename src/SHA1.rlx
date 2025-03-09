@@ -7,22 +7,7 @@ define void ZeroMemory(void* RawMemory, i32 Size) {
     }
 }
 
-define i32 Swap32(i32 Value) asm {
-    emit, 0x0F ; bswap edi
-    emit, 0xCF
-
-    mov, eax, edi
-    ret
-}
-
-define i64 Swap64(i64 Value) asm {
-    emit, 0x48 ; bswap rdi
-    emit, 0x0F
-    emit, 0xCF
-
-    mov, rax, rdi
-    ret
-}
+#Require "./src/Endianess.rlx"
 
 define void P(i64 V) {
     Print("%x ", (V & 0xFFFF_FFFF))
@@ -59,6 +44,14 @@ struct SHA1State {
 
         this->ChunkCursor := 0
         this->Length := 0
+    }
+
+    static self* New() {
+        self* this := Alloc(#self)
+
+        this->Initialize()
+
+        return this
     }
 
     define void Reset() {

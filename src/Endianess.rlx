@@ -25,3 +25,29 @@ define i64 NetworkLong(i64 Value) asm {
     mov, rax, rdi
     ret
 }
+
+define i16 Swap16(i16 Value) asm {
+    mov, eax, edi
+    
+    emit, 0x86 ; xchg al, ah
+    emit, 0xE0
+
+    ret
+}
+
+define i32 Swap32(i32 Value) asm {
+    emit, 0x0F ; bswap edi
+    emit, 0xCF
+
+    mov, eax, edi
+    ret
+}
+
+define i64 Swap64(i64 Value) asm {
+    emit, 0x48 ; bswap rdi
+    emit, 0x0F
+    emit, 0xCF
+
+    mov, rax, rdi
+    ret
+}
