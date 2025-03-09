@@ -1,0 +1,46 @@
+    #Include "./src/ASN1/ValueBase.rlx"
+
+    i32 Offset
+    void* Value
+
+    i32 Length
+
+    define void SetValue(i32 Offset, void* Value, i32 Length) {
+        this->Offset := Offset
+        this->Value := Value
+        this->Length := Length
+    }
+
+    define void* GetValue() {
+        return this->Value
+    }
+
+    define i32 GetLength() {
+        return this->Length
+    }
+
+    define IValue* AsValue() {
+        return this As IValue*
+    }
+
+    define void Print(i32 Depth) {
+        Indent(Depth)
+
+        if (this->GetClass() = IdentifierClass::UNIVERSAL) {
+            Print("%s ", nameof:(this->GetTag() As UniversalTag))
+        }
+        else {
+            Print("%s STRING ", nameof:(this->GetClass()))
+        }
+
+        i8* Value := this->GetValue()
+        i32 Length := this->GetLength()
+
+        Print("(%i bytes) \"", Length)
+
+        for (i32 Index := 0, Index < Length, Index++) {
+            Print("%c", Value[Index])
+        }
+
+        Print("\"\n")
+    }

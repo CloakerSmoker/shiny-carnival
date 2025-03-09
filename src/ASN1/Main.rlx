@@ -1,0 +1,15 @@
+
+#Require "$/Console.rlx"
+
+#Require "./src/ASN1/Core.rlx"
+
+i8* TestData := i8[#file "./src/ASN1/tests/sig-p256.der"]
+i32 TestDataSize := 10872
+
+define void Main() {
+    Parser* p := new Parser(TestData, TestDataSize)
+
+    IValue* v := p->ParseValue()
+
+    v->Print(0)
+}

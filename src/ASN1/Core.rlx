@@ -1,0 +1,586 @@
+
+#Require "$/ExceptionBase.rlx"
+#Require "$/PointerArray.rlx"
+#Require "./src/Big/Big.rlx"
+
+enum UniversalTag As i8 {
+    BOOLEAN := 1
+    INTEGER := 2
+    BIT_STRING := 3
+    OCTET_STRING := 4
+    NULL := 5
+    OBJECT_IDENTIFIER := 6
+    UTF8_STRING := 12
+    SEQUENCE := 16
+    SET := 17
+    PRINTABLE_STRING := 19
+    IA5_STRING := 22
+    UTC_TIME := 23
+}
+
+enum IdentifierClass As i8 {
+    UNIVERSAL := 0
+    APPLICATION := 1
+    CONTEXT_SPECIFIC := 2
+    PRIVATE := 3
+}
+
+bits Identifier As i8 {
+    [0:4] Tag
+    [5] Constructed
+    IdentifierClass [6:7] Class
+}
+
+bits IdentifierContinuation As i8 {
+    [0:6] Value
+    [7] More
+}
+
+bits LengthField As i8 {
+    [0:6] Value
+    [7] Long
+}
+
+bits ObjectIdentifierComponent As i8 {
+    [0:6] Value
+    [7] More
+}
+
+interface IValue {
+    virtual i32 GetTag()
+    virtual IdentifierClass GetClass()
+    virtual i8 GetConstructed()
+
+    virtual void Setup() {
+        ; pass
+    }
+
+    virtual void Print(i32 Depth) {
+        Print("whoopsies")
+    }
+}
+
+define void Indent(i32 Depth) {
+    for (i32 Index := 0, Index < Depth, Index++) {
+        Print("  ")
+    }
+}
+
+class IntegerValue implements IValue, derives INew {
+    #Include "./src/ASN1/ValueBase.rlx"
+
+    BigInteger* Value
+
+    define void SetValue(BigInteger* Value) {
+        this->Value := Value
+    }
+
+    define void Print(i32 Depth) {
+        Indent(Depth) Print("INTEGER %bn-base-10\n", this->Value)
+    }
+}
+
+class SequenceValue implements IValue, derives INew {
+    #Include "./src/ASN1/ValueBase.rlx"
+
+    PointerArray* Values ; <IValue*>
+
+    define void Setup() {
+        this->Values := new PointerArray()
+    }
+
+    define i32 Count() {
+        return this->Values->Count()
+    }
+    define void Push(IValue* Value) {
+        this->Values->Push(Value)
+    }
+    define IValue* At(i32 Index) {
+        return this->Values->At(Index)
+    }
+
+    define void Print(i32 Depth) {
+        i32 Count := this->Count()
+
+        Indent(Depth)
+
+        if (this->Class != IdentifierClass::UNIVERSAL) {
+            Print("%s ", nameof:(this->Class))
+        }
+
+        Print("SEQUENCE (%i elem)\n", Count)
+
+        for (i32 Index := 0, Index < Count, Index++) {
+            IValue* Value := this->At(Index)
+
+            Value->Print(Depth + 1)
+        }
+    }
+}
+
+class ObjectIdentifierValue implements IValue, derives INew {
+    #Include "./src/ASN1/ValueBase.rlx"
+
+    i32* Components
+    i32 ComponentCount
+
+    define void Setup() {
+        this->Components := Alloc(#i32)
+    }
+
+    define i32 Count() {
+        return this->ComponentCount
+    }
+    define i32 At(i32 Index) {
+        return this->Components[Index]
+    }
+    define void Push(i32 Component) {
+        i32 Index := this->ComponentCount++
+        this->Components := ReAlloc(this->Components, this->ComponentCount * #i32)
+
+        this->Components[Index] := Component
+    }
+    define void Set(i32 Index, i32 Value) {
+        this->Components[Index] := Value
+    }
+
+    define void Print(i32 Depth) {
+        Indent(Depth) Print("OBJECT IDENTIFIER ")
+
+        for (i32 Index := 0, Index < this->ComponentCount, Index++) {
+            Print("%i", this->Components[Index])
+
+            if (Index + 1 < this->ComponentCount) {
+                Print(".")
+            }
+        }
+
+        Print("\n")
+    }
+}
+
+class UnknownValue implements IValue, derives INew {
+    #Include "./src/ASN1/ValueBase.rlx"
+
+    i32 Offset
+
+    i8* Data
+    i32 Size
+
+    define void SetData(i32 Offset, i8* Data, i32 Size) {
+        this->Offset := Offset
+
+        this->Data := Data
+        this->Size := Size
+    }
+
+    define void Print(i32 Depth) {
+        Indent(Depth) Print("UNKNOWN %s %i (%i bytes)\n", this->Size, nameof:(this->Class), this->Tag)
+    }
+}
+
+class NullValue implements IValue, derives INew {
+    #Include "./src/ASN1/ValueBase.rlx"
+
+    define void Print(i32 Depth) {
+        Indent(Depth) Print("NULL\n")
+    }
+}
+
+interface IStringValue {
+    virtual void SetValue(i32 Offset, i8* Value, i32 Length)
+    virtual void* GetValue()
+    virtual i32 GetLength()
+
+    virtual i32 GetTag()
+    virtual IdentifierClass GetClass()
+
+    virtual IValue* AsValue()
+}
+
+class OctetStringValue implements IValue, IStringValue, derives INew {
+    #Include "./src/ASN1/StringBase.rlx"
+}
+
+class StringValue implements IValue, IStringValue, derives INew {
+    #Include "./src/ASN1/StringBase.rlx"
+}
+
+class UTCTimeValue implements IValue, IStringValue, derives INew {
+    #Include "./src/ASN1/StringBase.rlx"
+}
+
+class BitStringValue implements IValue, derives INew {
+    #Include "./src/ASN1/ValueBase.rlx"
+
+    i32 Offset
+    void* Data
+
+    i32 Length
+    i32 BitLength
+
+    define void SetValue(i32 Offset, void* Data, i32 Length, i32 BitLength) {
+        this->Offset := Offset
+        this->Data := Data
+        this->Length := Length
+        this->BitLength := BitLength
+    }
+
+    define void Print(i32 Depth) {
+        Indent(Depth) Print("BIT_STRING (%i bits) ", this->BitLength)
+
+        i32 ByteCount := this->BitLength / 8
+        i32 Remainder := this->BitLength % 8
+
+        i8* Bytes := this->Data
+
+        for (i32 Index := 0, Index < ByteCount, Index++) {
+            i8 Value := Bytes[Index]
+
+            for (i32 Bit := 0, Bit < 8, Bit++) {
+                i32 Mask := 1 << Bit
+
+                if (Value & Mask) {
+                    Print("1")
+                }
+                else {
+                    Print("0")
+                }
+            }
+        }
+
+        if (Remainder) {
+            i8 Value := Bytes[Index]
+
+            for (i32 Bit := 0, Bit < Remainder, Bit++) {
+                i32 Mask := 1 << Bit
+
+                if (Value & Mask) {
+                    Print("1")
+                }
+                else {
+                    Print("0")
+                }
+            }
+        }
+
+        Print("\n")
+    }
+}
+
+class BooleanValue implements IValue, derives INew {
+    #Include "./src/ASN1/ValueBase.rlx"
+
+    i8 Value
+
+    define void SetValue(i8 Value) {
+        this->Value := Value
+    }
+
+    define void Print(i32 Depth) {
+        Indent(Depth) Print("BOOLEAN ")
+
+        if (this->Value) {
+            Print("True")
+        }
+        else {
+            Print("False")
+        }
+
+        Print("\n")
+    }
+}
+
+class Parser derives INew {
+    i8* Buffer
+    i32 Size
+    i32 Offset
+
+    define void New(void* Buffer, i32 Size) {
+        this->Buffer := Buffer
+        this->Size := Size
+    }
+
+    define i32 PushSize(i32 New) {
+        i32 Old := this->Size
+
+        this->Size := this->Offset + New
+
+        return Old
+    }
+    define void PopSize(i32 Old) {
+        this->Size := Old
+    }
+
+
+
+    define i8 ReadByte() {
+        if (this->Offset >= this->Size) {
+            Throw('EOF')
+        }
+
+        return this->Buffer[this->Offset++]
+    }
+    define i8 PeekByte() {
+        if (this->Offset >= this->Size) {
+            return 0
+        }
+
+        return this->Buffer[this->Offset]
+    }
+
+    define i32 ReadIdentifier(IdentifierClass* OutClass, i8* OutConstructed) {
+        Identifier Id := this->ReadByte() As Identifier
+        
+        i32 Tag := Id.Tag
+
+        OutClass[0] := Id.Class
+        OutConstructed[0] := Id.Constructed
+
+        ;Print("%x: %i, %i, %i\n", Tag, Id.Class, Id.Constructed, Id.Tag)
+
+        if (Tag = 31) {
+            Tag := 0
+
+            loop {
+                IdentifierContinuation Continuation := this->ReadByte() As IdentifierContinuation
+
+                Tag := Tag << 7
+                Tag |= Continuation.Value
+
+                if !(Continuation.More) {
+                    break
+                }
+            }
+        }
+
+        return Tag
+    }
+
+    define i32 ReadDefiniteLength() {
+        LengthField Info := this->ReadByte() As LengthField
+
+        i32 Length := Info.Value
+
+        if (Info.Long) {
+            i32 Count := Length
+            Length := 0
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                i32 Byte := (this->ReadByte() As i32) & 0xFF
+
+                Length := Length << 8
+                Length |= Byte
+            }
+        }
+
+        return Length
+    }
+
+    declare IValue* ParseValue()
+
+    define SequenceValue* ParseSequence(SequenceValue* Result, i32 Size) {
+        i32 Old := this->PushSize(Size)
+
+        Print("ENTER SEQUENCE @ %i\n", this->Offset)
+
+        while (this->Offset < this->Size) {
+            IValue* Value := this->ParseValue()
+
+            Result->Push(Value)
+        }
+
+        Print("EXIT SEQUENCE @ %i\n", this->Offset)
+
+        this->PopSize(Old)
+
+        return Result
+    }
+
+    define ObjectIdentifierValue* ParseObjectIdentifier(ObjectIdentifierValue* Result, i32 Size) {
+        i32 Old := this->PushSize(Size)
+
+        Result->Push(0)
+
+        while (this->Offset < this->Size) {
+            ObjectIdentifierComponent Info := this->ReadByte() As ObjectIdentifierComponent
+
+            i32 Value := Info.Value
+
+            while (Info.More) {
+                Info := this->ReadByte() As ObjectIdentifierComponent
+
+                Value := Value << 7
+                Value |= Info.Value
+            }
+
+            Result->Push(Value)
+        }
+
+        i32 Pair := Result->At(1)
+
+        Result->Set(0, Pair / 40)
+        Result->Set(1, Pair % 40)
+
+        Result->Print(0)
+
+        this->PopSize(Old)
+
+        return Result
+    }
+
+    define IntegerValue* ParseInteger(IntegerValue* Result, i32 Length) {
+        if (Length > 2) {
+            ;breakpoint:()
+        }
+
+        i8 First := this->ReadByte()
+
+        i8 Negative := First < 0
+
+        BigInteger* Value := new BigInteger()
+
+        Value->_Increment((First As i32) & 0x7F)
+
+        for (i32 Index := 1, Index < Length, Index++) {
+            i8 Byte := this->ReadByte()
+
+            Value->MultiplySelfBySingleDigit(256)
+
+            if (Negative) {
+                Value := ~Value
+            }
+
+            Value->_Increment(Byte & 0xFF)
+        }
+
+        if (Negative) {
+            Value->_Increment(1)
+        }
+
+        Result->SetValue(Value)
+
+        Result->Print(0)
+
+        return Result
+    }
+
+    define UnknownValue* ParseUnknown(UnknownValue* Result, i32 Size) {
+        Result->SetData(this->Offset, this->Buffer + this->Offset, Size)
+
+        return Result
+    }
+
+    define IValue* ParseString(IStringValue* Result, i32 Length) {
+        Result->SetValue(this->Offset, this->Buffer + this->Offset, Length)
+
+        this->Offset += Length
+
+        Print("ParseString = ") Result->AsValue()->Print(0)
+
+        return Result->AsValue()
+    }
+
+    define IValue* ParseBitString(BitStringValue* Result, i32 Length) {
+        i32 UnusedBites := this->ReadByte()
+        i32 BitLength := ((Length - 1) * 8) - UnusedBites
+        i32 ByteLength := BitLength / 8
+
+        if (BitLength % 8) {
+            ByteLength += 1
+        }
+
+        Result->SetValue(this->Offset, this->Buffer + this->Offset, ByteLength, BitLength)
+
+        this->Offset += Length - 1
+
+        Result->Print(0)
+
+        return Result
+    }
+
+    define IValue* ParseBoolean(BooleanValue* Result, i32 Length) {
+        if (Length != 1) {
+            Throw('WTF')
+        }
+
+        Result->SetValue(this->ReadByte())
+
+        return Result
+    }
+
+    define IValue* ParseValue() {
+        Print("\n")
+
+        Print("Offset: %i: ", this->Offset)
+
+        IdentifierClass Class := IdentifierClass::UNIVERSAL
+        i8 Constructed := false
+        i32 Tag := this->ReadIdentifier(&Class, &Constructed)
+
+        if (Constructed) {
+            ;Throw('NOPE')
+        }
+        
+        i32 Length := this->ReadDefiniteLength()
+
+        Print("tag %x, len %i, constructed? %i\n", Tag, Length, Constructed)
+
+        if (Length < 0) {
+            breakpoint:()
+        }
+
+        if (this->Offset + Length > this->Size) {
+            ;Throw('OOB')
+        }
+
+        Print("Class: %s, Tag: %s\n", nameof:(Class), nameof:(Tag As UniversalTag))
+
+        if (Class = IdentifierClass::UNIVERSAL) {
+            UniversalTag Universal := Tag As UniversalTag
+
+            if (Universal = UniversalTag::SEQUENCE) {
+                return this->ParseSequence(new SequenceValue(Tag, Class, Constructed), Length)
+            }
+            else if (Universal = UniversalTag::SET) {
+                return this->ParseSequence(new SequenceValue(Tag, Class, Constructed), Length)
+            }
+            else if (Universal = UniversalTag::OBJECT_IDENTIFIER) {
+                return this->ParseObjectIdentifier(new ObjectIdentifierValue(Tag, Class, Constructed), Length)
+            }
+            else if (Universal = UniversalTag::INTEGER) {
+                return this->ParseInteger(new IntegerValue(Tag, Class, Constructed), Length)
+            }
+            else if (Universal = UniversalTag::NULL) {
+                return new NullValue(Tag, Class, Constructed)
+            }
+            else if (Universal = UniversalTag::OCTET_STRING) {
+                return this->ParseString(new OctetStringValue(Tag, Class, Constructed), Length)
+            }
+            else if (Universal = UniversalTag::UTF8_STRING) {
+                return this->ParseString(new StringValue(Tag, Class, Constructed), Length)
+            }
+            else if (Universal = UniversalTag::UTC_TIME) {
+                return this->ParseString(new UTCTimeValue(Tag, Class, Constructed), Length)
+            }
+            else if (Universal = UniversalTag::BIT_STRING) {
+                return this->ParseBitString(new BitStringValue(Tag, Class, Constructed), Length)
+            }
+            else if (Universal = UniversalTag::BOOLEAN) {
+                return this->ParseBoolean(new BooleanValue(Tag, Class, Constructed), Length)
+            }
+            else {
+                Exit(0)
+            }
+        }
+        else {
+            if (Constructed) {
+                return this->ParseSequence(new SequenceValue(Tag, Class, Constructed), Length)
+            }
+
+            return this->ParseUnknown(new UnknownValue(Tag, Class, Constructed), Length)
+        }
+
+        return null
+    }
+}

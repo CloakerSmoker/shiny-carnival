@@ -1,0 +1,23 @@
+    i32 Tag
+    IdentifierClass Class
+    i8 Constructed
+
+    define i32 GetTag() {
+        return this->Tag
+    }
+    define IdentifierClass GetClass() {
+        return this->Class
+    }
+    define i8 GetConstructed() {
+        return this->Constructed
+    }
+
+    declare void Setup()
+
+    define void New(i32 Tag, IdentifierClass Class, i8 Constructed) {
+        this->Tag := Tag
+        this->Class := Class
+        this->Constructed := Constructed
+
+        this->Setup()
+    }
