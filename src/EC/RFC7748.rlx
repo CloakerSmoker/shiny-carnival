@@ -1,0 +1,290 @@
+
+#Require "$/Console.rlx"
+#Require "./src/Big/Big.rlx"
+
+namespace RFC7748 {
+    class FiniteField derives INew {
+        BigInteger* P
+
+        define void New(BigInteger* P) {
+            this->P := P
+        }
+
+        define BigInteger* Wrap(BigInteger* N) {
+            if (N->Negative) {
+                return N->Plus(this->P->Reference())
+            }
+
+            return N
+        }
+
+        define BigInteger* Add(BigInteger* Left, BigInteger* Right) {
+            return this->Wrap(Left->Add(Right)->Modulo(this->P->Reference()))
+        }
+        define BigInteger* Subtract(BigInteger* Left, BigInteger* Right) {
+            return this->Wrap(Left->Subtract(Right)->Modulo(this->P->Reference()))
+        }
+        define BigInteger* Multiply(BigInteger* Left, BigInteger* Right) {
+            return this->Wrap(Left->Multiply(Right)->Modulo(this->P->Reference()))
+        }
+        define BigInteger* Power(BigInteger* N, BigInteger* E) {
+            return this->Wrap(N->Power(E, this->P->Reference()))
+        }
+        define BigInteger* Square(BigInteger* N) {
+            return this->Wrap(N->Power(BigInteger:Constant(2), this->P->Reference()))
+        }
+    }
+
+    class Curve derives INew {
+        BigInteger* P
+        BigInteger* PM2
+        BigInteger* A24
+        i32 BitCount
+
+        FiniteField* Field
+
+        define void New(BigInteger* P, BigInteger* A24, i32 BitCount) {
+            this->P := P
+            this->PM2 := P->Reference()->Minus(BigInteger:Constant(2))
+            this->A24 := A24
+            this->BitCount := BitCount
+
+            this->Field := new FiniteField(P)
+        }
+
+        define void Release() {
+            this->A24->Release()
+            this->PM2->Release()
+            this->P->Release()
+
+            Free(this->Field)
+            Free(this)
+        }
+
+        define void ConditionalSwap(BigInteger* Swap, BigInteger** pX2, BigInteger** pX3) {
+            BigInteger* X2 := *pX2
+            BigInteger* X3 := *pX3
+
+            /* BigInteger* _X2MX3 := X2->Reference()->Subtract(X3->Reference())
+
+            Print("_X2MX3: %bn-base-16\n", _X2MX3) */
+
+
+            BigInteger* X2MX3 := this->Field->Subtract(X2->Reference(), X3->Reference())
+            /* Swap->Reference()
+            X2MX3->Reference() */
+            BigInteger* Dummy := this->Field->Multiply(Swap, X2MX3)
+
+            ;Print("cswap\n\tswap = %bn-base-10\n\t%bn-base-16\n\t%bn-base-16\n\tx2Mx3 = %bn-base-16\n\tdummy = %bn-base-16\n", Swap, X2, X3, X2MX3, Dummy)
+
+            *pX2 := this->Field->Subtract(X2, Dummy->Reference())
+            *pX3 := this->Field->Add(X3, Dummy)
+        }
+
+        define BigInteger* Multiply(BigInteger* U, BigInteger* K) {
+            Print("Point: %bn-base-16\n", U)
+            Print("Scalar: %bn-base-16\n", K)
+
+            FiniteField* F := this->Field
+
+            BigInteger* X1 := U->Reference()
+            BigInteger* X2 := new BigInteger(1)
+            BigInteger* Z2 := new BigInteger(0)
+            BigInteger* X3 := U->Reference()
+            BigInteger* Z3 := new BigInteger(1)
+
+            BigInteger* Swap := new BigInteger(0)
+
+            for (i32 Index := this->BitCount - 1, Index >= 0, Index--) {
+                BigInteger* KT := K->BitAt(Index)
+
+                /* Print("\nBit %i: %bn-base-10\n", Index, KT) */
+
+                Swap := Swap->XOR(KT->Reference())
+
+                this->ConditionalSwap(Swap->Reference(), &X2, &X3)
+                this->ConditionalSwap(Swap, &Z2, &Z3)
+
+                /* Print("ASwap\n")
+                Print("\tX2: %bn-base-16\n", X2)
+                Print("\tX3: %bn-base-16\n", X3)
+                Print("\tZ2: %bn-base-16\n", Z2)
+                Print("\tZ3: %bn-base-16\n", Z3) */
+
+                Swap := KT
+
+                BigInteger* A := F->Add(X2->Reference(), Z2->Reference())
+                BigInteger* AA := F->Square(A->Reference())
+
+                BigInteger* B := F->Subtract(X2, Z2)
+                BigInteger* BB := F->Square(B->Reference())
+
+                BigInteger* E := F->Subtract(AA->Reference(), BB->Reference())
+                BigInteger* C := F->Add(X3->Reference(), Z3->Reference())
+                BigInteger* D := F->Subtract(X3, Z3)
+
+                BigInteger* DA := F->Multiply(D, A)
+                BigInteger* CB := F->Multiply(C, B)
+
+                X3 := F->Square(F->Add(DA->Reference(), CB->Reference()))
+                Z3 := F->Multiply(X1->Reference(), F->Square(F->Subtract(DA, CB)))
+                X2 := F->Multiply(AA->Reference(), BB)
+                Z2 := F->Multiply(E, F->Add(AA, F->Multiply(this->A24->Reference(), E->Reference())))
+
+                /* Print("X2: %bn-base-16\n", X2)
+                Print("X3: %bn-base-16\n", X3)
+                Print("Z2: %bn-base-16\n", Z2)
+                Print("Z3: %bn-base-16\n", Z3) */
+            }
+
+            U->Release()
+            U->Release()
+            K->Release()
+
+            this->ConditionalSwap(Swap->Reference(), &X2, &X3)
+            this->ConditionalSwap(Swap, &Z2, &Z3)
+
+            /* Print("Final X2: %bn-base-16\n", X2)
+            Print("Final X3: %bn-base-16\n", X3)
+            Print("Final Z2: %bn-base-16\n", Z2)
+            Print("Final Z3: %bn-base-16\n", Z3) */
+
+            X3->Release()
+            Z3->Release()
+
+            BigInteger* Z2P := F->Power(Z2, this->PM2->Reference())
+            ;BigInteger* Result := F->Multiply(X2, BigInteger:ModularInverse(Z2, this->PM2->Reference()))
+            BigInteger* Result := F->Multiply(X2, Z2P)
+
+            ;Print("Res: %bn-base-16\n", Result)
+
+            return Result
+        }
+    }
+
+    interface ICurve {
+        virtual BigInteger* PrepareScalar(BigInteger*)
+        virtual BigInteger* PrepareBase(BigInteger* Base) {
+            return Base
+        }
+        virtual BigInteger* Multiply(BigInteger*, BigInteger*)
+        virtual void Release()
+    }
+
+    class Curve25519 implements ICurve, derives INew {
+        Curve* Base
+
+        define void New() {
+            BigInteger* N25519 := (new BigInteger(2))->Power(255)->Subtract(new BigInteger(19))
+            BigInteger* A24 := new BigInteger(121665)
+
+            this->Base := new Curve(N25519, A24, 255)
+        }
+
+        define BigInteger* PrepareScalar(BigInteger* RawK) {
+            BigInteger* K := BigInteger:WithBytes(32)
+
+            i32 Count := RawK->ByteCount()
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                K->_SetByte(Index, RawK->GetByte(Index))
+            }
+
+            RawK->Release()
+
+            K->_SetByte(0, K->GetByte(0) & 0xF8)
+            K->_SetByte(31, (K->GetByte(31) & 0x7F) | 0x40)
+
+            return K
+        }
+
+        define BigInteger* Multiply(BigInteger* U, BigInteger* K) {
+            return this->Base->Multiply(U, K)
+        }
+
+        define void Release() {
+            this->Base->Release()
+            Free(this)
+        }
+    }
+
+    class Curve448 implements ICurve, derives INew {
+        Curve* Base
+
+        define void New() {
+            BigInteger* N448 := (new BigInteger(2))->Power(448)->Minus((new BigInteger(2))->Power(224))->Minus(new BigInteger(1))
+            BigInteger* A24 := new BigInteger(39081)
+
+            this->Base := new Curve(N448, A24, 448)
+        }
+
+        define BigInteger* PrepareScalar(BigInteger* RawK) {
+            BigInteger* K := BigInteger:WithBytes(56)
+
+            i32 Count := RawK->ByteCount()
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                K->_SetByte(Index, RawK->GetByte(Index))
+            }
+
+            RawK->Release()
+
+            K->_SetByte(0, K->GetByte(0) & 0xFC)
+            K->_SetByte(55, K->GetByte(55) | 0x80)
+
+            return K
+        }
+
+        define BigInteger* Multiply(BigInteger* U, BigInteger* K) {
+            return this->Base->Multiply(U, K)
+        }
+
+        define void Release() {
+            this->Base->Release()
+            Free(this)
+        }
+    }
+}
+
+define void Test25519() {
+    RFC7748::Curve25519* Curve := new RFC7748::Curve25519()
+
+    ;BigInteger* K := new BigInteger("650", 16)
+    BigInteger* K := new BigInteger("4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d", 16)
+
+    Print("K: %bn-base-16\n", K)
+
+    ;BigInteger* U := new BigInteger("0900000000000000000000000000000000000000000000000000000000000000", 16)
+    BigInteger* U := new BigInteger("e5210f12786811d3f4b7959d0538ae2c31dbe7106fc03c3efc4cd549c715a413", 16)
+
+    Curve->Multiply(U->SwapByteOrder(), Curve->PrepareScalar(K->SwapByteOrder()))->Release()
+
+    Curve->Release()
+
+    HadLeaks()
+}
+
+define void Test448() {
+    RFC7748::Curve448* Curve := new RFC7748::Curve448()
+
+    ;BigInteger* K := new BigInteger("650", 16)
+    BigInteger* K := new BigInteger("3d262fddf9ec8e88495266fea19a34d28882acef045104d0d1aae121700a779c984c24f8cdd78fbff44943eba368f54b29259a4f1c600ad3", 16)
+
+    Print("K: %bn-base-16\n", K)
+
+    ;BigInteger* U := new BigInteger("0900000000000000000000000000000000000000000000000000000000000000", 16)
+    BigInteger* U := new BigInteger("06fce640fa3487bfda5f6cf2d5263f8aad88334cbd07437f020f08f9814dc031ddbdc38c19c6da2583fa5429db94ada18aa7a7fb4ef8a086", 16)
+
+    BigInteger* Result := Curve->Multiply(U->SwapByteOrder(), Curve->PrepareScalar(K->SwapByteOrder()))
+
+    Print("Result: %bn-base-16\n", Result)
+
+    Result->Release()
+    Curve->Release()
+
+    HadLeaks()
+}
+
+define void Main() {
+    Test448()
+}

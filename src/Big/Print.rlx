@@ -65,6 +65,14 @@ define void DoPrintBigIntegerBase(PrintOutputAdapterPrototype* this, i8* Format,
     *FormatIndex := Index - 1
 
     BigInteger* N := Parameters[*ParameterIndex] As void*
+
+    if (N->DigitCount = 0 || (N->DigitCount = 1 && N->Digits[0] = 0)) {
+        *ParameterIndex += 1
+        this->Print("0")
+
+        return
+    }
+
     BigInteger* Base := new BigInteger(RawBase)
 
     *ParameterIndex += 1

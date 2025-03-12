@@ -38,6 +38,8 @@ enum Primality {
     NotDefinitelyComposite
 }
 
+#Require "./src/Endianess.rlx"
+
 declare void Walk()
 declare i8 HadLeaks()
 
@@ -453,6 +455,9 @@ struct BigInteger {
     define BigInteger* Add(BigInteger* Right) {
         return self:Add(this, Right)
     }
+    define BigInteger* Plus(BigInteger* Right) {
+        return self:Add(this, Right)
+    }
 
     define void _Decrement(i64 Value) {
         if (this->Constant) {
@@ -643,6 +648,9 @@ struct BigInteger {
     define BigInteger* Subtract(BigInteger* Right) {
         return self:Subtract(this, Right)
     }
+    define BigInteger* Minus(BigInteger* Right) {
+        return self:Subtract(this, Right)
+    }
 
     static BigInteger* AbsoluteValue(BigInteger* In) {
         BigInteger* Result := new BigInteger(In)
@@ -814,9 +822,12 @@ struct BigInteger {
         Left->Release()
         Right->Release()
 
-        return Result
+        return Result->Shrink()
     }
     define BigInteger* Multiply(BigInteger* Right) {
+        return self:Multiply(this, Right)
+    }
+    define BigInteger* Times(BigInteger* Right) {
         return self:Multiply(this, Right)
     }
 
@@ -1328,6 +1339,10 @@ struct BigInteger {
         return Result
     }
 
+    define BigInteger* Power(BigInteger* Exponent, BigInteger* Modulus) {
+        return self:PowerModulo(this, Exponent, Modulus)
+    }
+
     static BigInteger* Power(BigInteger* Base, BigInteger* RawExponent) {
         BigInteger* Result := self:One()
         BigInteger* Exponent := new BigInteger(RawExponent)
@@ -1695,7 +1710,125 @@ struct BigInteger {
 
         return T
     }
+
+    static i32 DigitAND(i32 A, i32 B) {
+        return A & B
+    }
+    static i32 DigitOR(i32 A, i32 B) {
+        return A | B
+    }
+    static i32 DigitXOR(i32 A, i32 B) {
+        return A ^ B
+    }
+
+    static void Bitwise(i32(i32, i32) Operation, BigInteger* Left, BigInteger* Right, BigInteger* Result) {
+        for (i32 Index := 0, Index < Left->DigitCount, Index++) {
+            Result->Digits[Index] := Operation(Left->Digits[Index], Right->Digits[Index])
+        }
+
+        while (Index++ < Left->DigitCount) {
+            Result->Digits[Index] := Operation(Left->Digits[Index], 0)
+        }
+
+        Left->Release()
+        Right->Release()
+    }
+
+    static BigInteger* Bitwise(i32(i32, i32) Operation, BigInteger* Left, BigInteger* Right) {
+        if (Left->DigitCount < Right->DigitCount) {
+            BigInteger* Temp := Left
+            Left := Right
+            Right := Temp
+        }
+
+        BigInteger* Result := new BigInteger(Left)
+
+        self:Bitwise(Operation, Left, Right, Result)
+
+        return Result
+    }
+
+    define BigInteger* Bitwise(i32(i32, i32) Operation, BigInteger* Other) {
+        return self:Bitwise(Operation, this, Other)
+    }
+
+    define BigInteger* XOR(BigInteger* Other) {
+        return this->Bitwise(&self:DigitXOR, Other)
+    }
+    define BigInteger* OR(BigInteger* Other) {
+        return this->Bitwise(&self:DigitOR, Other)
+    }
+    define BigInteger* AND(BigInteger* Other) {
+        return this->Bitwise(&self:DigitAND, Other)
+    }
+
+    define i32 GetByte(i32 Index) {
+        i32 DigitIndex := Index / 3
+        i32 ByteIndex := Index % 3
+
+        i32 Digit := this->Digits[DigitIndex]
+
+        return (Digit >> (ByteIndex * 8)) & 0xFF
+    }
+    define void _SetByte(i32 Index, i32 Value) {
+        i32 DigitIndex := Index / 3
+        i32 ByteIndex := Index % 3
+        i32 ByteOffset := ByteIndex * 8
+
+        i32 Digit := this->Digits[DigitIndex]
+        i32 Mask := (0xFF As i32) << ByteOffset
+
+        Digit &= ~Mask
+        Digit |= Value << ByteOffset
+
+        this->Digits[DigitIndex] := Digit
+    }
+
+    define BigInteger* BitAt(i32 Index) {
+        i32 ByteIndex := Index / 8
+        i32 BitIndex := Index % 8
+
+        i32 Byte := this->GetByte(ByteIndex)
+
+        return self:Constant((Byte >> BitIndex) & 1)
+    }
+
+    define i32 ByteCount() {
+        i32 MaxByte := (this->DigitCount * 3) - 1
+
+        while (this->GetByte(MaxByte) = 0) {
+            MaxByte -= 1
+        }
+
+        return MaxByte + 1
+    }
+
+    static BigInteger* SwapByteOrder(BigInteger* N) {
+        BigInteger* Result := self:WithDigits(N->DigitCount)
+        i32 MaxByte := N->ByteCount() - 1
+
+        for (i32 Index := 0, Index <= MaxByte, Index++) {
+            Result->_SetByte(MaxByte - Index, N->GetByte(Index))
+        }
+
+        N->Release()
+
+        return Result
+    }
+
+    define BigInteger* SwapByteOrder() {
+        return self:SwapByteOrder(this)
+    }
     
+    static BigInteger* WithBytes(i32 Count) {
+        i32 Digits := Count / 3
+
+        if (Count % 3) {
+            Digits += 1
+        }
+
+        return self:WithDigits(Digits)
+    }
 
     static i8 Initialize() {
         FIRST_BIG_NUMBER := null
