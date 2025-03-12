@@ -1,0 +1,36 @@
+
+struct NetworkBuffer {
+    void* Data
+    i32 Size
+}
+
+struct NetworkBufferRegion {
+    i32 Offset
+    i32 Size
+    i32 Tag
+    
+    i8 Parent
+    i8 Instance
+    i8 FirstChild
+    i8 NextSibling
+}
+
+struct NetworkPacket {
+    NetworkBufferRegion* Regions
+
+    i32 RegionCount
+
+    define NetworkBufferRegion* AllocateRegion() {
+
+    }
+
+    i8 CurrentParent
+    i8 LastSibling
+
+    define void* Mark(i8* Tag, i32 Size) {
+        auto Region := this->AllocateRegion()
+
+        Region->Tag := Squeeze(Tag)
+        Region->Size := Size
+    }
+}

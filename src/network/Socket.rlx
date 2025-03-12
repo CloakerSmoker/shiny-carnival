@@ -1,0 +1,290 @@
+
+i32 LINUX_SYSCALL_CLOSE := 3
+i32 LINUX_SYSCALL_POLL := 7
+i32 LINUX_SYSCALL_SOCKET := 41
+i32 LINUX_SYSCALL_CONNECT := 42
+i32 LINUX_SYSCALL_ACCEPT := 43
+i32 LINUX_SYSCALL_SENDTO := 44
+i32 LINUX_SYSCALL_RECVFROM := 45
+i32 LINUX_SYSCALL_BIND := 49
+i32 LINUX_SYSCALL_LISTEN := 50
+i32 LINUX_SYSCALL_SETSOCKETOPT := 54
+i32 LINUX_SYSCALL_GETSOCKETOPT := 55
+
+i16 AF_UNIX := 1
+i16 AF_FILE := 1
+i16 AF_INET := 2
+i16 AF_INET6 := 10
+
+i32 SOCK_STREAM := 1
+i32 SOCK_DGRAM := 2
+i32 SOCK_RAW := 3
+
+i32 IPPROTO_IP := 0
+i32 IPPROTO_ICMP := 1
+i32 IPPROTO_TCP := 6
+i32 IPPROTO_UDP := 17
+i32 IPPROTO_IPV6 := 41
+i32 IPPROTO_RAW := 255
+
+struct SocketAddress {
+    i16 AddressFamily
+}
+
+struct AnySocketAddress {
+    i8[128] Data
+}
+
+i32 SOL_SOCKET := 1
+i32 SO_REUSEADDR := 2
+
+i32 SO_YES := 1
+i32 SO_NO := 0
+i32 SO_SIZE := #i32
+
+i16 POLL_EVENT_INPUT_READY := 1
+i16 POLL_EVENT_PRIORITY_DATA := 2
+i16 POLL_EVENT_OUTPUT_READY := 4
+i16 POLL_EVENT_ERROR := 8
+
+i16 POLL_FOR_READ := POLL_EVENT_INPUT_READY
+i16 POLL_FOR_WRITE := POLL_EVENT_OUTPUT_READY
+
+struct PollFileDescriptor {
+	i32 FileDescriptor
+	i16 RequestedEvents
+	i16 ReturnedEvents
+}
+
+bits Socket As i64 {
+    i64 [0:63] FileDescriptor
+
+    static self New(i32 AddressFamily, i32 Type, i32 Protocol) {
+        return syscall:(LINUX_SYSCALL_SOCKET, AddressFamily, Type, Protocol) As Socket
+    }
+
+    define i64 Error() {
+        return this->FileDescriptor
+    }
+
+    define i64 Poll(i16 Events, i32 Timeout) {
+        PollFileDescriptor Poller {
+            FileDescriptor: this->FileDescriptor As i32,
+            RequestedEvents: Events,
+            ReturnedEvents: 0
+        }
+
+        i64 Result := syscall:(LINUX_SYSCALL_POLL, &Poller, 1, Timeout)
+
+        if (Result < 0) {
+            return Result
+        }
+
+        return Poller->ReturnedEvents
+    }
+
+    define i64 Bind(SocketAddress* Address, i32 AddressSize) {
+        if (AddressSize < 16) {
+            AddressSize := 16
+        }
+
+        return syscall:(LINUX_SYSCALL_BIND, this, Address, AddressSize)
+    }
+    define i64 Listen(i32 Backlog) {
+        return syscall:(LINUX_SYSCALL_LISTEN, this, Backlog)
+    }
+    define i64 Listen() {
+        return this->Listen(10)
+    }
+
+    define Socket Accept(SocketAddress* Address, i32 AddressSize) {
+        if (AddressSize < 16) {
+            AddressSize := 16
+        }
+
+        return syscall:(LINUX_SYSCALL_ACCEPT, this, Address, &AddressSize) As Socket
+    }
+
+    define i64 Connect(SocketAddress* Address, i32 AddressSize) {
+        if (AddressSize < 16) {
+            AddressSize := 16
+        }
+
+        return syscall:(LINUX_SYSCALL_CONNECT, this, Address, AddressSize)
+    }
+
+    define i64 SendTo(SocketAddress* Address, i32 AddressSize, void* Data, i32 Size, i32 Flags) {
+        if (AddressSize < 16) {
+            AddressSize := 16
+        }
+
+        return syscall:(LINUX_SYSCALL_SENDTO, this, Data, Size, Flags, Address, AddressSize)
+    }
+    define i64 SendTo(SocketAddress* Address, i32 AddressSize, void* Data, i32 Size) {
+        return this->SendTo(Address, AddressSize, Data, Size, 0)
+    }
+    define i64 Send(void* Data, i32 Size, i32 Flags) {
+        return syscall:(LINUX_SYSCALL_SENDTO, this, Data, Size, Flags, null, 0)
+    }
+    define i64 Send(void* Data, i32 Size) {
+        return this->Send(Data, Size, 0)
+    }
+    define i64 Send(i8* Text) {
+        return this->Send(Text, StringLength(Text), 0)
+    }
+
+    define i64 ReceiveFrom(SocketAddress* Address, i32 AddressSize, void* Buffer, i32 Size, i32 Flags) {
+        if (AddressSize < 16) {
+            AddressSize := 16
+        }
+
+        return syscall:(LINUX_SYSCALL_RECVFROM, this, Buffer, Size, Flags, Address, &AddressSize)
+    }
+    define i64 ReceiveFrom(SocketAddress* Address, i32 AddressSize, void* Buffer, i32 Size) {
+        return this->ReceiveFrom(Address, AddressSize, Buffer, Size, 0)
+    }
+    define i64 Receive(void* Buffer, i32 Size, i32 Flags) {
+        return syscall:(LINUX_SYSCALL_RECVFROM, this, Buffer, Size, Flags, null, 0)
+    }
+    define i64 Receive(void* Buffer, i32 Size) {
+        return this->Receive(Buffer, Size, 0)
+    }
+
+    define i64 SetOption(i32 Name, void* Value, i32 Length) {
+        return syscall:(LINUX_SYSCALL_SETSOCKETOPT, this, SOL_SOCKET, Name, Value, Length)
+    }
+    define i64 SetOption(i32 Name, i8 Value) {
+        i32* pValue := &SO_YES
+
+        if !(Value) {
+            pValue := &SO_NO
+        }
+
+        return this->SetOption(Name, pValue, SO_SIZE)
+    }
+    define i64 GetOption(i32 Name, void* Value, i32 Length) {
+        return syscall:(LINUX_SYSCALL_GETSOCKETOPT, this, SOL_SOCKET, Name, Value, Length)
+    }
+
+    define i64 Close() {
+        return syscall:(LINUX_SYSCALL_CLOSE, this)
+    }
+}
+
+define i32 ParseIPV4(i8* RawAddress) {
+    i8[20] Address
+
+    i32 Length := StringLength(RawAddress)
+    MoveMemory(Address, RawAddress, Length)
+    Address[Length] := 0
+
+    i8*[4] Args
+    i32 ArgC := 0
+
+    i8* Last := Address
+
+    for (i32 Index := 0, Index < Length, Index++) {
+        if (Address[Index] = '.') {
+            Args[ArgC++] := Last
+            
+            Address[Index] := 0
+            Last := &Address[Index + 1]
+        }
+    }
+
+    Args[ArgC++] := Last
+
+    if (ArgC != 4) {
+        return 0
+    }
+
+    i32 Result := 0
+
+    for (i32 Index := 0, Index < 4, Index++) {
+        i8 Shift := ((3 - Index) * 8) As i8
+
+        Result |= (AToI(Args[Index]) As i32) << Shift
+    }
+
+    return Result
+}
+
+i32 INADDR_ANY := 0
+
+struct IPV4SocketAddress {
+    SocketAddress Base
+
+    i16 Port
+    i32 Address
+
+    define void FlipEndianess() {
+        this~>Base->AddressFamily := AF_INET
+
+        this->Port := NetworkShort(this->Port)
+        this->Address := NetworkInt(this->Address)
+    }
+
+    static self* New() {
+        return Alloc(#AnySocketAddress)
+    }
+
+    static self* New(i32 Address, i16 Port) {
+        self* this := Alloc(#AnySocketAddress)
+
+        this->Port := Port
+        this->Address := Address
+        this->FlipEndianess()
+
+        return this
+    }
+    static self* New(i8* Address, i16 Port) {
+        return self:New(ParseIPV4(Address), Port)
+    }
+}
+
+define void DoIPV4Print(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+	IPV4SocketAddress* Address := Parameters[*ParameterIndex] As void*
+
+    Address->FlipEndianess()
+
+    i32 IP := Address->Address
+	
+	this->Print("%i.", (IP >> 24) & 0xFF)
+    this->Print("%i.", (IP >> 16) & 0xFF)
+    this->Print("%i.", (IP >> 8) & 0xFF)
+    this->Print("%i", (IP >> 0) & 0xFF)
+
+    i32 Port := Address->Port
+    Port &= 0xFFFF
+
+    if (Port != 0) {
+        this->Print(":%i", Port)
+    }
+
+    Address->FlipEndianess()
+	
+	*ParameterIndex += 1
+}
+
+PrintFormatPrototype IPV4PrintPrototype {
+	Name: "ipv4",
+	Format: &DoIPV4Print
+}
+
+i32 IPV4_PRINT_PROTOTYPE_ID := AddPrintFormat(&IPV4PrintPrototype)
+
+class SocketNetworkLayer implements INetworkLayer {
+    Socket Remote
+
+    define NetworkPacket* Enter(INetworkOptions* Options) {
+        return new NetworkPacket(PAGE_SIZE)
+    }
+    define void Leave(NetworkPacket* Packet) {
+        this->Remote->Send(Packet->Buffer, Packet->Size)
+    }
+
+    define void Poll() {
+        this->Socket->Poll(POLL_FOR_READ, -1)
+        
+    }
+}

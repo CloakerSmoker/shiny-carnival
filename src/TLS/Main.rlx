@@ -51,6 +51,16 @@ class Plumbing derives INew {
     }
 }
 
+class Client {
+    Plumbing* Base
+
+    define void New() {
+
+    }
+
+    
+}
+
 #Require "./src/TLS/tests/ServerHello_Cert_Kex_Done.rlx"
 
 define void Main() {

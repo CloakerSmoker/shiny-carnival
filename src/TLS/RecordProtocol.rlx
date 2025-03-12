@@ -105,6 +105,8 @@ namespace TLS::RecordProtocol {
     }
 
     class Layer implements INetworkLayer, derives INew {
+        INetworkLayer* Base
+
         ProtocolVersion Version
 
         define void SetVersion(VersionNumber Version) {
@@ -115,7 +117,7 @@ namespace TLS::RecordProtocol {
         define NetworkPacket* Enter(INetworkOptions* RawOptions) {
             LayerOptions* Options := RawOptions
 
-            NetworkPacket* Packet := new NetworkPacket(PAGE_SIZE)
+            NetworkPacket* Packet := this->Base->Enter(null)
 
             RecordHeader* Header := Packet->Mark("TLS::RecordProtocol::Record", #RecordHeader)
 

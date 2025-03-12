@@ -1,0 +1,210 @@
+
+PointerArray* PacketDataNames := new PointerArray()
+
+define i32 RegisterPacketData(i8* Name) {
+    i32 ID := PacketDataNames->Count()
+
+    for (i32 Index := 0, Index < ID, Index++) {
+        if (StringEquals(PacketDataNames->At(Index), Name)) {
+            return Index
+        }
+    }
+
+    PacketDataNames->Push(Name)
+
+    return ID
+}
+
+struct NetworkPacketMarker {
+    i32 ID
+    i32 Size
+    i32 Offset
+    i32 _
+}
+
+struct NetworkPacket {
+    NetworkPacketMarker[10] Markers
+
+    void* Buffer
+    i32 Offset
+    i32 Size
+
+    i32 MarkerCount
+
+    i32 ReferenceCount
+
+    declare i32 Tell()
+
+    static self* New(NetworkPacket* Template, void* NewBuffer, i32 NewSize) {
+        self* this := CloneMemory(Template, #self)
+
+        this->Buffer := NewBuffer
+        this->Size := NewSize
+
+        return this
+    }
+
+    static self* New(void* Buffer, i32 Size) {
+        self* this := Alloc(#self)
+
+        this->Buffer := Buffer
+        this->Size := Size
+
+        return this
+    }
+
+    static self* New(i32 Size) {
+        i32 Pages := Size / PAGE_SIZE
+
+        if (Size % PAGE_SIZE) {
+            Pages += 1
+        }
+
+        void* Buffer := Alloc(Pages * PAGE_SIZE)
+
+        return self:New(Buffer, Size)
+    }
+
+    define void ClearMarkers() {
+        this->MarkerCount := 0
+    }
+
+    define NetworkPacketMarker* Find(i32 ID) {
+        for (i32 Index := 0, Index < this->MarkerCount, Index++) {
+            NetworkPacketMarker* Marker := this->Markers[Index]
+
+            if (Marker->ID = ID) {
+                return Marker
+            }
+        }
+
+        return null
+    }
+    define NetworkPacketMarker* Find(i8* ID) {
+        return this->Find(RegisterPacketData(ID))
+    }
+
+    define void* Mark(i32 ID, i32 Size) {
+        void* Result := this->Buffer + this->Offset
+
+        NetworkPacketMarker* Marker := this->Find(ID)
+
+        if (Marker = null) {
+            Marker := this->Markers[this->MarkerCount++]
+        }
+
+        Marker->ID := ID
+        Marker->Offset := this->Offset
+        Marker->Size := Size
+
+        this->Offset += Size
+
+        return Result
+    }
+    define void* Mark(i8* ID, i32 Size) {
+        return this->Mark(RegisterPacketData(ID), Size)
+    }
+
+    define void* Get(i32 ID) {
+        return this->Buffer + this->Find(ID)->Offset
+    }
+    define void* Get(i8* ID) {
+        return this->Get(RegisterPacketData(ID))
+    }
+
+    define void* Get() {
+        return this->Buffer + this->Offset
+    }
+
+    define i32 GetSize(i32 ID) {
+        return this->Find(ID)->Size
+    }
+    define i32 GetSize(i8* ID) {
+        return this->GetSize(RegisterPacketData(ID))
+    }
+
+    define void* GetEnd(i32 ID) {
+        NetworkPacketMarker* Marker := this->Find(ID)
+
+        return this->Buffer + Marker->Offset + Marker->Size
+    }
+    define void* GetEnd(i8* ID) {
+        return this->GetEnd(RegisterPacketData(ID))
+    }
+
+    define i32 GetOffset(i32 ID) {
+        return this->Find(ID)->Offset
+    }
+    define i32 GetOffset(i8* ID) {
+        return this->GetOffset(RegisterPacketData(ID))
+    }
+
+    define i32 GetEndOffset(i32 ID) {
+        NetworkPacketMarker* Marker := this->Find(ID)
+
+        return Marker->Offset + Marker->Size
+    }
+    define i32 GetEndOffset(i8* ID) {
+        return this->GetEndOffset(RegisterPacketData(ID))
+    }
+
+    define void Seek(i32 Offset) {
+        this->Offset := Offset
+    }
+
+    define i32 Tell() {
+        return this->Offset
+    }
+
+    define void* GetBuffer(i32 Offset) {
+        return this->Buffer + Offset
+    }
+
+    define void* Bump(i32 Size) {
+        void* Result := this->Buffer + this->Offset
+
+        this->Offset += Size
+
+        return Result
+    }
+
+    define void Extend(i32 ID, i32 AddSize) {
+        NetworkPacketMarker* Marker := this->Find(ID)
+        
+        Marker->Size += AddSize
+    }
+    define void Extend(i8* ID, i32 AddSize) {
+        this->Extend(RegisterPacketData(ID), AddSize)
+    }
+
+    define void End() {
+        this->Size := this->Offset
+    }
+
+    define self* Clone() {
+        void* Buffer := CloneMemory(this->Buffer, this->Size)
+
+        return self:New(this, Buffer, this->Size)
+    }
+
+    define void Release() {
+        this->ReferenceCount -= 1
+    }
+
+    define void Free() {
+        Free(this->Buffer)
+        Free(this)
+    }
+
+    define void DumpMarkers() {
+        Print("Markers for %x byte packet:\n", this->Size)
+
+        for (i32 Index := 0, Index < this->MarkerCount, Index++) {
+            NetworkPacketMarker* Marker := this->Markers[Index]
+
+            i8* Name := PacketDataNames->At(Marker->ID)
+
+            Print("%s (%i/%x bytes):\n%hexdump\n", Name, Marker->Size, Marker->Size, this->Buffer + Marker->Offset, Marker->Size)
+        }
+    }
+}
