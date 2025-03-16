@@ -22,8 +22,6 @@ namespace TLS::HandshakeProtocol {
             MessageType [0:7] Type
             [8:31] Length
         }
-
-        ProtocolVersion Version
     }
 
     class LayerOptions implements INetworkOptions {
@@ -33,25 +31,15 @@ namespace TLS::HandshakeProtocol {
     class Layer implements INetworkLayer, derives INew {
         INetworkLayer* Base
 
-        ProtocolVersion Version
-
-        define void SetVersion(VersionNumber Version) {
-            this~>Version->Major := Version.Major()
-            this~>Version->Minor := Version.Minor()
-        }
-
         define NetworkPacket* Enter(INetworkOptions* RawOptions) {
             TLS::RecordProtocol::LayerOptions BaseOptions {
                 Type: TLS::RecordProtocol::ContentType::Handshake
             }
 
             NetworkPacket* Packet := this->Base->Enter(&BaseOptions)
-
             LayerOptions* Options := RawOptions
-
             HandshakeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::Record", #HandshakeRecord)
 
-            MoveMemory(Record~>Version, this~>Version, #ProtocolVersion)
             Record->Type := Options->Type
 
             return Packet
@@ -61,10 +49,9 @@ namespace TLS::HandshakeProtocol {
             HandshakeRecord* Record := Packet->Get("TLS::HandshakeProtocol::Record")
 
             i32 Start := Packet->GetOffset("TLS::HandshakeProtocol::Record")
-
             i32 Size := (Packet->Offset - Start) - #HandshakeRecord
 
-            Record->Length := Swap32(Size + 2) >> 8
+            Record->Length := Swap32(Size) >> 8
 
             this->Base->Leave(Packet)
         }
@@ -78,22 +65,25 @@ namespace TLS::HandshakeProtocol {
         define void Process(NetworkPacket* Packet) {
             HandshakeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::Record", #HandshakeRecord)
 
-            Record->Length := Swap32(Record->Length << 8) - 2
+            if (Record->Length != 0) {
+                Record->Length := Swap32(Record->Length << 8)
+            }
+
             Packet->Extend("TLS::HandshakeProtocol::Record", Record->Length)
 
-            Packet->Seek(Packet->GetOffset("TLS::HandshakeProtocol::Record") + 4)
+            Packet->Seek(Packet->GetOffset("TLS::HandshakeProtocol::Record") + #HandshakeRecord)
 
             ;Print("Fixed Length: %x/%i\n", Record->Length, Record->Length)
 
             MessageType Type := Record->Type
 
-            INetworkLayer* Handler := this->MessageTypeHandlers->GetPointer(Type As i32)
+            INetworkLayer* Handler := this->MessageTypeHandlers->GetPointer((Type As i32) & 0xFF)
 
             if (Handler != null) {
                 Handler->Process(Packet)
             }
             else {
-                Print("No handler for message type %i (%s)\n", Type, nameof:(Type))
+                Print("No handler for message type %x (%s)\n", Type, nameof:(Type))
             }
 
             Packet->DumpMarkers()
@@ -148,9 +138,13 @@ namespace TLS::HandshakeProtocol {
     }
 
     enum ExtensionType As i16 {
+        ServerName := 0
         SupportedGroups := 10
         ECPointFormats := 11
+        SignatureAlgorithms := 13
         Heartbeat := 15
+        EncryptThenMAC := 22
+        ExtendedMasterSecret := 23
         SessionTicket := 35
     }
 
@@ -160,7 +154,12 @@ namespace TLS::HandshakeProtocol {
         i8[0] Data
 
         define void* End() {
-            return this->Data + (this->Length + #ExtensionEntry)
+            return this->Data + ((this->Length As i32) & 0xFFFF)
+        }
+
+        define void Swap() {
+            this->Type := Swap16(this->Type As i16) As ExtensionType
+            this->Length := Swap16(this->Length)
         }
 
         static self* New() {
@@ -198,6 +197,7 @@ namespace TLS::HandshakeProtocol {
     }
 
     struct ClientHelloRecord {
+        ProtocolVersion Version
         i8[32] Random
         i8 SessionIDLength
 
@@ -221,18 +221,103 @@ namespace TLS::HandshakeProtocol {
         }
     }
 
-    class ClientHelloLayer implements INetworkLayer, derives INew {
-        INetworkLayer* Base
+    struct ByteList {
+        i8 Length
+        i8[0] Bytes
 
+        static void Append(ByteList** pThis, i8 Value) {
+            ByteList* this := *pThis
+
+            i32 Index := this->Length++
+            this := ReAlloc(this, #self + this->Length)
+
+            this->Bytes[Index] := Value
+
+            *pThis := this
+        }
+
+        static self* New() {
+            return Alloc(#self)
+        }
+    }
+
+    struct WordList {
+        i16 Length
+        i16[0] Words
+
+        define i32 Swap() {
+            i32 Count := this->Length / 2
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                this->Words[Index] := Swap16(this->Words[Index])
+            }
+
+            this->Length := Swap16(this->Length)
+
+            return (Count + 1) * 2
+        }
+
+        static void Append(WordList** pThis, i16 Value) {
+            WordList* this := *pThis
+
+            i32 Index := this->Length / 2
+            this->Length += 2
+
+            this := ReAlloc(this, #self + this->Length)
+
+            this->Words[Index] := Value
+
+            *pThis := this
+        }
+
+        static self* New() {
+            return Alloc(#self)
+        }
+    }
+
+    enum SignatureAlgorithm As i16 {
+        Ed25519 := 0x0807
+        Ed448 := 0x0808
+        RSA_PKCS1_SHA256 := 0x0401
+        RSA_PKCS1_SHA512 := 0x0601
+    }
+
+    enum SupportedGroup As i16 {
+        x25519 := 0x1d
+        x448 := 0x1e
+    }
+
+    enum ECPointFormat As i8 {
+        Uncompressed := 0
+    }
+
+    #Require "./src/TLS/HandshakeProtocol/ServerName.rlx"
+
+    class ClientHelloHelper derives INew {
+        ProtocolVersion Version
+
+        define void SetVersion(VersionNumber Version) {
+            this~>Version->Major := Version.Major()
+            this~>Version->Minor := Version.Minor()
+        }
+        
         i8[32] Random
         CipherSuiteList* CipherSuites
         CompressionMethodList* CompressionMethods
         PointerArray* Extensions
 
-        define void New() {
+        ServerNameBuilder* ServerNames
+
+        WordList* SignatureAlgorithms
+        WordList* SupportedGroups
+        ByteList* ECPointFormats
+
+        define void New(TLS::VersionNumber Version) {
             this->CipherSuites := new CipherSuiteList()
             this->CompressionMethods := new CompressionMethodList()
             this->Extensions := new PointerArray()
+
+            this->SetVersion(Version)
         }
 
         define void SetRandom(void* Random) {
@@ -262,74 +347,131 @@ namespace TLS::HandshakeProtocol {
             Entry->Type := Type
             Entry->Length := Size As i16
 
-            MoveMemory(Entry->Data, Data, Size)
+            if (Size) {
+                MoveMemory(Entry->Data, Data, Size)
+            }
 
             this->Extensions->Push(Entry)
         }
+        define void AddExtension(ExtensionType Type) {
+            this->AddExtension(Type, null, 0)
+        }
 
-        define NetworkPacket* Enter(INetworkOptions* RawOptions) {
-            TLS::HandshakeProtocol::LayerOptions Options {
-                Type: MessageType::ClientHello
+        define void AddServerHostName(i8* Name) {
+            if !(this->ServerNames) {
+                this->ServerNames := new ServerNameBuilder()
             }
 
-            NetworkPacket* Packet := this->Base->Enter(&Options)
+            this->ServerNames->AddHostName(Name)
+        }
+
+        define void AddSignatureAlgorithm(SignatureAlgorithm Algorithm) {
+            if !(this->SignatureAlgorithms) {
+                this->SignatureAlgorithms := new WordList()
+            }
+
+            WordList:Append(this~>SignatureAlgorithms, Algorithm As i16)
+        }
+
+        define void AddSupportedGroup(SupportedGroup Group) {
+            if !(this->SupportedGroups) {
+                this->SupportedGroups := new WordList()
+            }
+
+            WordList:Append(this~>SupportedGroups, Group As i16)
+        }
+
+        define void AddPointFormat(ECPointFormat Format) {
+            if !(this->ECPointFormats) {
+                this->ECPointFormats := new ByteList()
+            }
+            
+            ByteList:Append(this~>ECPointFormats, Format As i8)
+        }
+
+        define NetworkPacket* Write(NetworkPacket* Packet) {
+            if (this->ServerNames) {
+                i32 ServerNamesSize := 0
+                void* ServerNamesData := this->ServerNames->Build(&ServerNamesSize)
+
+                this->AddExtension(ExtensionType::ServerName, ServerNamesData, ServerNamesSize)
+            }
+
+            if (this->SignatureAlgorithms) {
+                i32 Size := this->SignatureAlgorithms->Swap()
+
+                this->AddExtension(ExtensionType::SignatureAlgorithms, this->SignatureAlgorithms, Size)
+            }
+
+            if (this->SupportedGroups) {
+                i32 Size := this->SupportedGroups->Swap()
+
+                this->AddExtension(ExtensionType::SupportedGroups, this->SupportedGroups, Size)
+            }
+
+            if (this->ECPointFormats) {
+                this->AddExtension(ExtensionType::ECPointFormats, this->ECPointFormats, #ByteList + this->ECPointFormats->Length)
+            }
+
 
             i32 Size := #ClientHelloRecord
 
             Size += (this->CipherSuites->Length * 2) + #CipherSuiteList
             Size += this->CompressionMethods->Length + #CompressionMethodList
-            Size += #ExtensionList
+            Size += 2 ;#ExtensionList
+
+            i32 ExtensionDataSize := 0
 
             for (i32 Index := 0, Index < this->Extensions->Length, Index++) {
                 ExtensionEntry* Entry := this->Extensions->At(Index)
 
-                Size += Entry->Length + #ExtensionEntry
+                ExtensionDataSize += Entry->Length + #ExtensionEntry
+
+                Print("Extension %i needs %i bytes\n", Index, Entry->Length + #ExtensionEntry)
             }
+
+            Size += ExtensionDataSize
 
             ClientHelloRecord* Record := Packet->Mark("TLS::HandshakeProtocol::ClientHelloRecord", Size)
 
             MoveMemory(Record->Random, this->Random, 32)
+            MoveMemory(Record~>Version, this~>Version, #ProtocolVersion)
 
             Record->SessionIDLength := 0
 
-            this->CipherSuites->Length *= 2
+            i32 CipherSuitesSize := this->CipherSuites->Length * 2
+            CipherSuiteList* CipherSuites := Record->GetCipherSuites()
+            MoveMemory(CipherSuites, this->CipherSuites, #CipherSuiteList + CipherSuitesSize)
+            CipherSuites->Length := CipherSuitesSize As i16
 
-            MoveMemory(Record->GetCipherSuites(), this->CipherSuites, this->CipherSuites->Length + #CipherSuiteList)
             MoveMemory(Record->GetCompressionMethods(), this->CompressionMethods, this->CompressionMethods->Length + #CompressionMethodList)
             
             ExtensionList* Extensions := Record->GetExtensions()
+            ExtensionEntry* CurrentEntry := Extensions~>FirstEntry
             i32 Count := this->Extensions->Count()
 
             for (i32 Index := 0, Index < Count, Index++) {
-                ExtensionEntry* Entry := this->Extensions->At(Index)
-                i32 EntrySize := Entry->Length + #ExtensionEntry
+                ExtensionEntry* SourceEntry := this->Extensions->At(Index)
+                i32 EntrySize := #ExtensionEntry + SourceEntry->Length
 
-                MoveMemory(Extensions->End(), Entry, EntrySize)
-                Extensions->Length += EntrySize As i16
+                Print("Extension %i at offset %i\n", Index, (CurrentEntry As i64) - (Extensions~>FirstEntry As i64))
+
+                MoveMemory(CurrentEntry, SourceEntry, EntrySize)
+                ExtensionEntry* NextEntry := CurrentEntry->End()
+
+                CurrentEntry->Swap()
+
+                CurrentEntry := NextEntry
             }
+
+            CipherSuites->Length := Swap16(CipherSuites->Length)
+            Extensions->Length := Swap16(ExtensionDataSize As i16)
 
             return Packet
         }
 
-        define void Leave(NetworkPacket* Packet) {
+        define void Read(NetworkPacket* Packet) {
 
-            ClientHelloRecord* Record := Packet->Get("TLS::HandshakeProtocol::ClientHelloRecord")
-
-            CipherSuiteList* CipherSuites := Record->GetCipherSuites()
-            CipherSuites->Length := Swap16(CipherSuites->Length)
-
-            ExtensionList* Extensions := Record->GetExtensions()
-            Extensions->Length := Swap16(Extensions->Length)
-
-            this->Base->Leave(Packet)
-        }
-        
-        define void Process(NetworkPacket* Packet) {
-
-        }
-
-        define void New(INetworkLayer* Base) {
-            this->Base := Base
         }
     }
 
@@ -341,6 +483,7 @@ namespace TLS::HandshakeProtocol {
     }
 
     struct ServerHelloRecord {
+        ProtocolVersion Version
         i8[32] Random
         i8 SessionIDLength
 
@@ -364,8 +507,15 @@ namespace TLS::HandshakeProtocol {
         }
     }
 
-    class ServerHelloLayer implements INetworkLayer, derives INew {
-        INetworkLayer* Base
+    
+
+    class ServerHelloHelper derives INew {
+        ProtocolVersion Version
+
+        define void SetVersion(VersionNumber Version) {
+            this~>Version->Major := Version.Major()
+            this~>Version->Minor := Version.Minor()
+        }
 
         i8[32] Random
         CipherSuite Cipher
@@ -397,13 +547,7 @@ namespace TLS::HandshakeProtocol {
             this->Extensions->Push(Entry)
         }
 
-        define NetworkPacket* Enter(INetworkOptions* RawOptions) {
-            TLS::HandshakeProtocol::LayerOptions Options {
-                Type: MessageType::ServerHello
-            }
-
-            NetworkPacket* Packet := this->Base->Enter(&Options)
-
+        define void Write(NetworkPacket* Packet) {
             i32 Size := #ServerHelloRecord
 
             Size += #ServerHelloRecordTail
@@ -436,19 +580,13 @@ namespace TLS::HandshakeProtocol {
                 Extensions->Length += EntrySize As i16
             }
 
-            return Packet
-        }
-
-        define void Leave(NetworkPacket* Packet) {
-            ServerHelloRecord* Record := Packet->Get("TLS::HandshakeProtocol::ServerHelloRecord")
-
             ExtensionList* Extensions := Record->GetExtensions()
             Extensions->Length := Swap16(Extensions->Length)
 
-            this->Base->Leave(Packet)
+            return Packet
         }
 
-        define void Process(NetworkPacket* Packet) {
+        define void Read(NetworkPacket* Packet) {
             ServerHelloRecord* Record := Packet->Mark("TLS::HandshakeProtocol::ServerHelloRecord", #ServerHelloRecord)
             ServerHelloRecordTail* Tail := Record->GetTail()
 
@@ -456,12 +594,23 @@ namespace TLS::HandshakeProtocol {
 
             Packet->Extend("TLS::HandshakeProtocol::ServerHelloRecord", Size)
 
-            
+            MoveMemory(this->Random, Record->Random, 32)
+            this->Cipher := Tail->Cipher
+            this->Compression := Tail->Compression
 
-        }
+            ExtensionList* Extensions := Tail~>Extensions
 
-        define void New(INetworkLayer* Base) {
-            this->Base := Base
+            Extensions->Length := Swap16(Extensions->Length)
+
+            void* ExtensionsEnd := Extensions->End()
+            ExtensionEntry* Entry := Extensions~>FirstEntry
+
+            while (Entry < ExtensionsEnd) {
+                this->Extensions->Push(Entry)
+                Entry->Swap()
+
+                Entry := Entry->End()
+            }
         }
     }
 }

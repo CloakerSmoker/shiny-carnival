@@ -27,6 +27,8 @@ namespace TLS {
     }
 
     enum CipherSuite As i16 {
-        TLS_RSA_WITH_AES_128_GCM_SHA256 := 0x9C00
+        RSA_WITH_AES_128_GCM_SHA256 := 0x9C00
+        ECDHE_RSA_WITH_AES_128_GCM_SHA256 := 0x2FC0
+        ECDH_RSA_WITH_AES_128_SHA256 := 0x31C0
     }
 }

@@ -135,6 +135,8 @@ namespace TLS::RecordProtocol {
             Header->Length := Swap16((Packet->Offset - #RecordHeader) As i16)
 
             Packet->End()
+
+            this->Base->Leave(Packet)
         }
 
         AVLTree* ContentTypeHandlers ; <INetworkLayer*>
@@ -145,6 +147,7 @@ namespace TLS::RecordProtocol {
 
         define void Process(NetworkPacket* Packet) {
             while (Packet->Offset < Packet->Size) {
+                Packet->ClearMarkers()
                 RecordHeader* Header := Packet->Mark("TLS::RecordProtocol::Record", #RecordHeader)
                 
                 Header->Length := Swap16(Header->Length)
@@ -164,10 +167,14 @@ namespace TLS::RecordProtocol {
                 Packet->Seek(Packet->GetEndOffset("TLS::RecordProtocol::Record"))
 
                 Print("%x/%x\n", Packet->Offset, Packet->Size)
+
+                ;break
             }
         }
 
-        define void New() {
+        define void New(INetworkLayer* Base) {
+            this->Base := Base
+
             this->ContentTypeHandlers := new AVLTree(#void*)
         }
     }

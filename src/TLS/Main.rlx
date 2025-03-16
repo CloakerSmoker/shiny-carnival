@@ -3,6 +3,8 @@
 #Require "./src/TLS/RecordProtocol.rlx"
 #Require "./src/TLS/HandshakeProtocol.rlx"
 
+#Require "./src/network/Socket.rlx"
+
 /*
 define NetworkPacket* ClientHello() {
     ClientHelloLayer->SetRandom("thirty two bytes of random data.")
@@ -30,32 +32,151 @@ define NetworkPacket* ServerHello() {
 */
 
 class Plumbing derives INew {
+    INetworkLayer* Base
+
     TLS::RecordProtocol::Layer* RecordLayer
     TLS::HandshakeProtocol::Layer* HandshakeLayer
-    TLS::HandshakeProtocol::ClientHelloLayer* ClientHelloLayer
-    TLS::HandshakeProtocol::ServerHelloLayer* ServerHelloLayer
+    
+    define void RegisterContentType(TLS::RecordProtocol::ContentType Type, INetworkLayer* Layer) {
+        this->RecordLayer->RegisterContentType(Type, Layer)
+    }
+    define void RegisterMessageType(TLS::HandshakeProtocol::MessageType Type, INetworkLayer* Layer) {
+        this->HandshakeLayer->RegisterMessageType(Type, Layer)
+    }
 
-    define void New() {
-        this->RecordLayer := new TLS::RecordProtocol::Layer()
+    define void New(INetworkLayer* Base) {
+        this->Base := Base
+
+        this->RecordLayer := new TLS::RecordProtocol::Layer(Base)
         this->RecordLayer->SetVersion(TLS::VersionNumber::TLS_1_0)
 
         this->HandshakeLayer := new TLS::HandshakeProtocol::Layer(this->RecordLayer)
-        this->RecordLayer->RegisterContentType(TLS::RecordProtocol::ContentType::Handshake, this->HandshakeLayer)
-        this->HandshakeLayer->SetVersion(TLS::VersionNumber::TLS_1_2)
+        this->RegisterContentType(TLS::RecordProtocol::ContentType::Handshake, this->HandshakeLayer)
 
-        this->ClientHelloLayer := new TLS::HandshakeProtocol::ClientHelloLayer(this->HandshakeLayer)
+        /*this->ClientHelloLayer := new TLS::HandshakeProtocol::ClientHelloLayer(this->HandshakeLayer)
         this->HandshakeLayer->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ClientHello, this->ClientHelloLayer)
 
         this->ServerHelloLayer := new TLS::HandshakeProtocol::ServerHelloLayer(this->HandshakeLayer)
-        this->HandshakeLayer->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerHello, this->ServerHelloLayer)
+        this->HandshakeLayer->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerHello, this->ServerHelloLayer)*/
     }
 }
 
-class Client {
+enum ClientState {
+    ConnectionOffered
+    ServerAccepted
+    KeyExchangeNeeded
+
+}
+
+class CallbackNetworkLayer implements INetworkLayer, derives INew {
+    void* State
+    void(void*, NetworkPacket*) Callback
+
+    define void New(void* State, void(void*, NetworkPacket*) Callback) {
+        this->State := State
+        this->Callback := Callback
+    }
+
+    define NetworkPacket* Enter(INetworkOptions* Options) {
+        return null
+    }
+    define void Leave(NetworkPacket* Packet) {
+    }
+
+    define void Process(NetworkPacket* Packet) {
+        this->Callback(this->State, Packet)
+    }
+}
+
+class Client derives INew {
+    ClientState State
+
+    SocketNetworkLayer* Transport
     Plumbing* Base
 
-    define void New() {
+    TLS::HandshakeProtocol::ClientHelloHelper* ClientHello
 
+    CallbackNetworkLayer* OnHandshakeCallback
+
+    TLS::HandshakeProtocol::ServerHelloHelper* ServerHello
+    ;TLS::HandshakeProtocol::CertificateHelper* Certificate
+
+
+    define CallbackNetworkLayer* MakeCallback(void(void*, NetworkPacket*) Method) {
+        return new CallbackNetworkLayer(this, Method)
+    }
+
+    define void SendClientHello() {
+        this->State := ClientState::ConnectionOffered
+
+        auto HandshakeLayer := this->Base->HandshakeLayer
+
+        TLS::HandshakeProtocol::LayerOptions Options {
+            Type: TLS::HandshakeProtocol::MessageType::ClientHello
+        }
+
+        NetworkPacket* Packet := HandshakeLayer->Enter(&Options)
+        this->ClientHello->Write(Packet)
+        HandshakeLayer->Leave(Packet)
+    }
+
+    define void OnHandshake(NetworkPacket* Packet) {
+        TLS::HandshakeProtocol::HandshakeRecord* Record := Packet->Get("TLS::HandshakeProtocol::Record")
+
+        if (Record->Type = TLS::HandshakeProtocol::MessageType::ServerHello) {
+            this->ServerHello->Read(Packet)
+
+            Print("Server selected CipherSuite %s\n", nameof:(this->ServerHello->Cipher))
+
+            i32 Count := this->ServerHello->Extensions->Count()
+            Print("Server replied with %i extensions\n", Count)
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                TLS::HandshakeProtocol::ExtensionEntry* Entry := this->ServerHello->Extensions->At(Index)
+
+                Print("[%i]: %s (%x bytes)\n", Index, nameof:(Entry->Type), Entry->Length)
+            }
+
+        }
+    }
+
+    define void Wait() {
+        Socket Remote := this->Transport->Remote
+
+        Remote->Poll(POLL_FOR_READ, -1)
+
+        void* Buffer := Alloc(1024)
+        i32 Size := 0
+
+        loop {
+            i32 ChunkSize := Remote->Receive(Buffer + Size, 1024, 0) As i32
+            Size += ChunkSize
+
+            if (ChunkSize != 1024) {
+                break
+            }
+
+            Buffer := ReAlloc(Buffer, Size + 1024)
+        }
+
+        NetworkPacket* Packet := new NetworkPacket(Buffer, Size)
+
+        this->Base->RecordLayer->Process(Packet)
+    }
+
+    define void New(SocketNetworkLayer* Base) {
+        this->Transport := Base
+        this->Base := new Plumbing(Base)
+
+        this->ClientHello := new TLS::HandshakeProtocol::ClientHelloHelper(TLS::VersionNumber::TLS_1_2)
+        this->ServerHello := new TLS::HandshakeProtocol::ServerHelloHelper()
+
+        INetworkLayer* OnHandshake := this->MakeCallback(&self.OnHandshake)
+
+        this->Base->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerHello, OnHandshake)
+        this->Base->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerKeyExchange, OnHandshake)
+        this->Base->RegisterMessageType(TLS::HandshakeProtocol::MessageType::Certificate, OnHandshake)
+        this->Base->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerHelloDone, OnHandshake)
     }
 
     
@@ -64,6 +185,40 @@ class Client {
 #Require "./src/TLS/tests/ServerHello_Cert_Kex_Done.rlx"
 
 define void Main() {
+    ;SocketNetworkLayer* Base := new SocketNetworkLayer(new IPV4SocketAddress("24.124.77.9", 443))
+    SocketNetworkLayer* Base := new SocketNetworkLayer(new IPV4SocketAddress("127.0.0.1", 4433))
+    Client* C := new Client(Base)
+
+    C->ClientHello->SetRandom("thirty two bytes of random data.")
+    C->ClientHello->AddCipherSuite(TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256)
+    C->ClientHello->AddCipherSuite(TLS::CipherSuite::RSA_WITH_AES_128_GCM_SHA256)
+    C->ClientHello->AddCipherSuite(TLS::CipherSuite::ECDH_RSA_WITH_AES_128_SHA256)
+    C->ClientHello->AddCompressionMethod(TLS::HandshakeProtocol::CompressionMethod::Null)
+
+    ;C->ClientHello->AddServerHostName("jellyfin.muscular.top")
+
+    ;C->ClientHello->AddExtension(TLS::HandshakeProtocol::ExtensionType::ExtendedMasterSecret)
+    ;C->ClientHello->AddExtension(TLS::HandshakeProtocol::ExtensionType::EncryptThenMAC)
+
+    C->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::Ed25519)
+    C->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::Ed448)
+    C->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::RSA_PKCS1_SHA256)
+    C->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::RSA_PKCS1_SHA512)
+
+    C->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::SupportedGroup::x25519)
+    C->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::SupportedGroup::x448)
+
+    C->ClientHello->AddPointFormat(TLS::HandshakeProtocol::ECPointFormat::Uncompressed)
+
+    
+
+    C->SendClientHello()
+
+    C->Wait()
+
+    ;C->Poll(-1)
+
+    /*
     Plumbing* P := new Plumbing()
 
     NetworkPacket* Packet := new NetworkPacket(SERVER_HELLO_TEST_SIZE + 1)
@@ -71,5 +226,5 @@ define void Main() {
 
     P->RecordLayer->Process(Packet)
 
-    Packet->DumpMarkers()
+    Packet->DumpMarkers()*/
 }

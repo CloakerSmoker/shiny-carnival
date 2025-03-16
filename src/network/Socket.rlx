@@ -273,18 +273,24 @@ PrintFormatPrototype IPV4PrintPrototype {
 
 i32 IPV4_PRINT_PROTOTYPE_ID := AddPrintFormat(&IPV4PrintPrototype)
 
-class SocketNetworkLayer implements INetworkLayer {
+class SocketNetworkLayer implements INetworkLayer, derives INew {
     Socket Remote
+
+    define void New(IPV4SocketAddress* ServerAddress) {
+        this->Remote := Socket:New(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        this->Remote->Connect(ServerAddress~>Base, #IPV4SocketAddress)
+    }
 
     define NetworkPacket* Enter(INetworkOptions* Options) {
         return new NetworkPacket(PAGE_SIZE)
     }
     define void Leave(NetworkPacket* Packet) {
+        Print("Send %x\n", Packet->Size)
         this->Remote->Send(Packet->Buffer, Packet->Size)
+
+        ;Packet->Free()
     }
 
-    define void Poll() {
-        this->Socket->Poll(POLL_FOR_READ, -1)
-        
+    define void Process(NetworkPacket* Packet) {
     }
 }
