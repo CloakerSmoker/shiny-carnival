@@ -1,0 +1,27 @@
+
+define void ZeroMemory(void* RawMemory, i32 Size) {
+    i8* Memory := RawMemory
+
+    for (i32 Index := 0, Index < Size, Index++) {
+        Memory[Index] := 0
+    }
+}
+
+struct HashFunctionInfo {
+    i32 BlockSize
+    i32 OutputSize
+}
+
+interface IHashFunction {
+    virtual void Prepare()
+    virtual void Update(void*, i32)
+    virtual void Finalize(void*)
+
+    virtual void GetInfo(HashFunctionInfo*)
+
+    virtual void Hash(void* Data, i32 Size, void* Output) {
+        this->Prepare()
+        this->Update(Data, Size)
+        this->Finalize(Output)
+    }
+}

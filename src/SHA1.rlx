@@ -1,19 +1,11 @@
 
-define void ZeroMemory(void* RawMemory, i32 Size) {
-    i8* Memory := RawMemory
-
-    for (i32 Index := 0, Index < Size, Index++) {
-        Memory[Index] := 0
-    }
-}
+#Require "$/Memory.rlx"
 
 #Require "./src/Endianess.rlx"
 
-define void P(i64 V) {
-    Print("%x ", (V & 0xFFFF_FFFF))
-}
+#Require "./src/HashHelpers.rlx"
 
-struct SHA1State {
+class SHA1 implements IHashFunction, derives INew {
     union {
         struct {
             i32 H0
@@ -35,7 +27,7 @@ struct SHA1State {
         i32[80] Block
     }
 
-    define void Initialize() {
+    define void Prepare() {
         this->H0 := 0x67452301
         this->H1 := 0xEFCDAB89 As i32
         this->H2 := 0x98BADCFE As i32
@@ -46,16 +38,8 @@ struct SHA1State {
         this->Length := 0
     }
 
-    static self* New() {
-        self* this := Alloc(#self)
-
-        this->Initialize()
-
-        return this
-    }
-
-    define void Reset() {
-        this->Initialize()
+    define void New() {
+        this->Prepare()
     }
 
     define i32 LeftShift(i32 Value, i32 Count) {
@@ -168,10 +152,6 @@ struct SHA1State {
         }
     }
 
-    define void UpdateString(i8* String) {
-        this->Update(String, StringLength(String))
-    }
-
     define void PadFillCurrentChunk() {
         for (i32 Index := this->ChunkCursor, Index < 64, Index++) {
             this->ChunkBytes[Index] := 0
@@ -217,92 +197,32 @@ struct SHA1State {
 
         MoveMemory(Output, this->H, 20)
 
-        this->Reset()
+        this->Prepare()
     }
 
-    define void Hash(void* Data, i32 Size, void* Output) {
-        this->Reset()
-        this->Update(Data, Size)
-        this->Finalize(Output)
-    }
-
-    define void Print(i8* Output) {
-        for (i32 Index := 0, Index < 5, Index++) {
-            for (i32 Byte := 0, Byte < 4, Byte++) {
-                i8 Value := Output[(Index * 4) + Byte]
-
-                Print("%B", Value)
-            }
-
-            if (Index + 1 != 5) {
-                Print(" ")
-            }
-        }
+    define void GetInfo(HashFunctionInfo* Info) {
+        Info->BlockSize := 64
+        Info->OutputSize := 20
     }
 }
 
-i32 SHA1_BLOCK_SIZE := 64
-i32 SHA1_OUTPUT_SIZE := 20
+#Require "./src/HMAC.rlx"
 
-struct SHA1HMACState {
-    union {
-        i32[16] KeyBlock
-        i8[64] KeyBlockBytes
-    }
+#Require "$/String.rlx"
+#Require "$/Console.rlx"
 
-    union {
-        i32[16] OPad
-        i8[64] OPadBytes
-    }
+define void Main() {
+    SHA1* Base := new SHA1()
+    HMACWrapper* HMAC := new HMACWrapper(Base)
 
-    union {
-        i32[16] IPad
-        i8[64] IPadBytes
-    }
+    HMAC->SetKey("key", 3)
 
-    SHA1State Hasher
+    i8* TestString := "The quick brown fox jumps over the lazy dog"
+    i8[20] Hash
 
-    define void Initialize(i8* KeyBytes, i32 KeySize) {
-        this~>Hasher->Initialize()
+    HMAC->Prepare()
+    HMAC->Update(TestString, StringLength(TestString))
+    HMAC->Finalize(Hash)
 
-        ZeroMemory(this->KeyBlock, 64)
-        ZeroMemory(this->OPad, 64)
-        ZeroMemory(this->IPad, 64)
-
-        if (KeySize > SHA1_BLOCK_SIZE) {
-            this~>Hasher->Hash(KeyBytes, KeySize, this->KeyBlock)
-
-            KeySize := SHA1_OUTPUT_SIZE
-        }
-        else {
-            MoveMemory(this->KeyBlock, KeyBytes, KeySize)
-        }
-
-        MoveMemory(this->OPad, this->KeyBlock, 64)
-        MoveMemory(this->IPad, this->KeyBlock, 64)
-
-        for (i32 Index := 0, Index < 64, Index++) {
-            this->OPadBytes[Index] ^= 0x5C
-            this->IPadBytes[Index] ^= 0x36
-        }
-    }
-
-    define void Calculate(void* Message, i32 Size, void* Output) {
-        SHA1State* Hash := this~>Hasher
-        i8[20] Temporary
-
-        Hash->Reset()
-
-        Hash->Update(this->IPad, 64)
-        Hash->Update(Message, Size)
-        Hash->Finalize(Temporary)
-
-        Hash->Update(this->OPad, 64)
-        Hash->Update(Temporary, 20)
-        Hash->Finalize(Output)
-    }
-
-    define void Print(void* Output) {
-        this~>Hasher->Print(Output)
-    }
+    Print("%hexdump\n", Hash, 20)
 }

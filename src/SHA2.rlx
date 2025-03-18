@@ -5,7 +5,10 @@
 
 #Require "./src/Endianess.rlx"
 
-struct SHA2_256 {
+#Require "./src/HashHelpers.rlx"
+
+
+class SHA2_256 implements IHashFunction, derives INew {
     i32[8] H
     i32[64] K
 
@@ -18,7 +21,7 @@ struct SHA2_256 {
         i32[64] W
     }
 
-    define void Initialize() {
+    define void Prepare() {
         this->ChunkCursor := 0
         this->Length := 0
 
@@ -45,12 +48,8 @@ struct SHA2_256 {
         ], 64 * 4)
     }
 
-    static self* New() {
-        self* this := Alloc(#self)
-
-        this->Initialize()
-
-        return this
+    define void New() {
+        this->Prepare()
     }
 
     static i32 RotateRight(i32 Value, i32 Distance) asm {
@@ -60,7 +59,7 @@ struct SHA2_256 {
         ret
     }
 
-    define void HashChunk(i32* Chunk) {
+    define void UpdateChunk(i32* Chunk) {
         this->ChunkCursor := 0
 
         i32* W := this->W
@@ -114,7 +113,7 @@ struct SHA2_256 {
         }
     }
 
-    define void HashBytes(void* Data, i32 Size) {
+    define void Update(void* Data, i32 Size) {
         this->Length += Size
 
         while (Size != 0) {
@@ -131,7 +130,7 @@ struct SHA2_256 {
                     Size -= SizeToFill
                     Data += SizeToFill
 
-                    this->HashChunk(this->ChunkWords)
+                    this->UpdateChunk(this->ChunkWords)
                 }
                 else {
                     ; Block will still be partial
@@ -147,7 +146,7 @@ struct SHA2_256 {
                     ; Enough for a full block of processing
 
                     MoveMemory(this->ChunkBytes, Data, 64)
-                    this->HashChunk(this->ChunkWords)
+                    this->UpdateChunk(this->ChunkWords)
 
                     Size -= 64
                     Data += 64
@@ -178,16 +177,16 @@ struct SHA2_256 {
         if (this->ChunkSpace() = 0) {
             ; Ensure we have enough space for the 0x80 terminator
 
-            this->HashChunk(this->ChunkWords)
+            this->UpdateChunk(this->ChunkWords)
         }
 
-        this->HashBytes(i8[0x80], 1)
+        this->Update(i8[0x80], 1)
 
         if (this->ChunkSpace() < 8) {
             ; Not enough room for length, pad+flush chunk
 
             this->PadFillCurrentChunk()
-            this->HashChunk(this->ChunkWords)
+            this->UpdateChunk(this->ChunkWords)
         }
 
         ; Pad to end of chunk for length
@@ -197,7 +196,7 @@ struct SHA2_256 {
         i64 SwappedBitLength := Swap64((this->Length - 1) * 8) ; Exclude 0x80 terminator
 
         this->ChunkCursor := 56
-        this->HashBytes(&SwappedBitLength, 8)
+        this->Update(&SwappedBitLength, 8)
 
         this->Length -= 9 ; Update to ignore terminator+length
 
@@ -211,9 +210,14 @@ struct SHA2_256 {
 
         this->Initialize()
     }
+
+    define void GetInfo(HashFunctionInfo* Info) {
+        Info->BlockSize := 64
+        Info->OutputSize := 32
+    }
 }
 
-struct SHA2_512 {
+class SHA2_512 implements IHashFunction, derives INew {
     i64[8] H
     i64[80] K
 
@@ -226,7 +230,7 @@ struct SHA2_512 {
         i64[80] W
     }
 
-    define void Initialize() {
+    define void Prepare() {
         this->ChunkCursor := 0
         this->Length := 0
 
@@ -261,12 +265,8 @@ struct SHA2_512 {
         ], 80 * 8)
     }
 
-    static self* New() {
-        self* this := Alloc(#self)
-
-        this->Initialize()
-
-        return this
+    define void New() {
+        this->Prepare()
     }
 
     static i64 RotateRight(i64 Value, i32 Distance) asm {
@@ -276,10 +276,10 @@ struct SHA2_512 {
         ret
     }
 
-    define void HashChunk(i64* Chunk) {
+    define void UpdateChunk(i64* Chunk) {
         this->ChunkCursor := 0
 
-        Print("HashChunk:\n%hexdump\n", Chunk, 16 * 8)
+        Print("UpdateChunk:\n%hexdump\n", Chunk, 16 * 8)
 
         i64* W := this->W
 
@@ -332,7 +332,7 @@ struct SHA2_512 {
         }
     }
 
-    define void HashBytes(void* Data, i32 Size) {
+    define void Update(void* Data, i32 Size) {
         this->Length += Size
 
         while (Size != 0) {
@@ -349,7 +349,7 @@ struct SHA2_512 {
                     Size -= SizeToFill
                     Data += SizeToFill
 
-                    this->HashChunk(this->ChunkWords)
+                    this->UpdateChunk(this->ChunkWords)
                 }
                 else {
                     ; Block will still be partial
@@ -365,7 +365,7 @@ struct SHA2_512 {
                     ; Enough for a full block of processing
 
                     MoveMemory(this->ChunkBytes, Data, 128)
-                    this->HashChunk(this->ChunkWords)
+                    this->UpdateChunk(this->ChunkWords)
 
                     Size -= 128
                     Data += 128
@@ -396,16 +396,16 @@ struct SHA2_512 {
         if (this->ChunkSpace() = 0) {
             ; Ensure we have enough space for the 0x80 terminator
 
-            this->HashChunk(this->ChunkWords)
+            this->UpdateChunk(this->ChunkWords)
         }
 
-        this->HashBytes(i8[0x80], 1)
+        this->Update(i8[0x80], 1)
 
         if (this->ChunkSpace() < 16) {
             ; Not enough room for length, pad+flush chunk
 
             this->PadFillCurrentChunk()
-            this->HashChunk(this->ChunkWords)
+            this->UpdateChunk(this->ChunkWords)
         }
 
         ; Pad to end of chunk for length
@@ -415,7 +415,7 @@ struct SHA2_512 {
         i64 SwappedBitLength := Swap64((this->Length - 1) * 8) ; Exclude 0x80 terminator
 
         this->ChunkCursor := 120
-        this->HashBytes(&SwappedBitLength, 8)
+        this->Update(&SwappedBitLength, 8)
 
         this->Length -= 9 ; Update to ignore terminator+length
 
@@ -429,17 +429,28 @@ struct SHA2_512 {
 
         this->Initialize()
     }
+
+    define void GetInfo(HashFunctionInfo* Info) {
+        Info->BlockSize := 128
+        Info->OutputSize := 64
+    }
 }
 
+#Require "./src/HMAC.rlx"
+
+
 define void Main() {
+    SHA2_256* Base := new SHA2_256()
+    HMACWrapper* HMAC := new HMACWrapper(Base)
+
+    HMAC->SetKey("key", 3)
+
     i8* TestString := "The quick brown fox jumps over the lazy dog"
+    i8[32] Hash
 
-    SHA2_512* SHA512 := new SHA2_512()
+    HMAC->Prepare()
+    HMAC->Update(TestString, StringLength(TestString))
+    HMAC->Finalize(Hash)
 
-    SHA512->HashBytes(TestString, StringLength(TestString))
-
-    i8[64] Hash
-    SHA512->Finalize(Hash)
-
-    Print("%hexdump\n", Hash, 64)
+    Print("%hexdump\n", Hash, 32)
 }

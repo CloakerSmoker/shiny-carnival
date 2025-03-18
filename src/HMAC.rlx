@@ -1,0 +1,83 @@
+
+class HMACWrapper derives INew {
+    IHashFunction* Base
+    
+    union {
+        HashFunctionInfo Info
+
+        struct {
+            i32 BlockSize
+            i32 OutputSize
+        }
+    }
+
+    void* Key
+    i32 KeySize
+
+    union {
+        i32* KeyBlock
+        i8* KeyBlockBytes
+    }
+
+    union {
+        i32* OPad
+        i8* OPadBytes
+    }
+
+    union {
+        i32* IPad
+        i8* IPadBytes
+    }
+
+    define void New(IHashFunction* Base) {
+        this->Base := Base
+        Base->GetInfo(this~>Info)
+
+        this->KeyBlock := Alloc(this->BlockSize)
+        this->OPad := Alloc(this->BlockSize)
+        this->IPad := Alloc(this->BlockSize)
+    }
+
+    define void SetKey(void* Key, i32 Size) {
+        ZeroMemory(this->KeyBlock, 64)
+        ZeroMemory(this->OPad, 64)
+        ZeroMemory(this->IPad, 64)
+        
+        this->Base->Prepare()
+
+        if (Size > this->BlockSize) {
+            this->Base->Hash(Key, Size, this->KeyBlock)
+
+            Size := this->BlockSize
+        }
+        else {
+            MoveMemory(this->KeyBlock, Key, Size)
+        }
+
+        MoveMemory(this->OPad, this->KeyBlock, this->BlockSize)
+        MoveMemory(this->IPad, this->KeyBlock, this->BlockSize)
+
+        for (i32 Index := 0, Index < this->BlockSize, Index++) {
+            this->OPadBytes[Index] ^= 0x5C
+            this->IPadBytes[Index] ^= 0x36
+        }
+    }
+
+    define void Prepare() {
+        this->Base->Prepare()
+        this->Base->Update(this->IPad, this->BlockSize)
+    }
+
+    define void Update(void* Data, i32 Size) {
+        this->Base->Update(Data, Size)
+    }
+
+    define void Finalize(void* Output) {
+        this->Base->Finalize(Output)
+
+        this->Base->Prepare()
+        this->Base->Update(this->OPad, this->BlockSize)
+        this->Base->Update(Output, this->OutputSize)
+        this->Base->Finalize(Output)
+    }
+}
