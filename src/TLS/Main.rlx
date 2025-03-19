@@ -5,6 +5,23 @@
 
 #Require "./src/network/Socket.rlx"
 
+#Require "./src/EC/RFC7748.rlx"
+
+#Require "./src/SHA2.rlx"
+#Require "./src/HMAC.rlx"
+
+i64 DevURandom := FileOpen("/dev/urandom", FILE_READ)
+
+define void SecureFillRandom(void* Buffer, i32 Count) {
+    FileRead(DevURandom, Buffer, Count)
+}
+
+define void* AllocateSecureRandom(i32 Size) {
+    void* Result := Alloc(Size)
+    SecureFillRandom(Result, Size)
+    return Result
+}
+
 /*
 define NetworkPacket* ClientHello() {
     ClientHelloLayer->SetRandom("thirty two bytes of random data.")
@@ -88,6 +105,10 @@ class CallbackNetworkLayer implements INetworkLayer, derives INew {
     }
 }
 
+
+
+
+
 class Client derives INew {
     ClientState State
 
@@ -100,10 +121,20 @@ class Client derives INew {
 
     TLS::HandshakeProtocol::ServerHelloHelper* ServerHello
     ;TLS::HandshakeProtocol::CertificateHelper* Certificate
+    TLS::HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
 
 
     define CallbackNetworkLayer* MakeCallback(void(void*, NetworkPacket*) Method) {
         return new CallbackNetworkLayer(this, Method)
+    }
+
+    PointerArray* OutgoingHandshakeMessages
+
+    define void OnOutgoingHandshakeMessage(NetworkPacket* Packet) {
+        void* Start := Packet->Get("TLS::HandshakeProtocol::Data")
+        i32 Size := Packet->GetSize("TLS::HandshakeProtocol::Data")
+
+        this->OutgoingHandshakeMessages->Push(new NetworkPacket(Start, Size))
     }
 
     define void SendClientHello() {
@@ -120,10 +151,118 @@ class Client derives INew {
         HandshakeLayer->Leave(Packet)
     }
 
+    void* PrivateKey
+
+    union {
+        void* PublicKey
+        i8* PublicKeyBytes
+    }
+
+    union {
+        void* PreMasterSecret
+        i8* PreMasterSecretBytes
+    }
+
+    void* MasterSecret
+
+    void* ClientMACKey
+    void* ServerMACKey
+    void* ClientKey
+    void* ServerKey
+    void* ClientIV
+    void* ServerIV
+
+    HMACWrapper* HMAC
+
+    define void UpdateSeed(i8* Label) {
+        this->HMAC->Update(Label, StringLength(Label))
+        this->HMAC->Update(this->ClientHello->Random, 32)
+        this->HMAC->Update(this->ServerHello->Random, 32)
+    }
+
+    define void* ExpandKey(void* Key, i32 Size, i8* Label, i32 NeededBytes) {
+        this->HMAC->SetKey(Key, Size)
+
+        i32 BlockSize := this->HMAC->OutputSize
+
+        i32 Iterations := NeededBytes / BlockSize
+
+        if (NeededBytes % BlockSize) {
+            Iterations += 1
+        }
+
+        void* Buffer := Alloc(Iterations * BlockSize)
+
+        void* A := Alloc(BlockSize)
+        this->UpdateSeed(Label)
+        this->HMAC->Finalize(A)
+
+        for (i32 Index := 0, Index < Iterations, Index++) {
+            void* Block := Buffer + (Index * BlockSize)
+
+            this->HMAC->Prepare()
+            this->HMAC->Update(A, BlockSize)
+            this->UpdateSeed(Label)
+            this->HMAC->Finalize(Block)
+
+            this->HMAC->Prepare()
+            this->HMAC->Update(A, BlockSize)
+            this->HMAC->Finalize(A)
+        }
+
+        return Buffer
+    }
+
+    define void DeriveMasterSecret() {
+        this->MasterSecret := this->ExpandKey(this->PreMasterSecret, 32, "master secret", 48)
+    }
+
+    define void DeriveSessionKeys() {
+        i32 Size := 0
+
+        Size += this->HMAC->BlockSize * 2
+        Size += 16 * 2 ; TODO: Key Size
+        Size += 16 * 2 ; TODO: IV Size
+
+        void* Keys := this->ExpandKey(this->MasterSecret, 48, "key expansion", Size)
+
+        this->ClientMACKey := Keys
+        this->ServerMACKey := this->ClientMACKey + this->HMAC->BlockSize
+
+        this->ClientKey := this->ServerMACKey + this->HMAC->BlockSize
+        this->ServerKey := this->ClientKey + 16 ; TODO: Key Size
+
+        this->ClientIV := this->ServerKey + 16 ; TODO: IV Size
+        this->ServerIV := this->ClientIV + 16 ; TODO: IV Size
+    }
+
+    define void SendClientKeyExchange() {
+        TLS::HandshakeProtocol::LayerOptions Options {
+            Type: TLS::HandshakeProtocol::MessageType::ClientKeyExchange
+        }
+
+        NetworkPacket* Packet := this->Base->HandshakeLayer->Enter(&Options)
+        MoveMemory(Packet->Bump(1), i8[32], 1)
+        MoveMemory(Packet->Bump(32), this->PublicKey, 32)
+        this->Base->HandshakeLayer->Leave(Packet)
+    }
+
+    define void SendChangeCipherSpec() {
+        TLS::RecordProtocol::LayerOptions Options {
+            Type: TLS::RecordProtocol::ContentType::ChangeCipherSpec
+        }
+
+        NetworkPacket* Packet := this->Base->RecordLayer->Enter(&Options)
+        MoveMemory(Packet->Bump(1), i8[1], 1)
+        this->Base->RecordLayer->Leave(Packet)
+    }
+
     define void OnHandshake(NetworkPacket* Packet) {
         TLS::HandshakeProtocol::HandshakeRecord* Record := Packet->Get("TLS::HandshakeProtocol::Record")
 
         if (Record->Type = TLS::HandshakeProtocol::MessageType::ServerHello) {
+            this->Base->RecordLayer->SetVersion(TLS::VersionNumber::TLS_1_2)
+
             this->ServerHello->Read(Packet)
 
             Print("Server selected CipherSuite %s\n", nameof:(this->ServerHello->Cipher))
@@ -136,7 +275,59 @@ class Client derives INew {
 
                 Print("[%i]: %s (%x bytes)\n", Index, nameof:(Entry->Type), Entry->Length)
             }
+        }
+        else if (Record->Type = TLS::HandshakeProtocol::MessageType::ServerKeyExchange) {
+            this->ServerKeyExchange->Read(Packet)
 
+            Print("Server Curve Type: %s\n", nameof:(this->ServerKeyExchange->Type))
+            Print("Server Curve: %s\n", nameof:(this->ServerKeyExchange->Curve))
+
+            Print("Server Public Key:\n%hexdump\n", this->ServerKeyExchange->PublicKey, this->ServerKeyExchange->PublicKeyLength)
+
+            Print("Server Signature Algorithm: %s\n", nameof:(this->ServerKeyExchange->Algorithm))
+
+            Print("Server Signature:\n%hexdump\n", this->ServerKeyExchange->Signature, this->ServerKeyExchange->SignatureLength)
+
+            if (this->ServerKeyExchange->Curve = TLS::HandshakeProtocol::NamedCurve::x25519) {
+                RFC7748::Curve25519* Curve := new RFC7748::Curve25519()
+
+                BigInteger* ServerPublicKey := BigInteger:FromBytes(this->ServerKeyExchange->PublicKey, this->ServerKeyExchange->PublicKeyLength)
+
+                this->PrivateKey := AllocateSecureRandom(32)
+                BigInteger* PrivateKey := BigInteger:FromBytes(this->PrivateKey, 32)
+
+                BigInteger* PrivateKeyScalar := Curve->PrepareScalar(PrivateKey)
+
+                BigInteger* PublicKey := Curve->Multiply(new BigInteger(9), PrivateKeyScalar->Reference())
+                BigInteger* PreMasterSecret := Curve->Multiply(ServerPublicKey, PrivateKeyScalar)
+
+                this->PublicKey := Alloc(32)
+                this->PreMasterSecret := Alloc(32)
+
+                for (i32 Index := 0, Index < 32, Index++) {
+                    this->PublicKeyBytes[Index] := PublicKey->GetByte(Index) As i8
+                    this->PreMasterSecretBytes[Index] := PreMasterSecret->GetByte(Index) As i8
+                }
+
+                this->Base->RecordLayer->JoinNext(2)
+
+                this->SendClientKeyExchange()
+                this->SendChangeCipherSpec()
+
+                this->HMAC := new HMACWrapper(new SHA2_256())
+
+                this->DeriveMasterSecret()
+                this->DeriveSessionKeys()
+
+                Print("Client MAC Key:\n%hexdump\n", this->ClientMACKey, this->HMAC->BlockSize)
+            }
+        }
+        else if (Record->Type = TLS::HandshakeProtocol::MessageType::ServerHelloDone) {
+            TLS::HandshakeProtocol::LayerOptions Options {
+                Type: TLS::HandshakeProtocol::MessageType::ClientKeyExchange
+            }
+
+            ;NetworkPacket* Packet := 
         }
     }
 
@@ -170,6 +361,7 @@ class Client derives INew {
 
         this->ClientHello := new TLS::HandshakeProtocol::ClientHelloHelper(TLS::VersionNumber::TLS_1_2)
         this->ServerHello := new TLS::HandshakeProtocol::ServerHelloHelper()
+        this->ServerKeyExchange := new TLS::HandshakeProtocol::ServerKeyExchangeHelper()
 
         INetworkLayer* OnHandshake := this->MakeCallback(&self.OnHandshake)
 
@@ -205,8 +397,8 @@ define void Main() {
     C->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::RSA_PKCS1_SHA256)
     C->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::RSA_PKCS1_SHA512)
 
-    C->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::SupportedGroup::x25519)
-    C->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::SupportedGroup::x448)
+    C->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::NamedCurve::x25519)
+    C->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::NamedCurve::x448)
 
     C->ClientHello->AddPointFormat(TLS::HandshakeProtocol::ECPointFormat::Uncompressed)
 

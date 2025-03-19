@@ -42,8 +42,12 @@ namespace TLS::HandshakeProtocol {
 
             Record->Type := Options->Type
 
+            Packet->Mark("TLS::HandshakeProtocol::Data", 0)
+
             return Packet
         }
+
+        INetworkLayer* OutgoingCallback
 
         define void Leave(NetworkPacket* Packet) {
             HandshakeRecord* Record := Packet->Get("TLS::HandshakeProtocol::Record")
@@ -51,7 +55,13 @@ namespace TLS::HandshakeProtocol {
             i32 Start := Packet->GetOffset("TLS::HandshakeProtocol::Record")
             i32 Size := (Packet->Offset - Start) - #HandshakeRecord
 
+            Packet->Extend("TLS::HandshakeProtocol::Data", Size)
+
             Record->Length := Swap32(Size) >> 8
+
+            if (this->OutgoingCallback) {
+                this->OutgoingCallback->Process(Packet)
+            }
 
             this->Base->Leave(Packet)
         }
@@ -86,7 +96,7 @@ namespace TLS::HandshakeProtocol {
                 Print("No handler for message type %x (%s)\n", Type, nameof:(Type))
             }
 
-            Packet->DumpMarkers()
+            ;Packet->DumpMarkers()
 
             Packet->Seek(Packet->GetEndOffset("TLS::HandshakeProtocol::Record"))
         }
@@ -282,7 +292,7 @@ namespace TLS::HandshakeProtocol {
         RSA_PKCS1_SHA512 := 0x0601
     }
 
-    enum SupportedGroup As i16 {
+    enum NamedCurve As i16 {
         x25519 := 0x1d
         x448 := 0x1e
     }
@@ -373,7 +383,7 @@ namespace TLS::HandshakeProtocol {
             WordList:Append(this~>SignatureAlgorithms, Algorithm As i16)
         }
 
-        define void AddSupportedGroup(SupportedGroup Group) {
+        define void AddSupportedGroup(NamedCurve Group) {
             if !(this->SupportedGroups) {
                 this->SupportedGroups := new WordList()
             }
@@ -611,6 +621,58 @@ namespace TLS::HandshakeProtocol {
 
                 Entry := Entry->End()
             }
+        }
+    }
+
+    enum CurveType As i8 {
+        Named := 0x3
+    }
+
+    struct ServerKeyExchangeRecord unaligned {
+        CurveType Type
+        NamedCurve Curve
+        i8 PublicKeyLength
+        i8[0] PublicKey
+
+        define ServerKeyExchangeRecordTail* GetTail() {
+            return (this->PublicKey + ((this->PublicKeyLength As i32) & 0xFF)) As void*
+        }
+    }
+
+    struct ServerKeyExchangeRecordTail {
+        SignatureAlgorithm Algorithm
+        i16 SignatureLength
+        i8[0] Signature
+    }
+
+    class ServerKeyExchangeHelper derives INew {
+        CurveType Type
+        NamedCurve Curve
+
+        i32 PublicKeyLength
+        i8* PublicKey
+
+        SignatureAlgorithm Algorithm
+
+        i32 SignatureLength
+        i8* Signature
+
+        define void Read(NetworkPacket* Packet) {
+            ServerKeyExchangeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::ServerKeyExchangeRecord", #ServerKeyExchangeRecord)
+            ServerKeyExchangeRecordTail* Tail := Record->GetTail()
+
+            this->PublicKeyLength := Record->PublicKeyLength
+            this->SignatureLength := (Swap16(Tail->SignatureLength) As i32) & 0xFFFF
+
+            i32 Size := this->PublicKeyLength + #ServerKeyExchangeRecordTail + this->SignatureLength
+
+            Packet->Extend("TLS::HandshakeProtocol::ServerKeyExchangeRecord", Size)
+
+            this->Type := Record->Type
+            this->Curve := Swap16(Record->Curve As i16) As NamedCurve
+            this->PublicKey := CloneMemory(Record->PublicKey, this->PublicKeyLength)
+            this->Algorithm := Swap16(Tail->Algorithm As i16) As SignatureAlgorithm
+            this->Signature := CloneMemory(Tail->Signature, this->SignatureLength)
         }
     }
 }

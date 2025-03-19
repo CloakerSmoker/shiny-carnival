@@ -109,15 +109,32 @@ namespace TLS::RecordProtocol {
 
         ProtocolVersion Version
 
+        i32 JoinNextPackets
+        NetworkPacket* Current
+
         define void SetVersion(VersionNumber Version) {
             this~>Version->Major := Version.Major()
             this~>Version->Minor := Version.Minor()
         }
 
+        define void JoinNext(i32 Count) {
+            this->JoinNextPackets := Count
+            this->Current := this->Base->Enter(null)
+        }
+
         define NetworkPacket* Enter(INetworkOptions* RawOptions) {
             LayerOptions* Options := RawOptions
 
-            NetworkPacket* Packet := this->Base->Enter(null)
+            NetworkPacket* Packet := this->Current
+
+            if (this->JoinNextPackets) {
+                Packet->ClearMarkers()
+
+                this->JoinNextPackets -= 1
+            }
+            else {
+                Packet := this->Base->Enter(null)
+            }
 
             RecordHeader* Header := Packet->Mark("TLS::RecordProtocol::Record", #RecordHeader)
 
@@ -129,14 +146,17 @@ namespace TLS::RecordProtocol {
 
         define void Leave(NetworkPacket* Packet) {
             RecordHeader* Header := Packet->Get("TLS::RecordProtocol::Record")
+            i32 HeaderEndOffset := Packet->GetEndOffset("TLS::RecordProtocol::Record")
 
             Print("Record Length: %i\n", Packet->Offset)
 
-            Header->Length := Swap16((Packet->Offset - #RecordHeader) As i16)
+            Header->Length := Swap16((Packet->Offset - HeaderEndOffset) As i16)
 
             Packet->End()
 
-            this->Base->Leave(Packet)
+            if !(this->JoinNextPackets) {
+                this->Base->Leave(Packet)
+            }
         }
 
         AVLTree* ContentTypeHandlers ; <INetworkLayer*>

@@ -438,7 +438,7 @@ class SHA2_512 implements IHashFunction, derives INew {
 
 #Require "./src/HMAC.rlx"
 
-
+/*
 define void Main() {
     SHA2_256* Base := new SHA2_256()
     HMACWrapper* HMAC := new HMACWrapper(Base)
@@ -453,4 +453,5 @@ define void Main() {
     HMAC->Finalize(Hash)
 
     Print("%hexdump\n", Hash, 32)
-}
+}*/
+
