@@ -84,8 +84,8 @@ struct NetworkPacket {
         return this->Find(RegisterPacketData(ID))
     }
 
-    define void* Mark(i32 ID, i32 Size) {
-        void* Result := this->Buffer + this->Offset
+    define void* Mark(i32 ID, i32 Offset, i32 Size) {
+        void* Result := this->Buffer + Offset
 
         NetworkPacketMarker* Marker := this->Find(ID)
 
@@ -94,8 +94,18 @@ struct NetworkPacket {
         }
 
         Marker->ID := ID
-        Marker->Offset := this->Offset
+        Marker->Offset := Offset
         Marker->Size := Size
+
+        return Result
+    }
+
+    define void* Mark(i8* ID, i32 Offset, i32 Size) {
+        return this->Mark(RegisterPacketData(ID), Offset, Size)
+    }
+
+    define void* Mark(i32 ID, i32 Size) {
+        void* Result := this->Mark(ID, this->Offset, Size)
 
         this->Offset += Size
 

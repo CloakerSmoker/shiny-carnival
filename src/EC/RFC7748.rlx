@@ -156,7 +156,7 @@ namespace RFC7748 {
             ;BigInteger* Result := F->Multiply(X2, BigInteger:ModularInverse(Z2, this->PM2->Reference()))
             BigInteger* Result := F->Multiply(X2, Z2P)
 
-            ;Print("Res: %bn-base-16\n", Result)
+            Print("Result: %bn-base-16\n\n", Result)
 
             return Result
         }
@@ -168,6 +168,7 @@ namespace RFC7748 {
             return Base
         }
         virtual BigInteger* Multiply(BigInteger*, BigInteger*)
+        virtual i32 GetScalarSize()
         virtual void Release()
     }
 
@@ -179,6 +180,10 @@ namespace RFC7748 {
             BigInteger* A24 := new BigInteger(121665)
 
             this->Base := new Curve(N25519, A24, 255)
+        }
+
+        define i32 GetScalarSize() {
+            return 32
         }
 
         define BigInteger* PrepareScalar(BigInteger* RawK) {
@@ -216,6 +221,10 @@ namespace RFC7748 {
             BigInteger* A24 := new BigInteger(39081)
 
             this->Base := new Curve(N448, A24, 448)
+        }
+
+        define i32 GetScalarSize() {
+            return 56
         }
 
         define BigInteger* PrepareScalar(BigInteger* RawK) {

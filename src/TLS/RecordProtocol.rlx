@@ -5,6 +5,8 @@
 #Require "./src/Endianess.rlx"
 #Require "./src/network/Packet.rlx"
 
+#Require "./src/HMAC.rlx"
+
 #Require "./src/TLS/Core.rlx"
 
 namespace TLS::RecordProtocol {
@@ -13,67 +15,8 @@ namespace TLS::RecordProtocol {
         Client
     }
 
-    enum PRFAlgorithm {
-        TLS_PRF_SHA256
-    }
-
-    enum BulkCipherAlgorithm {
-        Null,
-        RC4,
-        3DES,
-        AES
-    }
-
-    enum CipherType {
-        Stream,
-        Block,
-        AEAD
-    }
-
-    enum MACAlgorithm {
-        Null,
-        MD5,
-        SHA1,
-        SHA256,
-        SHA384,
-        SHA512
-    }
-
-    enum CompressionAlgorithm {
+    enum CompressionAlgorithmName {
         Null
-    }
-
-    struct SecurityParameters {
-        ConnectionEnd Entity
-        PRFAlgorithm PRF
-        BulkCipherAlgorithm BulkCipher
-        CipherType CipherType
-
-        i8 EncryptionKeyLength
-        i8 BlockLength
-        i8 FixedIVLength
-        i8 RecordIVLength
-
-        MACAlgorithm MAC
-        i8 MACLength
-        i8 MACKeyLength
-
-        CompressionAlgorithm Compression
-
-        i8[48] MasterSecret
-        i8[32] ClientRandom
-        i8[32] ServerRandom
-    }
-
-    struct GeneratedSecurityParameters {
-        void* ClientWriteMACKey
-        void* ServerWriteMACKey
-
-        void* ClientWriteEncryptionKey
-        void* ServerWriteEncryptionKey
-
-        void* ClientWriteIV
-        void* ServerWriteIV
     }
 
     struct ProtocolVersion {
@@ -100,31 +43,42 @@ namespace TLS::RecordProtocol {
         i16 Length
     }
 
-    class LayerOptions implements INetworkOptions {
-        ContentType Type
+    struct AuthenticatedData unaligned {
+        i64 SequenceNumber
+        RecordProtocol::ContentType Type
+        RecordProtocol::ProtocolVersion Version
+        i16 Length
     }
 
-    class Layer implements INetworkLayer, derives INew {
+    class Layer derives INew {
         INetworkLayer* Base
+        Security::SecurityParameters* Parameters
+        Security::ICipherSuite* Suite
 
-        ProtocolVersion Version
+        i64 SendSequenceNumber
+        i64 ReceiveSequenceNumber
 
-        i32 JoinNextPackets
-        NetworkPacket* Current
+        RecordProtocol::ProtocolVersion Version
 
         define void SetVersion(VersionNumber Version) {
             this~>Version->Major := Version.Major()
             this~>Version->Minor := Version.Minor()
         }
 
+        i32 JoinNextPackets
+        NetworkPacket* Current
+
         define void JoinNext(i32 Count) {
             this->JoinNextPackets := Count
-            this->Current := this->Base->Enter(null)
+            this->Current := this->Base->Enter()
         }
 
-        define NetworkPacket* Enter(INetworkOptions* RawOptions) {
-            LayerOptions* Options := RawOptions
+        define void EnableEncryption(Security::SecurityParameters* Parameters, Security::ICipherSuite* Suite) {
+            this->Parameters := Parameters
+            this->Suite := Suite
+        }
 
+        define NetworkPacket* Enter(ContentType Type, i8 EnableEncryption) {
             NetworkPacket* Packet := this->Current
 
             if (this->JoinNextPackets) {
@@ -133,26 +87,79 @@ namespace TLS::RecordProtocol {
                 this->JoinNextPackets -= 1
             }
             else {
-                Packet := this->Base->Enter(null)
+                Packet := this->Base->Enter()
             }
 
-            RecordHeader* Header := Packet->Mark("TLS::RecordProtocol::Record", #RecordHeader)
+            RecordProtocol::RecordHeader* Header := Packet->Mark("TLS::RecordProtocol::Record", #RecordProtocol::RecordHeader)
+            
+            MoveMemory(Header~>Version, this~>Version, #RecordProtocol::ProtocolVersion)
+            Header->Type := Type
 
-            MoveMemory(Header~>Version, this~>Version, #ProtocolVersion)
-            Header->Type := Options->Type
+            Print("Entering Record Layer for %s, Encryption: %i\n", nameof:(Type), EnableEncryption)
+
+            if (EnableEncryption) {
+                if (this->Suite = null) {
+                    Print("No cipher suite selected for encrypted layer\n")
+                    Exit(1)
+                }
+
+                Packet->Mark("TLS::EncryptedRecordProtocol::Body", this->Suite->CalculateLeadingCipherTextSize())
+            }
 
             return Packet
         }
 
         define void Leave(NetworkPacket* Packet) {
-            RecordHeader* Header := Packet->Get("TLS::RecordProtocol::Record")
+            if (Packet->Find("TLS::EncryptedRecordProtocol::Body")) {
+                ; Packet wants encryption
+
+                i32 LeadingSize := this->Suite->CalculateLeadingCipherTextSize()
+
+                void* Data := Packet->Get("TLS::EncryptedRecordProtocol::Body")
+                i32 Size := Packet->Tell() - Packet->GetOffset("TLS::EncryptedRecordProtocol::Body") - LeadingSize
+
+                Print("Leaving Encrypted Layer with %i bytes of body data\n", Size)
+
+                i32 FollowingSize := this->Suite->CalculateFollowingCipherTextSize(Data, Size)
+
+                if (FollowingSize) {
+                    Packet->Bump(FollowingSize)
+                }
+
+                Packet->Find("TLS::EncryptedRecordProtocol::Body")->Size := LeadingSize + Size + FollowingSize
+
+                Print("    %i bytes of total ciphertext\n", Packet->GetSize("TLS::EncryptedRecordProtocol::Body"))
+            }            
+            
+            RecordProtocol::RecordHeader* Header := Packet->Get("TLS::RecordProtocol::Record")
             i32 HeaderEndOffset := Packet->GetEndOffset("TLS::RecordProtocol::Record")
 
-            Print("Record Length: %i\n", Packet->Offset)
+            Print("Send record of length: %i\n", Packet->Offset - HeaderEndOffset)
 
             Header->Length := Swap16((Packet->Offset - HeaderEndOffset) As i16)
 
             Packet->End()
+
+            if (Packet->Find("TLS::EncryptedRecordProtocol::Body")) {
+                AuthenticatedData Authenticate {
+                    SequenceNumber: Swap64(this->SendSequenceNumber),
+                    Type: Header->Type,
+                    Version: {
+                        Major: this->Version->Major,
+                        Minor: this->Version->Minor
+                    },
+                    Length: Swap16(Size As i16)
+                }
+
+                Print("AAD:\n%hexdump\n", &Authenticate, #AuthenticatedData)
+
+                this->Suite->Encrypt(
+                    Data, Size,
+                    &Authenticate, #AuthenticatedData
+                )
+            }
+
+            Print("Joining next %i packets\n", this->JoinNextPackets)
 
             if !(this->JoinNextPackets) {
                 this->Base->Leave(Packet)

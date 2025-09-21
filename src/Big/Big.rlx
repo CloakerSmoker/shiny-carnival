@@ -1253,7 +1253,7 @@ struct BigInteger {
         return self:New(String, 10)
     }
 
-    static BigInteger* FromBytes(i8* Bytes, i32 Length) {
+    /* static BigInteger* FromBytes(i8* Bytes, i32 Length) {
         i32 Digits := (Length / 3) + 1
 
         BigInteger* Result := BigInteger:WithDigits(Digits)
@@ -1266,7 +1266,7 @@ struct BigInteger {
         }
 
         return Result->Shrink()
-    }
+    } */
 
     static BigInteger* Square(BigInteger* In) {
         BigInteger* Result := self:WithDigits(In->DigitCount * 2)
@@ -1797,6 +1797,18 @@ struct BigInteger {
         Digit |= Value << ByteOffset
 
         this->Digits[DigitIndex] := Digit
+    }
+
+    static BigInteger* FromBytes(i8* Bytes, i32 Length) {
+        i32 Digits := (Length / 3) + 1
+
+        BigInteger* Result := BigInteger:WithDigits(Digits)
+
+        for (i32 Index := 0, Index < Length, Index++) {
+            Result->_SetByte(Index, (Bytes[Index] As i32) & 0xFF)
+        }
+
+        return Result->Shrink()
     }
 
     define BigInteger* BitAt(i32 Index) {

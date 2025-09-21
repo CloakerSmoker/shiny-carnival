@@ -24,23 +24,22 @@ namespace TLS::HandshakeProtocol {
         }
     }
 
-    class LayerOptions implements INetworkOptions {
-        MessageType Type
-    }
-
     class Layer implements INetworkLayer, derives INew {
-        INetworkLayer* Base
+        TLS::RecordProtocol::Layer* Base
 
-        define NetworkPacket* Enter(INetworkOptions* RawOptions) {
-            TLS::RecordProtocol::LayerOptions BaseOptions {
-                Type: TLS::RecordProtocol::ContentType::Handshake
+        define NetworkPacket* Enter(MessageType Type) {
+            i8 Encryption := false
+
+            if (Type = MessageType::Finished) {
+                Encryption := true
             }
 
-            NetworkPacket* Packet := this->Base->Enter(&BaseOptions)
-            LayerOptions* Options := RawOptions
+            Print("Handshake Layer Entering %s\n", nameof:(Type))
+
+            NetworkPacket* Packet := this->Base->Enter(RecordProtocol::ContentType::Handshake, Encryption)
             HandshakeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::Record", #HandshakeRecord)
 
-            Record->Type := Options->Type
+            Record->Type := Type
 
             Packet->Mark("TLS::HandshakeProtocol::Data", 0)
 
@@ -48,6 +47,12 @@ namespace TLS::HandshakeProtocol {
         }
 
         INetworkLayer* OutgoingCallback
+        INetworkLayer* IncomingCallback
+
+        define void SetCallbacks(INetworkLayer* Outgoing, INetworkLayer* Incoming) {
+            this->OutgoingCallback := Outgoing
+            this->IncomingCallback := Incoming
+        }
 
         define void Leave(NetworkPacket* Packet) {
             HandshakeRecord* Record := Packet->Get("TLS::HandshakeProtocol::Record")
@@ -75,11 +80,18 @@ namespace TLS::HandshakeProtocol {
         define void Process(NetworkPacket* Packet) {
             HandshakeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::Record", #HandshakeRecord)
 
+            Packet->Mark("TLS::HandshakeProtocol::Data", 0)
+
             if (Record->Length != 0) {
                 Record->Length := Swap32(Record->Length << 8)
             }
 
             Packet->Extend("TLS::HandshakeProtocol::Record", Record->Length)
+            Packet->Extend("TLS::HandshakeProtocol::Data", Record->Length)
+
+            if (this->IncomingCallback) {
+                this->IncomingCallback->Process(Packet)
+            }
 
             Packet->Seek(Packet->GetOffset("TLS::HandshakeProtocol::Record") + #HandshakeRecord)
 
@@ -101,7 +113,7 @@ namespace TLS::HandshakeProtocol {
             Packet->Seek(Packet->GetEndOffset("TLS::HandshakeProtocol::Record"))
         }
 
-        define void New(INetworkLayer* Base) {
+        define void New(RecordProtocol::Layer* Base) {
             this->Base := Base
 
             this->MessageTypeHandlers := new AVLTree(#void*)

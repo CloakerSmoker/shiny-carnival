@@ -401,6 +401,14 @@ struct AES_GCM {
     }
 
     define void SetKey(void* Key) {
+        this->AuthenticatedDataLength := 0
+        this->PlainTextLength := 0
+
+        FastZeroMemory(this->H, 16)
+        FastZeroMemory(this->Y, 16)
+        FastZeroMemory(this->Y0, 16)
+        FastZeroMemory(this->AuthenticationHash, 16)
+
         this->AES->SetKey(Key)
         this->AES->EncryptBlock(this->H)
 
@@ -466,6 +474,8 @@ struct AES_GCM {
     }
 
     define void SetIV(void* IV, i32 Size) {
+        FastZeroMemory(this->Y, 16)
+
         if (Size = 12) {
             MoveMemory(this->Y, IV, 12)
             this->Y[15] := 1
@@ -648,25 +658,3 @@ struct AES_GCM {
         }
     }
 }
-
-define void DoPrintDump(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
-    i8* Buffer := Parameters[*ParameterIndex] As void*
-    i32 Size := Parameters[*ParameterIndex + 1] As i32
-
-    for (i32 Index := 0, Index < Size, Index++) {
-        this->Print("%B", Buffer[Index])
-
-        if (Index + 1 != Size) {
-            this->Print(" ")
-        }
-    }
-
-    *ParameterIndex += 2
-}
-
-PrintFormatPrototype DumpPrintPrototype {
-    Name: "dump",
-    Format: &DoPrintDump
-}
-
-i32 DUMP_PRINT_PROTOTYPE_ID := AddPrintFormat(&DumpPrintPrototype)

@@ -281,7 +281,7 @@ class SocketNetworkLayer implements INetworkLayer, derives INew {
         this->Remote->Connect(ServerAddress~>Base, #IPV4SocketAddress)
     }
 
-    define NetworkPacket* Enter(INetworkOptions* Options) {
+    define NetworkPacket* Enter() {
         return new NetworkPacket(PAGE_SIZE)
     }
     define void Leave(NetworkPacket* Packet) {

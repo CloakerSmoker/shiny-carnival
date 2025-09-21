@@ -1,0 +1,558 @@
+
+#Require "./src/AES/Constructions.rlx"
+#Require "./src/SHA2.rlx"
+#Require "./src/PKCS5.rlx"
+#Require "./src/EC/RFC7748.rlx"
+
+namespace TLS::Security {
+    enum PseudoRandomFunctionName {
+        TLS_1_2_SHA2_256_HMAC
+    }
+
+    enum BulkCipherName {
+        Null,
+        RC4,
+        TRIPLE_DES,
+        AES_128_GCM,
+        AES_128_CBC
+    }
+
+    enum CipherType {
+        Stream,
+        Block,
+        AEAD
+    }
+
+    enum MACAlgorithmName {
+        Null,
+        MD5,
+        SHA1,
+        SHA2_256,
+        SHA2_384,
+        SHA2_512
+    }
+
+    struct DirectionalKeySet {
+        void* Random
+        void* PublicKey
+        void* MACKey
+        void* EncryptionKey
+        void* IV
+    }
+    
+    class SecurityParameters derives INew {
+        HandshakeProtocol::ServerHelloHelper* ServerHello
+        HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
+
+        DirectionalKeySet Client
+        DirectionalKeySet Server
+
+        DirectionalKeySet* Local
+        DirectionalKeySet* Remote
+
+        void* LocalPrivateKey
+
+        void* PreMasterSecret ; MasterSecret derived from this
+        void* MasterSecret ; KeyBlock derived from this
+        void* KeyBlock ; KeySets point into this
+
+        define void SetLocalIsClient() {
+            this->Local := &this->Client
+            this->Remote := &this->Server
+        }
+
+        define void SetLocalIsServer() {
+            this->Local := &this->Server
+            this->Remote := &this->Client
+        }
+    }
+
+    class TLS_1_2_PRF derives INew {
+        SecurityParameters* Parameters
+        HMACWrapper* HMAC
+
+        define void New(SecurityParameters* Parameters, HMACWrapper* HMAC) {
+            this->Parameters := Parameters
+            this->HMAC := HMAC
+        }
+
+        define void UpdateSeedClientServer(i8* Label) {
+            this->HMAC->Update(Label, StringLength(Label))
+            this->HMAC->Update(this->Parameters~>Client->Random, 32)
+            this->HMAC->Update(this->Parameters~>Server->Random, 32)
+        }
+
+        define void UpdateSeedServerClient(i8* Label) {
+            this->HMAC->Update(Label, StringLength(Label))
+            this->HMAC->Update(this->Parameters~>Server->Random, 32)
+            this->HMAC->Update(this->Parameters~>Client->Random, 32)
+        }
+
+        define void* Generate(void(self*, i8*) UpdateSeed, void* Key, i32 Size, i8* Label, i32 NeededBytes) {
+            this->HMAC->SetKey(Key, Size)
+
+            i32 BlockSize := this->HMAC->OutputSize
+
+            i32 Iterations := NeededBytes / BlockSize
+
+            if (NeededBytes % BlockSize) {
+                Iterations += 1
+            }
+
+            Print("PRF Request '%s' of %i bytes (%i iterations of %i bytes)\n", Label, NeededBytes, Iterations, BlockSize)
+            Print("Client Random:\n%hexdump\n", this->Parameters~>Client->Random, 32)
+            Print("Server Random:\n%hexdump\n", this->Parameters~>Server->Random, 32)
+
+            ; First, generate A(1) from the seed, and then A(N) from A(N-1)
+            void* Buffer := Alloc(Iterations * BlockSize)
+
+            this->HMAC->Prepare()
+            UpdateSeed(this, Label)
+            this->HMAC->Finalize(Buffer)
+
+            for (i32 Index := 1, Index < Iterations, Index++) {
+                void* Previous := Buffer + ((Index - 1) * BlockSize)
+                void* AN := Previous + BlockSize
+
+                this->HMAC->Prepare()
+                this->HMAC->Update(Previous, BlockSize)
+                this->HMAC->Finalize(AN)
+            }
+
+            ; Use A(N) plus the seed to generate the output blocks
+
+            for (i32 Index := 0, Index < Iterations, Index++) {
+                void* Block := Buffer + (Index * BlockSize)
+
+                this->HMAC->Prepare()
+                this->HMAC->Update(Block, BlockSize)
+                UpdateSeed(this, Label)
+                this->HMAC->Finalize(Block)
+            }
+
+            return Buffer
+        }
+
+        define void* GenerateMasterSecret(void* Key, i32 Size, i8* Label, i32 NeededBytes) {
+            return this->Generate(&self.UpdateSeedClientServer, Key, Size, Label, NeededBytes)
+        }
+        define void* GenerateKeyMaterial(void* Key, i32 Size, i8* Label, i32 NeededBytes) {
+            return this->Generate(&self.UpdateSeedServerClient, Key, Size, Label, NeededBytes)
+        }
+    }
+
+    class AES_128_CBC derives INew {
+        AES_CBC* AES
+
+        define void New() {
+            this->AES := new AES_CBC(AESKeySize::128)
+        }
+
+        define i32 CalculateCipherTextSize(void* Data, i32 Length) {
+            i32 Remainder := Length % 16
+
+            if (Remainder = 0) {
+                return Length
+            }
+
+            return Length + (16 - Remainder)
+        }
+
+        define void Pad(NetworkPacket* Packet, i32 DataSize) {
+            i32 Remainder := DataSize % 16
+
+            if (Remainder = 0) {
+                return
+            }
+
+            i32 PaddingNeeded := 16 - Remainder
+
+            i8* PadStart := Packet->GetEnd("TLS::EncryptedRecordProtocol::Body")
+            Packet->Extend("TLS::EncryptedRecordProtocol::Body", PaddingNeeded)
+
+            PKCS5Pad(PadStart, DataSize, 16)
+        }
+
+        define void Encrypt(void* Data, i32 Length, void* Key, void* IV) {
+            this->AES->SetKey(Key, IV)
+
+            i32 Remainder := Length % 16
+
+            if (Remainder != 0) {
+                i8* PadStart := Data + Length
+                i32 PaddingNeeded := 16 - Remainder
+
+                for (i32 Index := 0, Index < PaddingNeeded, Index++) {
+                    PadStart[Index] := PaddingNeeded As i8
+                }
+            }
+
+            this->AES->EncryptBlocks(Data, Length / 16)
+        }
+
+        define void Decrypt(void* Data, i32 Length, void* Key, void* IV) {
+            this->AES->SetKey(Key, IV)
+            this->AES->DecryptBlocks(Data, Length / 16)
+        }
+    }
+
+    struct ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock {
+        i8[16] ClientEncryptionKey
+        i8[16] ServerEncryptionKey
+        i8[4] ClientIV
+        i8[4] ServerIV
+    }
+
+    class ECDHE_RSA_WITH_AES_128_GCM_SHA256 implements ICipherSuite, derives INew {
+        SecurityParameters* Parameters
+
+        SHA2_256* Hash
+        HMACWrapper* HMAC
+        TLS_1_2_PRF* PRF
+        AES_GCM* BulkCipher
+
+        define void New(SecurityParameters* Parameters) {
+            this->Parameters := Parameters
+
+            RFC7748::ICurve* Curve := null
+
+            TLS::HandshakeProtocol::NamedCurve CurveName := this->Parameters->ServerKeyExchange->Curve
+
+            if (CurveName = TLS::HandshakeProtocol::NamedCurve::x25519) {
+                Curve := new RFC7748::Curve25519()
+            }
+            else if (CurveName = TLS::HandshakeProtocol::NamedCurve::x448) {
+                Curve := new RFC7748::Curve448()
+            }
+            else {
+                Print("Unsupported curve %i (%s)\n", CurveName, nameof:(CurveName))
+                Exit(1)
+            }
+
+            i32 ScalarSize := Curve->GetScalarSize()
+
+            BigInteger* RemotePublicKey := BigInteger:FromBytes(Parameters->Remote->PublicKey, ScalarSize)
+            BigInteger* LocalPrivateKey := BigInteger:FromBytes(Parameters->LocalPrivateKey, ScalarSize)
+
+            BigInteger* LocalPrivateKeyScalar := Curve->PrepareScalar(LocalPrivateKey)
+
+            BigInteger* LocalPublicKey := Curve->Multiply(new BigInteger(9), LocalPrivateKeyScalar->Reference())
+            BigInteger* PreMasterSecret := Curve->Multiply(RemotePublicKey, LocalPrivateKeyScalar)
+
+            i8* LocalPublicKeyBytes := Alloc(ScalarSize)
+            i8* PreMasterSecretBytes := Alloc(ScalarSize)
+
+            for (i32 Index := 0, Index < ScalarSize, Index++) {
+                LocalPublicKeyBytes[Index] := LocalPublicKey->GetByte(Index) As i8
+                PreMasterSecretBytes[Index] := PreMasterSecret->GetByte(Index) As i8
+            }
+
+            Parameters->Local->PublicKey := LocalPublicKeyBytes
+            Parameters->PreMasterSecret := PreMasterSecretBytes
+
+            this->Hash := new SHA2_256()
+            this->HMAC := new HMACWrapper(this->Hash)
+            this->PRF := new TLS_1_2_PRF(Parameters, this->HMAC)
+            this->BulkCipher := new AES_GCM(AESKeySize::128)
+
+            Parameters->MasterSecret := this->PRF->GenerateMasterSecret(Parameters->PreMasterSecret, ScalarSize, "master secret", 48)
+
+            Print("Master Secret:\n%hexdump\n", Parameters->MasterSecret, 48)
+
+            Parameters->KeyBlock := this->PRF->GenerateKeyMaterial(Parameters->MasterSecret, 48, "key expansion", #ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock)
+
+            Print("Key Block:\n%hexdump\n", Parameters->KeyBlock, #ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock)
+
+            ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock* KeyBlock := Parameters->KeyBlock
+
+            DirectionalKeySet* ClientKeys := &Parameters->Client
+            DirectionalKeySet* ServerKeys := &Parameters->Server
+
+            ClientKeys->EncryptionKey := KeyBlock->ClientEncryptionKey
+            ClientKeys->IV := KeyBlock->ClientIV
+
+            ServerKeys->EncryptionKey := KeyBlock->ServerEncryptionKey
+            ServerKeys->IV := KeyBlock->ServerIV
+
+            Print("Client Encryption Key:\n%hexdump\n", ClientKeys->EncryptionKey, 16)
+            Print("Client IV:\n%hexdump\n", ClientKeys->IV, 4)
+
+            Print("Server Encryption Key:\n%hexdump\n", ServerKeys->EncryptionKey, 16)
+            Print("Server IV:\n%hexdump\n", ServerKeys->IV, 4)
+
+            i64 KeyLogFile := FileOpen("rlxkeylog.log", FILE_CREATE_NEW | FILE_WRITE)
+
+            FileSeek(KeyLogFile, 0, SEEK_END)
+
+            FileWrite(KeyLogFile, "CLIENT_RANDOM ", 14)
+
+            for (i32 Index := 0, Index < 32, Index++) {
+                i8 Byte := (Parameters->Client->Random As i8*)[Index]
+                i32 Upper := (Byte >> 4) & 0xF
+                i32 Lower := Byte & 0xF
+                FileWrite(KeyLogFile, "0123456789abcdef" + Upper, 1)
+                FileWrite(KeyLogFile, "0123456789abcdef" + Lower, 1)
+            }
+
+            FileWrite(KeyLogFile, " ", 1)
+
+            for (i32 Index := 0, Index < 48, Index++) {
+                i8 Byte := (Parameters->MasterSecret As i8*)[Index]
+                i32 Upper := (Byte >> 4) & 0xF
+                i32 Lower := Byte & 0xF
+                FileWrite(KeyLogFile, "0123456789abcdef" + Upper, 1)
+                FileWrite(KeyLogFile, "0123456789abcdef" + Lower, 1)
+            }
+
+            FileWrite(KeyLogFile, "\n", 1)
+            FileTruncate(KeyLogFile, FileTell(KeyLogFile))
+
+            FileClose(KeyLogFile)
+        }
+
+        define i32 CalculateLeadingCipherTextSize() {
+            return 8 ; prepend 8 byte explicit nonce
+        }
+        define i32 CalculateFollowingCipherTextSize(void* Data, i32 Size) {
+            return 16 ; append 16 byte tag
+        }
+
+        define void Encrypt(void* Data, i32 DataLength, void* Authenticate, i32 AuthenticateLength) {
+            this->BulkCipher->SetKey(this->Parameters->Local->EncryptionKey)
+
+            i8[12] IV
+            MoveMemory(IV, this->Parameters->Local->IV, 4)
+            MoveMemory(IV + 4, "random 8", 8)
+
+            MoveMemory(Data, IV + 4, 8) ; prepend explicit nonce
+
+            Print("Nonce:\n%hexdump\n", IV, 12)
+
+            this->BulkCipher->SetIV(IV, 12)
+            this->BulkCipher->AuthenticateBytes(Authenticate, AuthenticateLength)
+            this->BulkCipher->EncryptBytes(Data + 8, DataLength)
+
+            this->BulkCipher->CalculateTag(Data + 8 + DataLength, 16)
+        }
+        define void Decrypt(void* Data, i32 DataLength, void* Authenticate, i32 AuthenticateLength) {
+            this->BulkCipher->SetKey(this->Parameters->Remote->EncryptionKey)
+            this->BulkCipher->SetIV(this->Parameters->Remote->IV, 4)
+
+            this->BulkCipher->DecryptBytes(Data, DataLength)
+        }
+    }
+/* 
+    class SecurityContext derives INew {
+        SecurityParameters* Parameters
+
+        IHashFunction* Hash
+        HMACWrapper* HMAC
+        IPseudoRandomFunction* PRF
+        IBulkCipher* BulkCipher
+
+        void* PublicKey
+
+        void* PreMasterSecret
+        void* MasterSecret
+
+        KeySet* Keys
+
+        define void New(SecurityParameters* Parameters) {
+            this->Parameters := Parameters
+
+            this->Hash := Parameters->CreateHashInstance()
+            this->HMAC := Parameters->CreateHMACInstance()
+            this->PRF := Parameters->CreatePseudoRandomFunctionInstance()
+            this->BulkCipher := Parameters->CreateBulkCipherInstance()
+
+            this->PublicKey := Alloc(32)
+            this->PreMasterSecret := Alloc(32)
+
+            this->Keys := new KeySet()
+        }
+
+        define i8* GetPublicKey() {
+            return this->PublicKey
+        }
+        define i8* GetPreMasterSecret() {
+            return this->PreMasterSecret
+        }
+
+        define void* Bump(void** pData, i32 Size) {
+            void* Result := *pData
+
+            *pData += Size
+
+            return Result
+        }
+
+        define void DeriveKeys() {
+            this->MasterSecret := this->PRF->Generate(this->PreMasterSecret, 32, "master secret", 48)
+
+            Print("PreMasterSecret:\n%hexdump\n", this->PreMasterSecret, 32)
+            Print("MasterSecret:\n%hexdump\n", this->MasterSecret, 48)
+
+            i32 Size := 0
+
+            Size += 0
+            Size += 16 * 2 ; TODO: Key Size
+            Size += 4 * 2 ; TODO: IV Size
+
+            void* KeyMaterial := this->PRF->Generate(this->MasterSecret, 48, "key expansion", Size)
+
+            Print("Key Material:\n%hexdump\n", KeyMaterial, Size)
+
+            DirectionalKeySet* ClientKeys := &this->Keys->Client
+            DirectionalKeySet* ServerKeys := &this->Keys->Server
+
+            ClientKeys->MACKey := this->Bump(&KeyMaterial, this->PRF->GetBlockSize())
+            ServerKeys->MACKey := this->Bump(&KeyMaterial, this->PRF->GetBlockSize())
+
+            ClientKeys->EncryptionKey := this->Bump(&KeyMaterial, 16) ; TODO: Key Size
+            ServerKeys->EncryptionKey := this->Bump(&KeyMaterial, 16) ; TODO: Key Size
+
+            ClientKeys->IV := this->Bump(&KeyMaterial, 4) ; TODO: IV Size
+            ServerKeys->IV := this->Bump(&KeyMaterial, 4) ; TODO: IV Size
+        }
+
+        define void SetLocalIsClient() {
+            this->Keys->SetLocalIsClient()
+        }
+        define void SetLocalIsServer() {
+            this->Keys->SetLocalIsServer()
+        }
+
+        define void Encrypt(void* Data, i32 Length, void* Key, void* IV) {
+            this->BulkCipher->Encrypt(Data, Length, Key, IV)
+        }
+        define void Decrypt(void* Data, i32 Length, void* Key, void* IV) {
+            this->BulkCipher->Decrypt(Data, Length, Key, IV)
+        }
+    } */
+
+
+    
+    /* class EncryptedLayer implements INetworkLayer, RecordProtocol::IRecordLayer, derives INew {
+        INetworkLayer* Base
+        SecurityParameters* Parameters
+        ICipherSuite* Suite
+
+        i64 SendSequenceNumber
+        i64 ReceiveSequenceNumber
+
+        RecordProtocol::ProtocolVersion Version
+
+        define void SetVersion(VersionNumber Version) {
+            this~>Version->Major := Version.Major()
+            this~>Version->Minor := Version.Minor()
+        }
+
+        i32 JoinNextPackets
+        NetworkPacket* Current
+
+        define void JoinNext(i32 Count) {
+            this->JoinNextPackets := Count
+            this->Current := this->Base->Enter(null)
+        }
+
+        define void New(INetworkLayer* Base) {
+            this->Base := Base
+        }
+
+        define void EnableEncryption(SecurityParameters* Parameters, ICipherSuite* Suite) {
+            this->Parameters := Parameters
+            this->Suite := Suite
+        }
+
+        define NetworkPacket* Enter(INetworkOptions* RawOptions) {
+            RecordProtocol::LayerOptions* Options := RawOptions
+
+            NetworkPacket* Packet := this->Current
+
+            if (this->JoinNextPackets) {
+                Packet->ClearMarkers()
+
+                this->JoinNextPackets -= 1
+            }
+            else {
+                Packet := this->Base->Enter(Options)
+            }
+
+            RecordProtocol::RecordHeader* Header := Packet->Mark("TLS::RecordProtocol::Record", #RecordProtocol::RecordHeader)
+            
+            MoveMemory(Header~>Version, this~>Version, #RecordProtocol::ProtocolVersion)
+            Header->Type := Options->Type
+
+            if (Options->EnableEncryption) {
+                if (this->Suite = null) {
+                    Print("No cipher suite selected for encrypted layer\n")
+                    Exit(1)
+                }
+
+                Packet->Mark("TLS::EncryptedRecordProtocol::Body", this->Suite->CalculateLeadingCipherTextSize())
+            }
+
+            return Packet
+        }
+
+        define void Leave(NetworkPacket* Packet) {
+            if (Packet->Find("TLS::EncryptedRecordProtocol::Body")) {
+                ; Packet wants encryption
+
+                i32 LeadingSize := this->Suite->CalculateLeadingCipherTextSize()
+
+                void* Data := Packet->Get("TLS::EncryptedRecordProtocol::Body")
+                i32 Size := Packet->Tell() - Packet->GetOffset("TLS::EncryptedRecordProtocol::Body") - LeadingSize
+
+                Print("Leaving Encrypted Layer with %i bytes of body data\n", Size)
+
+                i32 FollowingSize := this->Suite->CalculateFollowingCipherTextSize(Data, Size)
+
+                if (FollowingSize) {
+                    Packet->Bump(FollowingSize)
+                }
+
+                Packet->Find("TLS::EncryptedRecordProtocol::Body")->Size := LeadingSize + Size + FollowingSize
+
+                Print("    %i bytes of total ciphertext\n", Packet->GetSize("TLS::EncryptedRecordProtocol::Body"))
+            }            
+            
+            RecordProtocol::RecordHeader* Header := Packet->Get("TLS::RecordProtocol::Record")
+            i32 HeaderEndOffset := Packet->GetEndOffset("TLS::RecordProtocol::Record")
+
+            Print("Send record of length: %i\n", Packet->Offset - HeaderEndOffset)
+
+            Header->Length := Swap16((Packet->Offset - HeaderEndOffset) As i16)
+
+            Packet->End()
+
+            if (Packet->Find("TLS::EncryptedRecordProtocol::Body")) {
+                AuthenticatedData Authenticate {
+                    SequenceNumber: Swap64(this->SendSequenceNumber),
+                    Type: Header->Type,
+                    Version: {
+                        Major: this->Version->Major,
+                        Minor: this->Version->Minor
+                    },
+                    Length: Header->Length
+                }
+
+                this->Suite->Encrypt(
+                    Data, Size,
+                    &Authenticate, #AuthenticatedData,
+                    this->Parameters->Local->EncryptionKey, this->Parameters->Local->IV
+                )
+            }
+
+            Print("Joining next %i packets\n", this->JoinNextPackets)
+
+            if !(this->JoinNextPackets) {
+                this->Base->Leave(Packet)
+            }
+        }
+
+        define void Process(NetworkPacket* Packet) {
+            
+        }
+    } */
+}

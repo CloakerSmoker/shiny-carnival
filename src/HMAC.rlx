@@ -1,4 +1,6 @@
 
+#Require "./src/HashHelpers.rlx"
+
 class HMACWrapper derives INew {
     IHashFunction* Base
     
