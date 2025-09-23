@@ -37,7 +37,16 @@ namespace TLS {
     }
 
     namespace Security {
+        interface IPseudoRandomFunction {
+            virtual void* Generate(void* Key, i32 Size, i8* Label, void* Seed, i32 SeedSize, i32 NeededBytes)
+            virtual void* GenerateMasterSecret(void* Key, i32 Size, i8* Label, i32 NeededBytes)
+            virtual void* GenerateKeyMaterial(void* Key, i32 Size, i8* Label, i32 NeededBytes)
+        }
+
         interface ICipherSuite {
+            virtual ::IHashFunction* GetHashFunction()
+            virtual IPseudoRandomFunction* GetPseudoRandomFunction()
+
             virtual i32 CalculateLeadingCipherTextSize() {
                 return 0
             }

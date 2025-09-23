@@ -55,6 +55,9 @@ namespace TLS::RecordProtocol {
         Security::SecurityParameters* Parameters
         Security::ICipherSuite* Suite
 
+        i8 LocalEncryption
+        i8 RemoteEncryption
+
         i64 SendSequenceNumber
         i64 ReceiveSequenceNumber
 
@@ -73,12 +76,18 @@ namespace TLS::RecordProtocol {
             this->Current := this->Base->Enter()
         }
 
-        define void EnableEncryption(Security::SecurityParameters* Parameters, Security::ICipherSuite* Suite) {
+        define void EnableLocalEncryption(Security::SecurityParameters* Parameters, Security::ICipherSuite* Suite) {
             this->Parameters := Parameters
             this->Suite := Suite
+
+            this->LocalEncryption := true
         }
 
-        define NetworkPacket* Enter(ContentType Type, i8 EnableEncryption) {
+        define void EnableRemoteEncryption() {
+            this->RemoteEncryption := true
+        }
+
+        define NetworkPacket* Enter(ContentType Type) {
             NetworkPacket* Packet := this->Current
 
             if (this->JoinNextPackets) {
@@ -95,14 +104,9 @@ namespace TLS::RecordProtocol {
             MoveMemory(Header~>Version, this~>Version, #RecordProtocol::ProtocolVersion)
             Header->Type := Type
 
-            Print("Entering Record Layer for %s, Encryption: %i\n", nameof:(Type), EnableEncryption)
+            Print("Entering Record Layer for %s, Encryption: %i\n", nameof:(Type), this->LocalEncryption)
 
-            if (EnableEncryption) {
-                if (this->Suite = null) {
-                    Print("No cipher suite selected for encrypted layer\n")
-                    Exit(1)
-                }
-
+            if (this->LocalEncryption) {
                 Packet->Mark("TLS::EncryptedRecordProtocol::Body", this->Suite->CalculateLeadingCipherTextSize())
             }
 
@@ -110,9 +114,7 @@ namespace TLS::RecordProtocol {
         }
 
         define void Leave(NetworkPacket* Packet) {
-            if (Packet->Find("TLS::EncryptedRecordProtocol::Body")) {
-                ; Packet wants encryption
-
+            if (this->LocalEncryption) {
                 i32 LeadingSize := this->Suite->CalculateLeadingCipherTextSize()
 
                 void* Data := Packet->Get("TLS::EncryptedRecordProtocol::Body")
@@ -140,7 +142,7 @@ namespace TLS::RecordProtocol {
 
             Packet->End()
 
-            if (Packet->Find("TLS::EncryptedRecordProtocol::Body")) {
+            if (this->LocalEncryption) {
                 AuthenticatedData Authenticate {
                     SequenceNumber: Swap64(this->SendSequenceNumber),
                     Type: Header->Type,
@@ -157,6 +159,8 @@ namespace TLS::RecordProtocol {
                     Data, Size,
                     &Authenticate, #AuthenticatedData
                 )
+
+                this->SendSequenceNumber += 1
             }
 
             Print("Joining next %i packets\n", this->JoinNextPackets)
@@ -169,7 +173,7 @@ namespace TLS::RecordProtocol {
         AVLTree* ContentTypeHandlers ; <INetworkLayer*>
 
         define void RegisterContentType(ContentType Type, INetworkLayer* Handler) {
-            this->ContentTypeHandlers->InsertPointer(Type As i32, Handler)
+            this->ContentTypeHandlers->InsertPointer((Type As i32) & 0xFF, Handler)
         }
 
         define void Process(NetworkPacket* Packet) {
@@ -180,20 +184,56 @@ namespace TLS::RecordProtocol {
                 Header->Length := Swap16(Header->Length)
                 Packet->Extend("TLS::RecordProtocol::Record", Header->Length)
 
+                ;Print("Record %i bytes:\n%hexdump\n", Header->Length + #RecordHeader, Header, Header->Length + #RecordHeader)
 
                 ContentType Type := Header->Type
-                INetworkLayer* Handler := this->ContentTypeHandlers->GetPointer(Type As i32)
+
+                if (this->RemoteEncryption) {
+                    if (Type != ContentType::ChangeCipherSpec) {
+                        void* Body := Packet->Get("TLS::RecordProtocol::Record") + #RecordHeader
+
+                        i32 Prepend := this->Suite->CalculateLeadingCipherTextSize()
+                        i32 Append := this->Suite->CalculateFollowingCipherTextSize(Body, Header->Length)
+
+                        AuthenticatedData Authenticate {
+                            SequenceNumber: Swap64(this->ReceiveSequenceNumber),
+                            Type: Header->Type,
+                            Version: {
+                                Major: Header~>Version->Major,
+                                Minor: Header~>Version->Minor
+                            },
+                            Length: Swap16((Header->Length - Prepend - Append) As i16)
+                        }
+
+                        this->Suite->Decrypt(
+                            Body, Header->Length,
+                            &Authenticate, #AuthenticatedData
+                        )
+
+                        this->ReceiveSequenceNumber += 1
+
+                        Packet->Seek(Packet->GetOffset("TLS::RecordProtocol::Record") + #RecordHeader + Prepend)
+
+                        ;Print("Decrypted Message:\n%hexdump\n", Body + Prepend, Header->Length - Prepend - Append)
+                    }
+                }
+
+
+                INetworkLayer* Handler := this->ContentTypeHandlers->GetPointer((Type As i32) & 0xFF)
 
                 if (Handler) {
                     Handler->Process(Packet)
                 }
                 else {
-                    Print("No handler for content type %i (%s)\n", Type, nameof:(Type))
+                    ;this->ContentTypeHandlers->Print()
+
+                    Print("\n^S9No handler for content type %i (%s)^R\n", Type, nameof:(Type))
+                    Exit(0)
                 }
 
                 Packet->Seek(Packet->GetEndOffset("TLS::RecordProtocol::Record"))
 
-                Print("%x/%x\n", Packet->Offset, Packet->Size)
+                ;Print("%x/%x\n", Packet->Offset, Packet->Size)
 
                 ;break
             }

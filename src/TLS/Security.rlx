@@ -56,6 +56,9 @@ namespace TLS::Security {
         void* MasterSecret ; KeyBlock derived from this
         void* KeyBlock ; KeySets point into this
 
+        void* HandshakeHash ; Hash of all handshake messages as of (Server|Client)Finish
+        i32 HandshakeHashSize
+
         define void SetLocalIsClient() {
             this->Local := &this->Client
             this->Remote := &this->Server
@@ -67,7 +70,7 @@ namespace TLS::Security {
         }
     }
 
-    class TLS_1_2_PRF derives INew {
+    class TLS_1_2_PRF implements IPseudoRandomFunction, derives INew {
         SecurityParameters* Parameters
         HMACWrapper* HMAC
 
@@ -76,19 +79,12 @@ namespace TLS::Security {
             this->HMAC := HMAC
         }
 
-        define void UpdateSeedClientServer(i8* Label) {
+        define void UpdateSeed(i8* Label, void* Seed, i32 SeedSize) {
             this->HMAC->Update(Label, StringLength(Label))
-            this->HMAC->Update(this->Parameters~>Client->Random, 32)
-            this->HMAC->Update(this->Parameters~>Server->Random, 32)
+            this->HMAC->Update(Seed, SeedSize)
         }
 
-        define void UpdateSeedServerClient(i8* Label) {
-            this->HMAC->Update(Label, StringLength(Label))
-            this->HMAC->Update(this->Parameters~>Server->Random, 32)
-            this->HMAC->Update(this->Parameters~>Client->Random, 32)
-        }
-
-        define void* Generate(void(self*, i8*) UpdateSeed, void* Key, i32 Size, i8* Label, i32 NeededBytes) {
+        define void* Generate(void* Key, i32 Size, i8* Label, void* Seed, i32 SeedSize, i32 NeededBytes) {
             this->HMAC->SetKey(Key, Size)
 
             i32 BlockSize := this->HMAC->OutputSize
@@ -107,7 +103,7 @@ namespace TLS::Security {
             void* Buffer := Alloc(Iterations * BlockSize)
 
             this->HMAC->Prepare()
-            UpdateSeed(this, Label)
+            this->UpdateSeed(Label, Seed, SeedSize)
             this->HMAC->Finalize(Buffer)
 
             for (i32 Index := 1, Index < Iterations, Index++) {
@@ -126,7 +122,7 @@ namespace TLS::Security {
 
                 this->HMAC->Prepare()
                 this->HMAC->Update(Block, BlockSize)
-                UpdateSeed(this, Label)
+                this->UpdateSeed(Label, Seed, SeedSize)
                 this->HMAC->Finalize(Block)
             }
 
@@ -134,10 +130,18 @@ namespace TLS::Security {
         }
 
         define void* GenerateMasterSecret(void* Key, i32 Size, i8* Label, i32 NeededBytes) {
-            return this->Generate(&self.UpdateSeedClientServer, Key, Size, Label, NeededBytes)
+            i8[64] Seed
+            MoveMemory(Seed, this->Parameters~>Client->Random, 32)
+            MoveMemory(Seed + 32, this->Parameters~>Server->Random, 32)
+
+            return this->Generate(Key, Size, Label, Seed, 64, NeededBytes)
         }
         define void* GenerateKeyMaterial(void* Key, i32 Size, i8* Label, i32 NeededBytes) {
-            return this->Generate(&self.UpdateSeedServerClient, Key, Size, Label, NeededBytes)
+            i8[64] Seed
+            MoveMemory(Seed, this->Parameters~>Server->Random, 32)
+            MoveMemory(Seed + 32, this->Parameters~>Client->Random, 32)
+
+            return this->Generate(Key, Size, Label, Seed, 64, NeededBytes)
         }
     }
 
@@ -210,6 +214,13 @@ namespace TLS::Security {
         HMACWrapper* HMAC
         TLS_1_2_PRF* PRF
         AES_GCM* BulkCipher
+
+        define IHashFunction* GetHashFunction() {
+            return this->Hash
+        }
+        define IPseudoRandomFunction* GetPseudoRandomFunction() {
+            return this->PRF
+        }
 
         define void New(SecurityParameters* Parameters) {
             this->Parameters := Parameters
@@ -335,10 +346,42 @@ namespace TLS::Security {
             this->BulkCipher->CalculateTag(Data + 8 + DataLength, 16)
         }
         define void Decrypt(void* Data, i32 DataLength, void* Authenticate, i32 AuthenticateLength) {
-            this->BulkCipher->SetKey(this->Parameters->Remote->EncryptionKey)
-            this->BulkCipher->SetIV(this->Parameters->Remote->IV, 4)
+            ;Print("AAD:\n%hexdump\n", Authenticate, AuthenticateLength)
 
-            this->BulkCipher->DecryptBytes(Data, DataLength)
+            this->BulkCipher->SetKey(this->Parameters->Remote->EncryptionKey)
+
+            i8[12] IV
+            MoveMemory(IV, this->Parameters->Remote->IV, 4)
+            MoveMemory(IV + 4, Data, 8) ; prepend explicit nonce
+
+            void* Tag := Data + DataLength - 16
+
+            this->BulkCipher->SetIV(IV, 12)
+
+            ;Print("Encrypted Data: \n%hexdump\n", Data + 8, DataLength - 8 - 16)
+
+            this->BulkCipher->AuthenticateBytes(Authenticate, AuthenticateLength)
+            this->BulkCipher->DecryptBytes(Data + 8, DataLength - 8 - 16)
+
+            i8[16] CalculatedTag
+            this->BulkCipher->CalculateTag(CalculatedTag, 16)
+
+/*             Print("Message Tag   : ")
+            for (i32 Index := 0, Index < 16, Index++) {
+                Print("%B", (Tag As i8*)[Index])
+            }
+            Print("\n")
+
+            Print("Calculated Tag: ")
+            for (i32 Index := 0, Index < 16, Index++) {
+                Print("%B", (CalculatedTag As i8*)[Index])
+            }
+            Print("\n") */
+
+            if !(CompareMemory(Tag, CalculatedTag, 16)) {
+                Print("Tag does not match\n")
+                Exit(1)
+            }
         }
     }
 /* 

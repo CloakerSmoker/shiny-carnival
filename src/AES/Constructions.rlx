@@ -634,8 +634,8 @@ struct AES_GCM {
         i8* Tag := RawTag
         MoveMemory(Tag, this->Y0, Size)
 
-        Print("Finish %i, %i\n", this->AuthenticatedDataLength, this->PlainTextLength)
-        Print("Y0: %dump\n", this->Y0, 16)
+        ;Print("Finish %i, %i\n", this->AuthenticatedDataLength, this->PlainTextLength)
+        ;Print("Y0: %dump\n", this->Y0, 16)
 
         if (this->AuthenticatedDataLength != 0 || this->PlainTextLength != 0) {
             i64[2] FinalBlock {
