@@ -2,6 +2,18 @@
 #Require "$/Console.rlx"
 #Require "$/Debug.rlx"
 
+i64 DevURandom := FileOpen("/dev/urandom", FILE_READ)
+
+define void SecureFillRandom(void* Buffer, i32 Count) {
+    FileRead(DevURandom, Buffer, Count)
+}
+
+define void* AllocateSecureRandom(i32 Size) {
+    void* Result := Alloc(Size)
+    SecureFillRandom(Result, Size)
+    return Result
+}
+
 #Require "./src/TLS/Core.rlx"
 
 #Require "./src/TLS/RecordProtocol.rlx"
@@ -14,18 +26,6 @@
 
 #Require "./src/SHA2.rlx"
 #Require "./src/HMAC.rlx"
-
-i64 DevURandom := FileOpen("/dev/urandom", FILE_READ)
-
-define void SecureFillRandom(void* Buffer, i32 Count) {
-    FileRead(DevURandom, Buffer, Count)
-}
-
-define void* AllocateSecureRandom(i32 Size) {
-    void* Result := Alloc(Size)
-    SecureFillRandom(Result, Size)
-    return Result
-}
 
 /*
 define NetworkPacket* ClientHello() {
@@ -52,7 +52,7 @@ define NetworkPacket* ServerHello() {
     return Packet
 }
 */
-
+/* 
 class Plumbing derives INew {
     INetworkLayer* Base
 
@@ -81,14 +81,7 @@ class Plumbing derives INew {
         this->ServerHelloLayer := new TLS::HandshakeProtocol::ServerHelloLayer(this->HandshakeLayer)
         this->HandshakeLayer->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerHello, this->ServerHelloLayer)*/
     }
-}
-
-enum ClientState {
-    ConnectionOffered
-    ServerAccepted
-    KeyExchangeNeeded
-
-}
+} */
 
 class CallbackNetworkLayer implements INetworkLayer, derives INew {
     void* State
@@ -110,301 +103,388 @@ class CallbackNetworkLayer implements INetworkLayer, derives INew {
     }
 }
 
-
-
-
-
-class Client derives INew {
-    ClientState State
-
-    SocketNetworkLayer* Transport
-    Plumbing* Base
-
-    TLS::Security::SecurityParameters* Security
-    TLS::Security::ICipherSuite* CipherSuite
-
-    TLS::HandshakeProtocol::ClientHelloHelper* ClientHello
-
-    CallbackNetworkLayer* OnHandshakeCallback
-
-    TLS::HandshakeProtocol::ServerHelloHelper* ServerHello
-    ;TLS::HandshakeProtocol::CertificateHelper* Certificate
-    TLS::HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
-
-    define CallbackNetworkLayer* MakeCallback(void(void*, NetworkPacket*) Method) {
-        return new CallbackNetworkLayer(this, Method)
+namespace TLS {
+    enum ClientState {
+        ConnectionOffered ; ServerHello -> ServerAccepted
+        ServerAccepted ; Certificate -> ServerSentCertificate
+        ServerSentCertificate ; ServerKeyExchange -> ServerKeyExchanged
+        ServerKeyExchanged ; ServerHelloDone -> ServerHelloDone
+        ServerHelloDone ; ChangeCipherSpec -> ServerChangedCipher
+        ServerChangedCipher ; ServerFinished -> Established
+        Established ; Application Data
+        Closed ; Error state
     }
 
-    define void OnChangeCipherSpec(NetworkPacket* Packet) {
-        Print("Received ChangeCipherSpec\n")
 
-        this->Base->RecordLayer->EnableRemoteEncryption()
-    }
+    class Client derives INew {
+        ClientState State
 
-    define void SendClientHello() {
-        this->State := ClientState::ConnectionOffered
+        Socket Remote
 
-        NetworkPacket* Packet := this->Base->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::ClientHello)
+        TLS::RecordProtocol::Layer* RecordLayer
+        TLS::HandshakeProtocol::Layer* HandshakeLayer
 
-        this->ClientHello->Write(Packet)
-
-        this->Base->HandshakeLayer->Leave(Packet)
-    }
-
-    void* PrivateKey
-
-    define void SendClientKeyExchange() {
-        NetworkPacket* Packet := this->Base->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::ClientKeyExchange)
-
-        MoveMemory(Packet->Bump(1), i8[32], 1)
-        MoveMemory(Packet->Bump(32), this->Security~>Client->PublicKey, 32)
-
-        this->Base->HandshakeLayer->Leave(Packet)
-    }
-
-    define void SendChangeCipherSpec() {
-        NetworkPacket* Packet := this->Base->RecordLayer->Enter(TLS::RecordProtocol::ContentType::ChangeCipherSpec)
-
-        MoveMemory(Packet->Bump(1), i8[1], 1)
-
-        this->Base->RecordLayer->Leave(Packet)
-    }
-
-    define void* CalculateVerifyData(i8* Label, i32 IgnoreHandshakeCount) {
-        IHashFunction* Hash := this->CipherSuite->GetHashFunction()
-
-        Hash->Prepare()
-
-        i32 HandshakeCount := this->Base->HandshakeLayer->Messages->Count() - IgnoreHandshakeCount
-
-        for (i32 Index := 0, Index < HandshakeCount, Index++) {
-            NetworkPacket* Message := this->Base->HandshakeLayer->Messages->At(Index)
-
-            Print("Handshake Message %i:\n%hexdump\n", Index, Message->Buffer, Message->Size)
-
-            Hash->Update(Message->Buffer, Message->Size)
+        define void RegisterContentType(TLS::RecordProtocol::ContentType Type, INetworkLayer* Layer) {
+            this->RecordLayer->RegisterContentType(Type, Layer)
+        }
+        define void RegisterMessageType(TLS::HandshakeProtocol::MessageType Type, INetworkLayer* Layer) {
+            this->HandshakeLayer->RegisterMessageType(Type, Layer)
         }
 
-        HashFunctionInfo Info
-        Hash->GetInfo(&Info)
+        TLS::Security::SecurityParameters* Security
+        TLS::Security::ICipherSuite* CipherSuite
 
-        void* HandshakeHash := Alloc(Info.OutputSize)
+        TLS::HandshakeProtocol::ClientHelloHelper* ClientHello
+        TLS::HandshakeProtocol::ServerHelloHelper* ServerHello
+        TLS::HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
 
-        Hash->Finalize(HandshakeHash)
+        CallbackNetworkLayer* OnHandshakeCallback
 
-        TLS::Security::IPseudoRandomFunction* PRF := this->CipherSuite->GetPseudoRandomFunction()
+        define CallbackNetworkLayer* MakeCallback(void(void*, NetworkPacket*) Method) {
+            return new CallbackNetworkLayer(this, Method)
+        }
 
-        void* VerifyData := PRF->Generate(this->Security->MasterSecret, 48, Label, HandshakeHash, Info.OutputSize, 12)
-
-        Free(HandshakeHash)
-
-        return VerifyData
-    }
-
-    define void SendClientHelloDone() {
-        NetworkPacket* Packet := this->Base->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::Finished)
-
-        void* VerifyData := this->CalculateVerifyData("client finished", 0)
-        MoveMemory(Packet->Bump(12), VerifyData, 12)
-        Free(VerifyData)
-
-        this->Base->HandshakeLayer->Leave(Packet)
-    }
-
-    define void SendApplicationData(void* Data, i32 Size) {
-        NetworkPacket* Packet := this->Base->RecordLayer->Enter(TLS::RecordProtocol::ContentType::ApplicationData)
-
-        MoveMemory(Packet->Bump(Size), Data, Size)
-
-        this->Base->RecordLayer->Leave(Packet)
-    }
-
-    define void OnHandshake(NetworkPacket* Packet) {
-        TLS::HandshakeProtocol::HandshakeRecord* Record := Packet->Get("TLS::HandshakeProtocol::Record")
-
-        if (Record->Type = TLS::HandshakeProtocol::MessageType::ServerHello) {
-            this->Base->RecordLayer->SetVersion(TLS::VersionNumber::TLS_1_2)
-
-            this->ServerHello->Read(Packet)
-
-            auto Parameters := new TLS::Security::SecurityParameters()
-
-            Parameters->SetLocalIsClient()
-
-            Parameters->ServerHello := this->ServerHello
-
-            this->Security := Parameters
-
-            if (this->ServerHello->Cipher = TLS::CipherSuite::ECDH_RSA_WITH_AES_128_SHA256) {
-                ; pass
-            }
-            else if (this->ServerHello->Cipher = TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256) {
-                ; pass
-            }
-            else {
-                Print("Unsupported CipherSuite %s (%x)\n", nameof:(this->ServerHello->Cipher), this->ServerHello->Cipher)
+        define void OnChangeCipherSpec(NetworkPacket* Packet) {
+            if (this->State != ClientState::ServerHelloDone) {
+                Print("Unexpected ChangeCipherSpec\n")
                 Exit(1)
             }
 
-            Parameters~>Client->Random := this->ClientHello->Random
-            Parameters~>Server->Random := this->ServerHello->Random
+            this->RecordLayer->EnableRemoteEncryption()
 
-            Print("Server Random:\n%hexdump\n", this->ServerHello->Random, 32)
-
-            Print("Server selected CipherSuite %s\n", nameof:(this->ServerHello->Cipher))
-
-            i32 Count := this->ServerHello->Extensions->Count()
-            Print("Server replied with %i extensions\n", Count)
-
-            for (i32 Index := 0, Index < Count, Index++) {
-                TLS::HandshakeProtocol::ExtensionEntry* Entry := this->ServerHello->Extensions->At(Index)
-
-                Print("[%i]: %s (%x bytes)\n", Index, nameof:(Entry->Type), Entry->Length)
-            }
+            this->State := ClientState::ServerChangedCipher
         }
-        else if (Record->Type = TLS::HandshakeProtocol::MessageType::ServerKeyExchange) {
-            this->ServerKeyExchange->Read(Packet)
 
-            Print("Server Curve Type: %s\n", nameof:(this->ServerKeyExchange->Type))
-            Print("Server Curve: %s\n", nameof:(this->ServerKeyExchange->Curve))
+        define void SendClientHello() {
+            this->State := ClientState::ConnectionOffered
 
-            Print("Server Public Key:\n%hexdump\n", this->ServerKeyExchange->PublicKey, this->ServerKeyExchange->PublicKeyLength)
+            NetworkPacket* Packet := this->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::ClientHello)
 
-            Print("Server Signature Algorithm: %s\n", nameof:(this->ServerKeyExchange->Algorithm))
+            this->ClientHello->Write(Packet)
 
-            ;Print("Server Signature:\n%hexdump\n", this->ServerKeyExchange->Signature, this->ServerKeyExchange->SignatureLength)
+            this->HandshakeLayer->Leave(Packet)
+        }
 
-            this->Security->ServerKeyExchange := this->ServerKeyExchange
-            this->Security~>Server->PublicKey := this->ServerKeyExchange->PublicKey
+        define void SendClientKeyExchange() {
+            NetworkPacket* Packet := this->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::ClientKeyExchange)
+            MoveMemory(Packet->Bump(1), i8[32], 1)
+            MoveMemory(Packet->Bump(32), this->Security~>Client->PublicKey, 32)
 
-            this->Security->LocalPrivateKey := "thirty two bytes of random!"
+            this->HandshakeLayer->Leave(Packet)
+        }
 
-            if (this->ServerHello->Cipher = TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256) {
-                this->CipherSuite := new TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256(this->Security)
+        define void SendChangeCipherSpec() {
+            NetworkPacket* Packet := this->RecordLayer->Enter(TLS::RecordProtocol::ContentType::ChangeCipherSpec)
+
+            MoveMemory(Packet->Bump(1), i8[1], 1)
+
+            this->RecordLayer->Leave(Packet)
+        }
+
+        define void* CalculateVerifyData(i8* Label, i32 IgnoreHandshakeCount) {
+            IHashFunction* Hash := this->CipherSuite->GetHashFunction()
+
+            Hash->Prepare()
+
+            i32 HandshakeCount := this->HandshakeLayer->Messages->Count() - IgnoreHandshakeCount
+
+            for (i32 Index := 0, Index < HandshakeCount, Index++) {
+                NetworkPacket* Message := this->HandshakeLayer->Messages->At(Index)
+
+                ;Print("Handshake Message %i:\n%hexdump\n", Index, Message->Buffer, Message->Size)
+
+                Hash->Update(Message->Buffer, Message->Size)
             }
-            ;else if (this->ServerHello->Cipher = TLS::CipherSuite::ECDH_RSA_WITH_AES_128_SHA256) {
-            ;    this->CipherSuite := new TLS::EncryptedRecordProtocol::ECDH_RSA_WITH_AES_128_SHA256(this->SecurityParameters)
-            ;}
-            else {
-                Print("Unsupported CipherSuite %s (%x)\n", nameof:(this->ServerHello->Cipher), this->ServerHello->Cipher)
+
+            HashFunctionInfo Info
+            Hash->GetInfo(&Info)
+
+            void* HandshakeHash := Alloc(Info.OutputSize)
+
+            Hash->Finalize(HandshakeHash)
+
+            TLS::Security::IPseudoRandomFunction* PRF := this->CipherSuite->GetPseudoRandomFunction()
+
+            void* VerifyData := PRF->Generate(this->Security->MasterSecret, 48, Label, HandshakeHash, Info.OutputSize, 12)
+
+            Free(HandshakeHash)
+
+            return VerifyData
+        }
+
+        define void SendClientHelloDone() {
+            NetworkPacket* Packet := this->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::Finished)
+
+            void* VerifyData := this->CalculateVerifyData("client finished", 0)
+            MoveMemory(Packet->Bump(12), VerifyData, 12)
+            Free(VerifyData)
+
+            this->HandshakeLayer->Leave(Packet)
+        }
+
+        define void SendApplicationData(void* Data, i32 Size) {
+            NetworkPacket* Packet := this->RecordLayer->Enter(TLS::RecordProtocol::ContentType::ApplicationData)
+
+            MoveMemory(Packet->Bump(Size), Data, Size)
+
+            this->RecordLayer->Leave(Packet)
+        }
+
+        define void ExpectState(ClientState Expected, i8* What) {
+            if (this->State != Expected) {
+                Print("Unexpected %s while in state %s. %s expected in %s state\n", What, nameof:(this->State), What, nameof:(Expected))
                 Exit(1)
             }
         }
-        else if (Record->Type = TLS::HandshakeProtocol::MessageType::ServerHelloDone) {
-            this->Base->RecordLayer->JoinNext(3)
 
-            this->SendClientKeyExchange()
-            this->SendChangeCipherSpec()
+        define void OnHandshake(NetworkPacket* Packet) {
+            TLS::HandshakeProtocol::HandshakeRecord* Record := Packet->Get("TLS::HandshakeProtocol::Record")
 
-            this->Base->RecordLayer->EnableLocalEncryption(this->Security, this->CipherSuite)
+            if (Record->Type = TLS::HandshakeProtocol::MessageType::ServerHello) {
+                this->ExpectState(ClientState::ConnectionOffered, "ServerHello")
 
-            this->SendClientHelloDone()
-        }
-        else if (Record->Type = TLS::HandshakeProtocol::MessageType::Finished) {
-            Print("Received Finished\n")
+                this->RecordLayer->SetVersion(TLS::VersionNumber::TLS_1_2)
 
-            void* CalculatedVerifyData := this->CalculateVerifyData("server finished", 1)
-            void* ProvidedVerifyData := Packet->Get("TLS::HandshakeProtocol::Data")
+                this->ServerHello->Read(Packet)
 
-            Print("Expected Verify Data:\n%hexdump\n", CalculatedVerifyData, 12)
-            Print("Received Verify Data:\n%hexdump\n", ProvidedVerifyData, 12)
+                auto Parameters := new TLS::Security::SecurityParameters()
 
-            if (CompareMemory(CalculatedVerifyData, ProvidedVerifyData, 12)) {
-                Print("Server Finished verify data matches!\n")
+                Parameters->SetLocalIsClient()
+
+                Parameters->ServerHello := this->ServerHello
+
+                this->Security := Parameters
+
+                if (this->ServerHello->Cipher = TLS::CipherSuite::ECDH_RSA_WITH_AES_128_SHA256) {
+                    ; pass
+                }
+                else if (this->ServerHello->Cipher = TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256) {
+                    ; pass
+                }
+                else {
+                    Print("Unsupported CipherSuite %s (%x)\n", nameof:(this->ServerHello->Cipher), this->ServerHello->Cipher)
+                    Exit(1)
+                }
+
+                Parameters~>Client->Random := this->ClientHello->Random
+                Parameters~>Server->Random := this->ServerHello->Random
+
+                ;Print("Server Random:\n%hexdump\n", this->ServerHello->Random, 32)
+
+                Print("Server selected CipherSuite %s\n", nameof:(this->ServerHello->Cipher))
+
+                i32 Count := this->ServerHello->Extensions->Count()
+                Print("Server replied with %i extensions\n", Count)
+
+                for (i32 Index := 0, Index < Count, Index++) {
+                    TLS::HandshakeProtocol::ExtensionEntry* Entry := this->ServerHello->Extensions->At(Index)
+
+                    Print("[%i]: %s (%x bytes)\n", Index, nameof:(Entry->Type), Entry->Length)
+                }
+
+                this->State := ClientState::ServerAccepted
+            }
+            else if (Record->Type = TLS::HandshakeProtocol::MessageType::Certificate) {
+                this->ExpectState(ClientState::ServerAccepted, "Certificate")
+
+                this->State := ClientState::ServerSentCertificate
+            }
+            else if (Record->Type = TLS::HandshakeProtocol::MessageType::ServerKeyExchange) {
+                this->ExpectState(ClientState::ServerSentCertificate, "ServerKeyExchange")
+
+                this->ServerKeyExchange->Read(Packet)
+
+                Print("Server Curve Type: %s\n", nameof:(this->ServerKeyExchange->Type))
+                Print("Server Curve: %s\n", nameof:(this->ServerKeyExchange->Curve))
+
+                ;Print("Server Public Key:\n%hexdump\n", this->ServerKeyExchange->PublicKey, this->ServerKeyExchange->PublicKeyLength)
+
+                Print("Server Signature Algorithm: %s\n", nameof:(this->ServerKeyExchange->Algorithm))
+
+                ;Print("Server Signature:\n%hexdump\n", this->ServerKeyExchange->Signature, this->ServerKeyExchange->SignatureLength)
+
+                this->Security->ServerKeyExchange := this->ServerKeyExchange
+                this->Security~>Server->PublicKey := this->ServerKeyExchange->PublicKey
+
+                this->Security->LocalPrivateKey := "thirty two bytes of random!"
+
+                if (this->ServerHello->Cipher = TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256) {
+                    this->CipherSuite := new TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256(this->Security)
+                }
+                ;else if (this->ServerHello->Cipher = TLS::CipherSuite::ECDH_RSA_WITH_AES_128_SHA256) {
+                ;    this->CipherSuite := new TLS::EncryptedRecordProtocol::ECDH_RSA_WITH_AES_128_SHA256(this->SecurityParameters)
+                ;}
+                else {
+                    Print("Unsupported CipherSuite %s (%x)\n", nameof:(this->ServerHello->Cipher), this->ServerHello->Cipher)
+                    Exit(1)
+                }
+
+                this->State := ClientState::ServerKeyExchanged
+            }
+            else if (Record->Type = TLS::HandshakeProtocol::MessageType::ServerHelloDone) {
+                this->ExpectState(ClientState::ServerKeyExchanged, "ServerHelloDone")
+
+                this->RecordLayer->JoinNext(3)
+
+                this->SendClientKeyExchange()
+                this->SendChangeCipherSpec()
+
+                this->RecordLayer->EnableLocalEncryption(this->Security, this->CipherSuite)
+
+                this->SendClientHelloDone()
+
+                this->State := ClientState::ServerHelloDone
+            }
+            else if (Record->Type = TLS::HandshakeProtocol::MessageType::Finished) {
+                this->ExpectState(ClientState::ServerChangedCipher, "Finished")
+
+                Print("Received Finished\n")
+
+                void* CalculatedVerifyData := this->CalculateVerifyData("server finished", 1)
+                void* ProvidedVerifyData := Packet->Get("TLS::HandshakeProtocol::Data")
+
+                Print("Expected Verify Data:\n%hexdump\n", CalculatedVerifyData, 12)
+                Print("Received Verify Data:\n%hexdump\n", ProvidedVerifyData, 12)
+
+                if (CompareMemory(CalculatedVerifyData, ProvidedVerifyData, 12)) {
+                    Print("Server Finished verify data matches!\n")
+                }
+                else {
+                    Print("Server Finished verify data does not match!\n")
+                    Exit(1)
+                }
+
+                Free(CalculatedVerifyData)
+
+                ;this->SendApplicationData("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", 55)
+
+                this->State := ClientState::Established
             }
             else {
-                Print("Server Finished verify data does not match!\n")
-                Exit(1)
+                Print("Unhandled handshake message %s (%x)\n", nameof:(Record->Type), Record->Type)
             }
-
-            Free(CalculatedVerifyData)
-
-            this->SendApplicationData("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", 55)
-
-            ;this->State := ClientState::KeyExchangeNeeded
         }
-        else {
-            Print("Unhandled handshake message %s (%x)\n", nameof:(Record->Type), Record->Type)
+
+        define void OnApplicationData(NetworkPacket* Packet) {
+            TLS::RecordProtocol::RecordHeader* Header := Packet->Get("TLS::RecordProtocol::Record")
+            void* Body := (Header As void*) + #TLS::RecordProtocol::RecordHeader
+            i32 Size := Header->Length
+
+            *((Body + Size - 16) As i8*) := 0
+
+            Print("Got Application Data: %s", Body + 8)
         }
-    }
 
-    define void OnApplicationData(NetworkPacket* Packet) {
-        TLS::RecordProtocol::RecordHeader* Header := Packet->Get("TLS::RecordProtocol::Record")
-        void* Body := (Header As void*) + #TLS::RecordProtocol::RecordHeader
-        i32 Size := Header->Length
+        define void Establish(i8* ServerName) {
+            i8[32] ClientRandom
+            SecureFillRandom(ClientRandom, 32)
 
-        *((Body + Size - 16) As i8*) := 0
+            this->ClientHello->SetRandom(ClientRandom)
+            this->ClientHello->AddCipherSuite(TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256)
+            this->ClientHello->AddCompressionMethod(TLS::HandshakeProtocol::CompressionMethod::Null)
 
-        Print("Got Application Data: %s", Body + 8)
-    }
+            this->ClientHello->AddServerHostName(ServerName)
 
-    define void Wait() {
-        Socket Remote := this->Transport->Remote
+            this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::Ed25519)
+            this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::Ed448)
+            this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::RSA_PKCS1_SHA256) ; this is a lie
+            this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::RSA_PKCS1_SHA512) ; this is a lie
 
-        Remote->Poll(POLL_FOR_READ, -1)
+            this->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::NamedCurve::x25519)
+            this->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::NamedCurve::x448)
 
-        void* Buffer := Alloc(1024)
-        i32 Size := 0
+            this->ClientHello->AddPointFormat(TLS::HandshakeProtocol::ECPointFormat::Uncompressed)
 
-        loop {
-            i32 ChunkSize := Remote->Receive(Buffer + Size, 1024, 0) As i32
-            Size += ChunkSize
+            this->SendClientHello()
 
-            if (ChunkSize != 1024) {
-                break
+            while (this->State != ClientState::Established) {
+                this->RecordLayer->Receive()
+
+                if (this->State = ClientState::Closed) {
+                    Print("Connection closed due to error\n")
+                    Exit(1)
+                }
             }
-
-            Buffer := ReAlloc(Buffer, Size + 1024)
         }
 
-        NetworkPacket* Packet := new NetworkPacket(Buffer, Size)
+        define void New(Socket Remote) {
+            this->Remote := Remote
+            this->RecordLayer := new TLS::RecordProtocol::Layer(Remote)
+            this->HandshakeLayer := new TLS::HandshakeProtocol::Layer(this->RecordLayer)
 
-        this->Base->RecordLayer->Process(Packet)
-    }
+            this->RecordLayer->SetVersion(TLS::VersionNumber::TLS_1_0)
 
-    define void New(SocketNetworkLayer* Base) {
-        this->Transport := Base
-        this->Base := new Plumbing(Base)
+            this->RegisterContentType(TLS::RecordProtocol::ContentType::Handshake, this->HandshakeLayer)
 
-        this->ClientHello := new TLS::HandshakeProtocol::ClientHelloHelper(TLS::VersionNumber::TLS_1_2)
-        this->ServerHello := new TLS::HandshakeProtocol::ServerHelloHelper()
-        this->ServerKeyExchange := new TLS::HandshakeProtocol::ServerKeyExchangeHelper()
+            this->ClientHello := new TLS::HandshakeProtocol::ClientHelloHelper(TLS::VersionNumber::TLS_1_2)
+            this->ServerHello := new TLS::HandshakeProtocol::ServerHelloHelper()
+            this->ServerKeyExchange := new TLS::HandshakeProtocol::ServerKeyExchangeHelper()
 
-        INetworkLayer* OnChangeCipherSpec := this->MakeCallback(&self.OnChangeCipherSpec)
+            INetworkLayer* OnChangeCipherSpec := this->MakeCallback(&self.OnChangeCipherSpec)
 
-        this->Base->RegisterContentType(TLS::RecordProtocol::ContentType::ChangeCipherSpec, OnChangeCipherSpec)
+            this->RegisterContentType(TLS::RecordProtocol::ContentType::ChangeCipherSpec, OnChangeCipherSpec)
 
-        INetworkLayer* OnHandshake := this->MakeCallback(&self.OnHandshake)
+            INetworkLayer* OnHandshake := this->MakeCallback(&self.OnHandshake)
 
-        this->Base->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerHello, OnHandshake)
-        this->Base->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerKeyExchange, OnHandshake)
-        this->Base->RegisterMessageType(TLS::HandshakeProtocol::MessageType::Certificate, OnHandshake)
-        this->Base->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerHelloDone, OnHandshake)
-        this->Base->RegisterMessageType(TLS::HandshakeProtocol::MessageType::Finished, OnHandshake)
+            this->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerHello, OnHandshake)
+            this->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerKeyExchange, OnHandshake)
+            this->RegisterMessageType(TLS::HandshakeProtocol::MessageType::Certificate, OnHandshake)
+            this->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ServerHelloDone, OnHandshake)
+            this->RegisterMessageType(TLS::HandshakeProtocol::MessageType::Finished, OnHandshake)
 
-        INetworkLayer* OnApplicationData := this->MakeCallback(&self.OnApplicationData)
+            INetworkLayer* OnApplicationData := this->MakeCallback(&self.OnApplicationData)
 
-        this->Base->RegisterContentType(TLS::RecordProtocol::ContentType::ApplicationData, OnApplicationData)
+            this->RegisterContentType(TLS::RecordProtocol::ContentType::ApplicationData, OnApplicationData)
+        }
     }
 }
 
-#Require "./src/TLS/tests/ServerHello_Cert_Kex_Done.rlx"
+#Require "./src/DNS.rlx"
 
-define void Main() {
+define void Main(i32 ArgC, i8** ArgV) {
+    UseDNS(ParseIPV4("1.1.1.1"), 53, 1 * 60, 10 * 60, false)
+
+    i8* Server := ArgV[1]
+    IPV4SocketAddress* ServerAddress := DNSLookupIPV4(Server, 443)
+
+    if (ServerAddress = null) {
+        Print("Could not resolve %s\n", Server)
+        Exit(1)
+    }
+
+    Print("Resolved %s to %ipv4\n", Server, ServerAddress)
+
+    Socket S := Socket:New(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+    S->Connect(ServerAddress~>Base, #IPV4SocketAddress)
+
+
     ;SocketNetworkLayer* Base := new SocketNetworkLayer(new IPV4SocketAddress("24.124.77.9", 443))
-    SocketNetworkLayer* Base := new SocketNetworkLayer(new IPV4SocketAddress("127.0.0.1", 4433))
-    Client* C := new Client(Base)
+    ;SocketNetworkLayer* Base := new SocketNetworkLayer(new IPV4SocketAddress("142.250.125.101", 443))
 
-    i8[32] RandomBytes
+    ;Socket S := Socket:New(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+    ;S->Connect(new IPV4SocketAddress("142.250.125.101", 443)~>Base, #IPV4SocketAddress)
+    ;S->Connect(new IPV4SocketAddress("127.0.0.1", 4433)~>Base, #IPV4SocketAddress)
+
+    TLS::Client* C := new TLS::Client(S)
+
+    C->Establish(Server)
+
+    i8* GetRequest := FormatString("GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", Server)
+
+    C->SendApplicationData(GetRequest, StringLength(GetRequest))
+
+    C->RecordLayer->Receive()
+
+    /* i8[32] RandomBytes
     SecureFillRandom(RandomBytes, 32)
 
     C->ClientHello->SetRandom(RandomBytes)
     C->ClientHello->AddCipherSuite(TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256)
     ;C->ClientHello->AddCipherSuite(TLS::CipherSuite::RSA_WITH_AES_128_GCM_SHA256)
-    C->ClientHello->AddCipherSuite(TLS::CipherSuite::ECDH_RSA_WITH_AES_128_SHA256)
+   ;C->ClientHello->AddCipherSuite(TLS::CipherSuite::ECDH_RSA_WITH_AES_128_SHA256)
     C->ClientHello->AddCompressionMethod(TLS::HandshakeProtocol::CompressionMethod::Null)
 
-    ;C->ClientHello->AddServerHostName("jellyfin.muscular.top")
+    C->ClientHello->AddServerHostName("google.com")
 
     ;C->ClientHello->AddExtension(TLS::HandshakeProtocol::ExtensionType::ExtendedMasterSecret)
     ;C->ClientHello->AddExtension(TLS::HandshakeProtocol::ExtensionType::EncryptThenMAC)
@@ -418,14 +498,10 @@ define void Main() {
     C->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::NamedCurve::x448)
 
     C->ClientHello->AddPointFormat(TLS::HandshakeProtocol::ECPointFormat::Uncompressed)
-
+ */
     
 
-    C->SendClientHello()
-
-    C->Wait()
-    C->Wait()
-    C->Wait()
+    ;C->Establish()
 
     ;C->Poll(-1)
 

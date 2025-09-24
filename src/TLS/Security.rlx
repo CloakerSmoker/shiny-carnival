@@ -95,9 +95,9 @@ namespace TLS::Security {
                 Iterations += 1
             }
 
-            Print("PRF Request '%s' of %i bytes (%i iterations of %i bytes)\n", Label, NeededBytes, Iterations, BlockSize)
-            Print("Client Random:\n%hexdump\n", this->Parameters~>Client->Random, 32)
-            Print("Server Random:\n%hexdump\n", this->Parameters~>Server->Random, 32)
+            ;Print("PRF Request '%s' of %i bytes (%i iterations of %i bytes)\n", Label, NeededBytes, Iterations, BlockSize)
+            ;Print("Client Random:\n%hexdump\n", this->Parameters~>Client->Random, 32)
+            ;Print("Server Random:\n%hexdump\n", this->Parameters~>Server->Random, 32)
 
             ; First, generate A(1) from the seed, and then A(N) from A(N-1)
             void* Buffer := Alloc(Iterations * BlockSize)
@@ -333,11 +333,13 @@ namespace TLS::Security {
 
             i8[12] IV
             MoveMemory(IV, this->Parameters->Local->IV, 4)
-            MoveMemory(IV + 4, "random 8", 8)
+            ;MoveMemory(IV + 4, "random 8", 8)
+            
+            SecureFillRandom(IV + 4, 8)
 
             MoveMemory(Data, IV + 4, 8) ; prepend explicit nonce
 
-            Print("Nonce:\n%hexdump\n", IV, 12)
+            ;Print("Nonce:\n%hexdump\n", IV, 12)
 
             this->BulkCipher->SetIV(IV, 12)
             this->BulkCipher->AuthenticateBytes(Authenticate, AuthenticateLength)

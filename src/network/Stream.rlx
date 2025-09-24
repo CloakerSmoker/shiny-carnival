@@ -1,0 +1,71 @@
+
+
+class SocketStream derives INew {
+    Socket Base
+
+    void* Buffer
+    i32 Size
+    i32 Capacity
+
+    define void New(Socket Base) {
+        this->Base := Base
+
+        this->Capacity := 8192
+        this->Buffer := Alloc(this->Capacity)
+        this->Size := 0
+    }
+
+    static i8 FindFirstBitSet(i64 Number) asm {
+        bsr, rax, rdi
+        ret
+    }
+
+    define void Receive(i32 Size) {
+        if (Size > this->Capacity) {
+            i32 CapacityNeeded := 1 << (self:FindFirstBitSet(Size) + 1)
+
+            this->Buffer := ReAlloc(this->Buffer, CapacityNeeded)
+            this->Capacity := CapacityNeeded
+        }
+
+        while (this->Size < Size) {
+            i32 Received := this->Base->Receive(this->Buffer + this->Size, this->Capacity - this->Size) As i32
+
+            ;Print("Received %i bytes, waiting until filled to at least %i\n", Received, Size)
+
+            if (Received <= 0) {
+                Print("Socket closed or error\n")
+                Exit(0)
+            }
+
+            this->Size += Received
+        }
+    }
+
+    define void* Peek(i32 Size) {
+        ;Print("Peeking %i bytes, currently have %i\n", Size, this->Size)
+
+        if (Size > this->Size) {
+            this->Receive(Size)
+        }
+
+        return this->Buffer
+    }
+
+    define void* Take(i32 Size) {
+        ;Print("Taking %i bytes, currently have %i\n", Size, this->Size)
+
+        if (Size > this->Size) {
+            this->Receive(Size)
+        }
+
+        void* Result := CloneMemory(this->Buffer, Size)
+
+        this->Size -= Size
+        MoveMemory(this->Buffer, this->Buffer + Size, this->Size)
+
+        ;Print("Took %i bytes, %i remaining\n", Size, this->Size)
+
+        return Result
+    }
+}

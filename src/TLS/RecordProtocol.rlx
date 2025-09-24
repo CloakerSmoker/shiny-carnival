@@ -3,6 +3,9 @@
 #Require "$/PointerArray.rlx"
 
 #Require "./src/Endianess.rlx"
+
+#Require "./src/network/Socket.rlx"
+#Require "./src/network/Stream.rlx"
 #Require "./src/network/Packet.rlx"
 
 #Require "./src/HMAC.rlx"
@@ -51,7 +54,8 @@ namespace TLS::RecordProtocol {
     }
 
     class Layer derives INew {
-        INetworkLayer* Base
+        Socket Remote
+
         Security::SecurityParameters* Parameters
         Security::ICipherSuite* Suite
 
@@ -68,12 +72,11 @@ namespace TLS::RecordProtocol {
             this~>Version->Minor := Version.Minor()
         }
 
+        NetworkPacket* OutgoingPacket
         i32 JoinNextPackets
-        NetworkPacket* Current
 
         define void JoinNext(i32 Count) {
             this->JoinNextPackets := Count
-            this->Current := this->Base->Enter()
         }
 
         define void EnableLocalEncryption(Security::SecurityParameters* Parameters, Security::ICipherSuite* Suite) {
@@ -88,15 +91,12 @@ namespace TLS::RecordProtocol {
         }
 
         define NetworkPacket* Enter(ContentType Type) {
-            NetworkPacket* Packet := this->Current
+            NetworkPacket* Packet := this->OutgoingPacket
 
             if (this->JoinNextPackets) {
                 Packet->ClearMarkers()
 
                 this->JoinNextPackets -= 1
-            }
-            else {
-                Packet := this->Base->Enter()
             }
 
             RecordProtocol::RecordHeader* Header := Packet->Mark("TLS::RecordProtocol::Record", #RecordProtocol::RecordHeader)
@@ -104,7 +104,7 @@ namespace TLS::RecordProtocol {
             MoveMemory(Header~>Version, this~>Version, #RecordProtocol::ProtocolVersion)
             Header->Type := Type
 
-            Print("Entering Record Layer for %s, Encryption: %i\n", nameof:(Type), this->LocalEncryption)
+            ;Print("Entering Record Layer for %s, Encryption: %i\n", nameof:(Type), this->LocalEncryption)
 
             if (this->LocalEncryption) {
                 Packet->Mark("TLS::EncryptedRecordProtocol::Body", this->Suite->CalculateLeadingCipherTextSize())
@@ -120,7 +120,7 @@ namespace TLS::RecordProtocol {
                 void* Data := Packet->Get("TLS::EncryptedRecordProtocol::Body")
                 i32 Size := Packet->Tell() - Packet->GetOffset("TLS::EncryptedRecordProtocol::Body") - LeadingSize
 
-                Print("Leaving Encrypted Layer with %i bytes of body data\n", Size)
+                ;Print("Leaving Encrypted Layer with %i bytes of body data\n", Size)
 
                 i32 FollowingSize := this->Suite->CalculateFollowingCipherTextSize(Data, Size)
 
@@ -130,13 +130,13 @@ namespace TLS::RecordProtocol {
 
                 Packet->Find("TLS::EncryptedRecordProtocol::Body")->Size := LeadingSize + Size + FollowingSize
 
-                Print("    %i bytes of total ciphertext\n", Packet->GetSize("TLS::EncryptedRecordProtocol::Body"))
+                ;Print("    %i bytes of total ciphertext\n", Packet->GetSize("TLS::EncryptedRecordProtocol::Body"))
             }            
             
             RecordProtocol::RecordHeader* Header := Packet->Get("TLS::RecordProtocol::Record")
             i32 HeaderEndOffset := Packet->GetEndOffset("TLS::RecordProtocol::Record")
 
-            Print("Send record of length: %i\n", Packet->Offset - HeaderEndOffset)
+            ;Print("Send record of length: %i\n", Packet->Offset - HeaderEndOffset)
 
             Header->Length := Swap16((Packet->Offset - HeaderEndOffset) As i16)
 
@@ -153,7 +153,7 @@ namespace TLS::RecordProtocol {
                     Length: Swap16(Size As i16)
                 }
 
-                Print("AAD:\n%hexdump\n", &Authenticate, #AuthenticatedData)
+                ;Print("AAD:\n%hexdump\n", &Authenticate, #AuthenticatedData)
 
                 this->Suite->Encrypt(
                     Data, Size,
@@ -163,10 +163,12 @@ namespace TLS::RecordProtocol {
                 this->SendSequenceNumber += 1
             }
 
-            Print("Joining next %i packets\n", this->JoinNextPackets)
+            ;Print("Joining next %i packets\n", this->JoinNextPackets)
 
             if !(this->JoinNextPackets) {
-                this->Base->Leave(Packet)
+                this->Remote->Send(Packet->Buffer, Packet->Size)
+                Packet->Seek(0)
+                Packet->ClearMarkers()
             }
         }
 
@@ -182,6 +184,14 @@ namespace TLS::RecordProtocol {
                 RecordHeader* Header := Packet->Mark("TLS::RecordProtocol::Record", #RecordHeader)
                 
                 Header->Length := Swap16(Header->Length)
+
+                i32 Remaining := Packet->Size - Packet->Offset
+
+                if (Header->Length < 0 || Header->Length > Remaining) {
+                    Print("\n^S9Invalid record length %i (only %i bytes remaining in packet)^R\n", Header->Length, Remaining)
+                    break
+                }
+
                 Packet->Extend("TLS::RecordProtocol::Record", Header->Length)
 
                 ;Print("Record %i bytes:\n%hexdump\n", Header->Length + #RecordHeader, Header, Header->Length + #RecordHeader)
@@ -239,8 +249,31 @@ namespace TLS::RecordProtocol {
             }
         }
 
-        define void New(INetworkLayer* Base) {
-            this->Base := Base
+        SocketStream* Stream
+
+        define void Receive() {
+            RecordHeader* Header := this->Stream->Peek(#RecordHeader)
+
+            i32 Length := Swap16(Header->Length) As i32
+
+            i32 Size := Swap16(Header->Length) + #RecordHeader
+            ;Print("Receiving record of length %i\n", Size)
+
+            void* Body := this->Stream->Take(Size)
+
+            ;Print("Received entire record, parsing...\n")
+
+            NetworkPacket* Packet := new NetworkPacket(Body, Size)
+
+            this->Process(Packet)
+
+            Packet->Free()
+        }
+
+        define void New(Socket Remote) {
+            this->Remote := Remote
+            this->Stream := new SocketStream(Remote)
+            this->OutgoingPacket := new NetworkPacket(PAGE_SIZE * 2)
 
             this->ContentTypeHandlers := new AVLTree(#void*)
         }

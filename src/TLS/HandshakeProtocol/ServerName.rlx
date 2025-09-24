@@ -1,0 +1,106 @@
+enum ServerNameType As i8 {
+    HostName := 0
+}
+
+struct ServerNameEntry unaligned {
+    ServerNameType Type
+    i16 Length
+    i8[0] Data
+
+    static self* New(i8* Name) {
+        i32 Length := StringLength(Name)
+        self* this := Alloc(Length + #self)
+
+        this->Type := ServerNameType::HostName
+        this->Length := Length As i16
+
+        Print("SNI HostName: %s\n", Name)
+
+        MoveMemory(this->Data, Name, Length)
+
+        return this
+    }
+
+    define void* End() {
+        return this->Data + ((this->Length As i32) & 0xFFFF)
+    }
+
+    define void FlipEndianess() {
+        this->Length := Swap16(this->Length)
+    }
+}
+
+struct ServerNameList unaligned {
+    i16 Length
+
+    union {
+        ServerNameEntry FirstEntry
+        i8[0] Data
+    }
+
+    define void* End() {
+        return this->Data + ((this->Length As i32) & 0xFFFF)
+    }
+
+    define void FlipEndianess() {
+        void* End := this->End()
+        
+        this->Length := Swap16(this->Length)
+
+        ServerNameEntry* Entry := this~>FirstEntry
+
+        while (Entry < End) {
+            void* EntryEnd := Entry->End()
+
+            Entry->FlipEndianess()
+
+            Entry := EntryEnd
+        }
+    }
+}
+
+class ServerNameBuilder derives INew {
+    PointerArray* Entries ; <ServerNameEntry*>
+
+    define void New() {
+        this->Entries := new PointerArray()
+    }
+
+    define void AddHostName(i8* Name) {
+        this->Entries->Push(new ServerNameEntry(Name))
+    }
+
+    define void* Build(i32* OutSize) {
+        i32 Size := 0
+        i32 Count := this->Entries->Count()
+
+        for (i32 Index := 0, Index < Count, Index++) {
+            ServerNameEntry* Entry := this->Entries->At(Index)
+
+            Size += Entry->Length + #ServerNameEntry
+        }
+
+        void* Buffer := Alloc(2 + Size)
+
+        ServerNameList* List := Buffer
+        List->Length := Size As i16
+
+        ServerNameEntry* NextEntry := List~>FirstEntry
+
+        for (i32 Index := 0, Index < Count, Index++) {
+            ServerNameEntry* Entry := this->Entries->At(Index)
+            
+            MoveMemory(NextEntry, Entry, Entry->Length + #ServerNameEntry)
+
+            NextEntry := NextEntry->End()
+        }
+
+        List->FlipEndianess()
+
+        ;Print("SNI: %hexdump\n", Buffer, 2 + Size)
+
+        *OutSize := 2 + Size
+
+        return Buffer
+    }
+}

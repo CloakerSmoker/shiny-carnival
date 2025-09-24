@@ -1,0 +1,83 @@
+define i8* FindFirstMatch(i8* String, i32 Length, i8* Characters) {
+    for (i32 Index := 0, Index < Length, Index++) {
+        for (i32 Check := 0, Check < StringLength(Characters), Check++) {
+            if (String[Index] = Characters[Check]) {
+                return String + Index
+            }
+        }
+    }
+
+    return null
+}
+
+define i8* FindFirstNonMatch(i8* String, i32 Length, i8* Characters) {
+    for (i32 Index := 0, Index < Length, Index++) {
+        i8 Match := false
+
+        for (i32 Check := 0, Check < StringLength(Characters), Check++) {
+            if (String[Index] = Characters[Check]) {
+                Match := true
+                break
+            }
+        }
+
+        if !(Match) {
+            return String + Index
+        }
+    }
+
+    return null
+}
+
+define i32 SubStringOffset(i8* Base, i8* SubString) {
+    return ((SubString As i64) - (Base As i64)) As i32
+}
+
+define i8* FindMatchBounds(i8* String, i32 Length, i8* Characters, i8** End) {
+    i8* Start := FindFirstMatch(String, Length, Characters)
+
+    if (Start) {
+        i32 Offset := SubStringOffset(String, Start)
+
+        *End := FindFirstNonMatch(Start, Length - Offset, Characters)
+    }
+    else {
+        *End := null
+    }
+
+    return Start
+}
+
+define i8* FindSubString(i8* String, i32 Length, i8* SubString) {
+    Length -= StringLength(SubString)
+
+    for (i32 Index := 0, Index < Length, Index++) {
+        i8* Where := String + Index
+
+        if (StringEquals(Where, SubString)) {
+            return Where
+        }
+    }
+
+    return null
+}
+
+define i8* GetNextLine(i8* LineEnding, i8* Base, i32 Length, i8* Last, i32* OutLineLength) {
+    i8* Next := FindFirstMatch(Last, Length - SubStringOffset(Base, Last), LineEnding)
+
+    if (Next) {
+        *OutLineLength := SubStringOffset(Last, Next)
+
+        *Next := 0
+        Next += 1
+    }
+    else {
+        *OutLineLength := StringLength(Last)
+    }
+
+    return Next
+}
+
+define i8* GetNextLine(i8* Base, i32 Length, i8* Last, i32* OutLineLength) {
+    return GetNextLine("\n", Base, Length, Last, OutLineLength)
+}

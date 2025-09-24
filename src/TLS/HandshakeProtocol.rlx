@@ -28,7 +28,7 @@ namespace TLS::HandshakeProtocol {
         TLS::RecordProtocol::Layer* Base
 
         define NetworkPacket* Enter(MessageType Type) {
-            Print("Handshake Layer Entering %s\n", nameof:(Type))
+            ;Print("Handshake Layer Entering %s\n", nameof:(Type))
 
             NetworkPacket* Packet := this->Base->Enter(RecordProtocol::ContentType::Handshake)
             HandshakeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::Record", #HandshakeRecord)
@@ -46,7 +46,7 @@ namespace TLS::HandshakeProtocol {
             Data += 0
             Size += 4
 
-            Print("Recording Handshake Message of size %i\n", Size)
+            ;Print("Recording Handshake Message of size %i\n", Size)
 
             this->Messages->Push(new NetworkPacket(CloneMemory(Data, Size), Size))
         }
@@ -91,14 +91,14 @@ namespace TLS::HandshakeProtocol {
 
             ;Print("Fixed Length: %x/%i\n", Record->Length, Record->Length)
 
-            Packet->DumpMarkers()
+            ;Packet->DumpMarkers()
 
             MessageType Type := Record->Type
 
             INetworkLayer* Handler := this->MessageTypeHandlers->GetPointer((Type As i32) & 0xFF)
 
             if (Handler != null) {
-                Print("Got %s\n", nameof:(Type))
+                Print("Handshake Layer Received %s\n", nameof:(Type))
                 Handler->Process(Packet)
             }
             else {
@@ -448,7 +448,7 @@ namespace TLS::HandshakeProtocol {
 
                 ExtensionDataSize += Entry->Length + #ExtensionEntry
 
-                Print("Extension %i needs %i bytes\n", Index, Entry->Length + #ExtensionEntry)
+                ;Print("Extension %i needs %i bytes\n", Index, Entry->Length + #ExtensionEntry)
             }
 
             Size += ExtensionDataSize
@@ -475,7 +475,7 @@ namespace TLS::HandshakeProtocol {
                 ExtensionEntry* SourceEntry := this->Extensions->At(Index)
                 i32 EntrySize := #ExtensionEntry + SourceEntry->Length
 
-                Print("Extension %i at offset %i\n", Index, (CurrentEntry As i64) - (Extensions~>FirstEntry As i64))
+                ;Print("Extension %i at offset %i\n", Index, (CurrentEntry As i64) - (Extensions~>FirstEntry As i64))
 
                 MoveMemory(CurrentEntry, SourceEntry, EntrySize)
                 ExtensionEntry* NextEntry := CurrentEntry->End()
