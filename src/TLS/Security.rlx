@@ -291,7 +291,7 @@ namespace TLS::Security {
             Print("Server Encryption Key:\n%hexdump\n", ServerKeys->EncryptionKey, 16)
             Print("Server IV:\n%hexdump\n", ServerKeys->IV, 4)
 
-            i64 KeyLogFile := FileOpen("rlxkeylog.log", FILE_CREATE_NEW | FILE_WRITE)
+            i64 KeyLogFile := 69 ;  FileOpen("rlxkeylog.log", FILE_CREATE_NEW | FILE_WRITE)
 
             FileSeek(KeyLogFile, 0, SEEK_END)
 

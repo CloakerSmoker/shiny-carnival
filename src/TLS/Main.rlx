@@ -17,6 +17,7 @@ define void* AllocateSecureRandom(i32 Size) {
 #Require "./src/TLS/Core.rlx"
 
 #Require "./src/TLS/RecordProtocol.rlx"
+#Require "./src/TLS/AlertProtocol.rlx"
 #Require "./src/TLS/HandshakeProtocol.rlx"
 #Require "./src/TLS/Security.rlx"
 
@@ -111,8 +112,9 @@ namespace TLS {
         ServerKeyExchanged ; ServerHelloDone -> ServerHelloDone
         ServerHelloDone ; ChangeCipherSpec -> ServerChangedCipher
         ServerChangedCipher ; ServerFinished -> Established
-        Established ; Application Data
-        Closed ; Error state
+        Established ; Application Data, Alert(Warning, CloseNotify) -> Closed
+        ClientClosed ; Alert(Warning, CloseNotify) -> Closed
+        Closed ; duh
     }
 
 
@@ -153,6 +155,43 @@ namespace TLS {
             this->RecordLayer->EnableRemoteEncryption()
 
             this->State := ClientState::ServerChangedCipher
+        }
+
+        define void SendAlert(AlertProtocol::AlertLevel Level, AlertProtocol::AlertDescription Description) {
+            NetworkPacket* Packet := this->RecordLayer->Enter(TLS::RecordProtocol::ContentType::Alert)
+
+            AlertProtocol::Alert* Alert := Packet->Mark("TLS::AlertProtocol::Alert", #TLS::AlertProtocol::Alert)
+
+            Alert->Level := Level
+            Alert->Description := Description
+
+            this->RecordLayer->Leave(Packet)
+        }
+
+        define void Close() {
+            this->SendAlert(AlertProtocol::AlertLevel::Warning, AlertProtocol::AlertDescription::CloseNotify)
+
+            this->State := ClientState::ClientClosed
+        }
+
+        define void OnAlert(NetworkPacket* Packet) {
+            AlertProtocol::Alert* Alert := Packet->Mark("TLS::AlertProtocol::Alert", #TLS::AlertProtocol::Alert)
+
+            Print("Received alert at %s level, description %s\n", nameof:(Alert->Level), nameof:(Alert->Description))
+
+            if (Alert->Description = AlertProtocol::AlertDescription::CloseNotify) {
+                if (this->State = ClientState::Established) {
+                    this->SendAlert(AlertProtocol::AlertLevel::Warning, AlertProtocol::AlertDescription::CloseNotify)
+                    this->State := ClientState::Closed
+                }
+                else if (this->State = ClientState::ClientClosed) {
+                    this->State := ClientState::Closed
+                }
+            }
+            else if (Alert->Level = AlertProtocol::AlertLevel::Fatal) {
+                this->SendAlert(AlertProtocol::AlertLevel::Warning, AlertProtocol::AlertDescription::CloseNotify)
+                this->State := ClientState::Closed
+            }
         }
 
         define void SendClientHello() {
@@ -474,6 +513,8 @@ define void Main(i32 ArgC, i8** ArgV) {
     C->SendApplicationData(GetRequest, StringLength(GetRequest))
 
     C->RecordLayer->Receive()
+
+    C->Close()
 
     /* i8[32] RandomBytes
     SecureFillRandom(RandomBytes, 32)
