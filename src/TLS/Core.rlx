@@ -31,6 +31,7 @@ namespace TLS {
     }
 
     enum CipherSuite As i16 {
+        Invalid := 0x0000
         RSA_WITH_AES_128_GCM_SHA256 := 0x9C00
         ECDHE_RSA_WITH_AES_128_GCM_SHA256 := 0x2FC0
         ECDH_RSA_WITH_AES_128_SHA256 := 0x31C0

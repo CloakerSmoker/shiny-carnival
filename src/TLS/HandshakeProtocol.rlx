@@ -131,6 +131,10 @@ namespace TLS::HandshakeProtocol {
             return this->Data + ((this->Length As i32) & 0xFFFF)
         }
 
+        define void Swap() {
+            this->Length := Swap16(this->Length)
+        }
+
         static self* New() {
             return Alloc(#self)
         }
@@ -164,9 +168,15 @@ namespace TLS::HandshakeProtocol {
         ECPointFormats := 11
         SignatureAlgorithms := 13
         Heartbeat := 15
+        ApplicationLayerProtocolNegotiation := 16
+        Padding := 21
         EncryptThenMAC := 22
         ExtendedMasterSecret := 23
         SessionTicket := 35
+        SupportedVersions := 43
+        PreSharedKeyExchangeModes := 45
+        PostHandshakeAuth := 49
+        KeyShare := 51
     }
 
     struct ExtensionEntry {
@@ -192,7 +202,6 @@ namespace TLS::HandshakeProtocol {
         i16 Length
 
         union {
-            ExtensionEntry FirstEntry
             i8[0] Data
         }
 
@@ -200,8 +209,12 @@ namespace TLS::HandshakeProtocol {
             return this->Data + ((this->Length As i32) & 0xFFFF)
         }
 
+        define void Swap() {
+            this->Length := Swap16(this->Length)
+        }
+
         define void* Find(ExtensionType Type) {
-            ExtensionEntry* Entry := this~>FirstEntry
+            ExtensionEntry* Entry := this->Data As void*
 
             while (Entry < this->End()) {
                 if (Entry->Type = Type) {
@@ -468,7 +481,7 @@ namespace TLS::HandshakeProtocol {
             MoveMemory(Record->GetCompressionMethods(), this->CompressionMethods, this->CompressionMethods->Length + #CompressionMethodList)
             
             ExtensionList* Extensions := Record->GetExtensions()
-            ExtensionEntry* CurrentEntry := Extensions~>FirstEntry
+            ExtensionEntry* CurrentEntry := Extensions->Data As void*
             i32 Count := this->Extensions->Count()
 
             for (i32 Index := 0, Index < Count, Index++) {
@@ -492,7 +505,77 @@ namespace TLS::HandshakeProtocol {
         }
 
         define void Read(NetworkPacket* Packet) {
+            ClientHelloRecord* Record := Packet->Mark("TLS::HandshakeProtocol::ClientHelloRecord", #ClientHelloRecord)
 
+            MoveMemory(this->Random, Record->Random, 32)
+
+            Packet->AssertBound(Record->SessionIDLength + #CipherSuiteList)
+            Packet->Mark("TLS::HandshakeProtocol::ClientHello::SessionID", (Record->SessionIDLength As i32) & 0xFF)
+
+            CipherSuiteList* CipherSuites := Record->GetCipherSuites()
+
+            CipherSuites->Swap()
+
+            i32 CipherSuitesSize := (CipherSuites->Length As i32) & 0xFFFF
+            i32 CipherSuiteCount := CipherSuitesSize / 2
+
+            Packet->AssertBound(CipherSuitesSize + #CompressionMethodList)
+            Packet->Mark("TLS::HandshakeProtocol::ClientHello::CipherSuites", #CipherSuiteList + CipherSuitesSize)
+
+
+            for (i32 Index := 0, Index < CipherSuiteCount, Index++) {
+                this->AddCipherSuite(Swap16(CipherSuites->Suites[Index] As i16) As CipherSuite)
+            }
+
+            CompressionMethodList* CompressionMethods := Record->GetCompressionMethods()
+
+            Print("Compression methods list:\n%hexdump\n", CompressionMethods, 0x20)
+
+            Print("Compression Methods Length: %i\n", (CompressionMethods->Length As i32) & 0xFF)
+
+            i32 CompressionMethodsSize := (CompressionMethods->Length As i32) & 0xFF
+
+            Packet->AssertBound(CompressionMethodsSize + #ExtensionList)
+            Packet->Mark("TLS::HandshakeProtocol::ClientHello::CompressionMethods", CompressionMethodsSize + #CompressionMethodList)
+
+            for (i32 Index := 0, Index < CompressionMethodsSize, Index++) {
+                this->AddCompressionMethod(CompressionMethods->Methods[Index])
+            }
+
+            ExtensionList* Extensions := Record->GetExtensions()
+
+            Extensions->Swap()
+
+            Print("Extensions Length: %i\n", (Extensions->Length As i32) & 0xFFFF)
+
+            Packet->AssertBound(Extensions->Length)
+            Packet->Mark("TLS::HandshakeProtocol::ClientHello::Extensions", #ExtensionList + (Extensions->Length As i32) & 0xFFFF)
+            Packet->Seek(Packet->GetOffset("TLS::HandshakeProtocol::ClientHello::Extensions") + #ExtensionList)
+
+            ExtensionEntry* Entry := null
+            
+            i32 End := Packet->Tell() + ((Extensions->Length As i32) & 0xFFFF)
+
+            while (Packet->Tell() < End) {
+                Packet->AssertBound(#ExtensionEntry)
+
+                ExtensionEntry* Entry := Packet->Bump(#ExtensionEntry)
+                Entry->Swap()
+
+                i32 Length := (Entry->Length As i32) & 0xFFFF
+
+                Print("Extension Type: %x Length: %i\n", Entry->Type, Length)
+
+                Packet->AssertBound(Length)
+                Packet->Bump(Length)
+
+                this->AddExtension(Entry->Type, Entry->Data, Length)
+            }
+
+            Packet->DumpMarkers()
+
+
+            
         }
     }
 
@@ -624,7 +707,7 @@ namespace TLS::HandshakeProtocol {
             Extensions->Length := Swap16(Extensions->Length)
 
             void* ExtensionsEnd := Extensions->End()
-            ExtensionEntry* Entry := Extensions~>FirstEntry
+            ExtensionEntry* Entry := Extensions->Data As void*
 
             while (Entry < ExtensionsEnd) {
                 this->Extensions->Push(Entry)

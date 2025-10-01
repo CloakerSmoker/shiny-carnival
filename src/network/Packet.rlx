@@ -115,6 +115,12 @@ struct NetworkPacket {
         return this->Mark(RegisterPacketData(ID), Size)
     }
 
+    define void AssertBound(i32 Size) {
+        if (this->Offset + Size > this->Size) {
+            Throw('PKCT_BND')
+        }
+    }
+
     define void* Get(i32 ID) {
         return this->Buffer + this->Find(ID)->Offset
     }

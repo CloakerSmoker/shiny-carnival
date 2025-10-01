@@ -114,7 +114,172 @@ namespace TLS {
         ServerChangedCipher ; ServerFinished -> Established
         Established ; Application Data, Alert(Warning, CloseNotify) -> Closed
         ClientClosed ; Alert(Warning, CloseNotify) -> Closed
+        ; ^ for when the local end initiates a close, and we need to wait for the remote
+        ;    to ack it
         Closed ; duh
+    }
+
+    class Connection {
+        i8 dummy
+    }
+
+    enum ServerState {
+        AwaitingClientHello ; Initial state, ClientHello -> ClientHelloReceived
+        ClientHelloReceived ; ClientKeyExchange -> ClientKeyExchanged
+        ClientKeyExchanged ; ChangeCipherSpec -> ClientChangedCipher
+        ClientChangedCipher ; ClientFinished -> Established
+        Established ; Application Data, Alert(Warning, CloseNotify) -> Closed
+        ServerClosed ; Alert(Warning, CloseNotify) -> Closed
+        Closed ; duh
+    }
+
+    class Server derives INew {
+        ServerState State
+
+        Socket Remote
+
+        TLS::RecordProtocol::Layer* RecordLayer
+        TLS::HandshakeProtocol::Layer* HandshakeLayer
+
+        define void RegisterContentType(TLS::RecordProtocol::ContentType Type, INetworkLayer* Layer) {
+            this->RecordLayer->RegisterContentType(Type, Layer)
+        }
+        define void RegisterMessageType(TLS::HandshakeProtocol::MessageType Type, INetworkLayer* Layer) {
+            this->HandshakeLayer->RegisterMessageType(Type, Layer)
+        }
+
+        TLS::Security::SecurityParameters* Security
+        TLS::Security::ICipherSuite* CipherSuite
+
+        TLS::HandshakeProtocol::ClientHelloHelper* ClientHello
+        TLS::HandshakeProtocol::ServerHelloHelper* ServerHello
+        TLS::HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
+
+        CallbackNetworkLayer* OnHandshakeCallback
+
+        define CallbackNetworkLayer* MakeCallback(void(void*, NetworkPacket*) Method) {
+            return new CallbackNetworkLayer(this, Method)
+        }
+
+        define void SendAlert(AlertProtocol::AlertLevel Level, AlertProtocol::AlertDescription Description) {
+            NetworkPacket* Packet := this->RecordLayer->Enter(TLS::RecordProtocol::ContentType::Alert)
+
+            AlertProtocol::Alert* Alert := Packet->Mark("TLS::AlertProtocol::Alert", #TLS::AlertProtocol::Alert)
+
+            Alert->Level := Level
+            Alert->Description := Description
+
+            this->RecordLayer->Leave(Packet)
+        }
+
+        define void SendServerHello() {
+            i8 ValidCompression := false
+
+            i32 Length := this->ClientHello->CompressionMethods->Length
+
+            for (i32 Index := 0, Index < Length, Index++) {
+                if (this->ClientHello->CompressionMethods->Methods[Index] = TLS::HandshakeProtocol::CompressionMethod::Null) {
+                    ValidCompression := true
+                }
+            }
+
+            if !(ValidCompression) {
+                Print("Client does not support null compression\n")
+                this->SendAlert(AlertProtocol::AlertLevel::Fatal, AlertProtocol::AlertDescription::HandshakeFailure)
+                this->State := ServerState::Closed
+                return
+            }
+
+            CipherSuite SelectedSuite := TLS::CipherSuite::Invalid
+
+            Length := this->ClientHello->CipherSuites->Length
+
+            for (i32 Index := 0, Index < Length, Index++) {
+                CipherSuite Candidate := this->ClientHello->CipherSuites->Suites[Index]
+
+                if (Candidate = TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256) {
+                    SelectedSuite := Candidate
+                    break
+                }
+                else if (Candidate = TLS::CipherSuite::ECDH_RSA_WITH_AES_128_SHA256) {
+                    SelectedSuite := Candidate
+                    break
+                }
+            }
+        }
+
+        define void OnHandshake(NetworkPacket* Packet) {
+            TLS::HandshakeProtocol::HandshakeRecord* Record := Packet->Get("TLS::HandshakeProtocol::Record")
+
+            if (Record->Type = TLS::HandshakeProtocol::MessageType::ClientHello) {
+                if (this->State != ServerState::AwaitingClientHello) {
+                    Print("Unexpected ClientHello\n")
+                    Exit(1)
+                }
+
+                this->ClientHello->Read(Packet)
+
+                auto Parameters := new TLS::Security::SecurityParameters()
+
+                Parameters->SetLocalIsServer()
+
+                Parameters~>Client->Random := this->ClientHello->Random
+
+                this->Security := Parameters
+
+                Print("Client Random:\n%hexdump\n", this->ClientHello->Random, 32)
+
+                i32 Count := this->ClientHello->Extensions->Count()
+                Print("Client sent %i extensions\n", Count)
+
+                for (i32 Index := 0, Index < Count, Index++) {
+                    TLS::HandshakeProtocol::ExtensionEntry* Entry := this->ClientHello->Extensions->At(Index)
+
+                    Print("[%i]: %s (%x bytes)\n", Index, nameof:(Entry->Type), Entry->Length)
+                }
+
+                this->State := ServerState::ClientHelloReceived
+            }
+            else if (Record->Type = TLS::HandshakeProtocol::MessageType::ClientKeyExchange) {
+                if (this->State != ServerState::ClientHelloReceived) {
+                    Print("Unexpected ClientKeyExchange\n")
+                    Exit(1)
+                }
+            }
+        }
+
+        
+
+        define void Establish() {
+            while (this->State != ServerState::Established) {
+                this->RecordLayer->Receive()
+
+                if (this->State = ServerState::Closed) {
+                    Print("Connection closed due to error\n")
+                    Exit(1)
+                }
+            }
+        }
+
+        define void New(Socket Remote) {
+            this->Remote := Remote
+            this->RecordLayer := new TLS::RecordProtocol::Layer(Remote)
+            this->HandshakeLayer := new TLS::HandshakeProtocol::Layer(this->RecordLayer)
+
+            this->RecordLayer->SetVersion(TLS::VersionNumber::TLS_1_0)
+
+            this->RegisterContentType(TLS::RecordProtocol::ContentType::Handshake, this->HandshakeLayer)
+
+            this->ClientHello := new TLS::HandshakeProtocol::ClientHelloHelper(TLS::VersionNumber::TLS_1_2)
+            this->ServerHello := new TLS::HandshakeProtocol::ServerHelloHelper()
+            this->ServerKeyExchange := new TLS::HandshakeProtocol::ServerKeyExchangeHelper()
+
+            INetworkLayer* OnHandshake := this->MakeCallback(&self.OnHandshake)
+
+            this->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ClientHello, OnHandshake)
+
+            this->State := ServerState::AwaitingClientHello
+        }
     }
 
 
@@ -446,6 +611,10 @@ namespace TLS {
             }
         }
 
+        define void Receive() {
+            this->RecordLayer->Receive()
+        }
+
         define void New(Socket Remote) {
             this->Remote := Remote
             this->RecordLayer := new TLS::RecordProtocol::Layer(Remote)
@@ -480,11 +649,10 @@ namespace TLS {
 
 #Require "./src/DNS.rlx"
 
-define void Main(i32 ArgC, i8** ArgV) {
+define void Client(i8* Server, i32 Port) {
     UseDNS(ParseIPV4("1.1.1.1"), 53, 1 * 60, 10 * 60, false)
 
-    i8* Server := ArgV[1]
-    IPV4SocketAddress* ServerAddress := DNSLookupIPV4(Server, 443)
+    IPV4SocketAddress* ServerAddress := DNSLookupIPV4(Server, Port As i16)
 
     if (ServerAddress = null) {
         Print("Could not resolve %s\n", Server)
@@ -555,4 +723,87 @@ define void Main(i32 ArgC, i8** ArgV) {
     P->RecordLayer->Process(Packet)
 
     Packet->DumpMarkers()*/
+}
+
+#Require "./src/Time.rlx"
+
+define void Main(i32 ArgC, i8** ArgV) {
+    if (ArgC < 2) {
+        Print("Usage: %s <client|server> <args>\n", ArgV[0])
+        Exit(1)
+    }
+
+    if (StringEquals(ArgV[1], "client")) {
+        i32 Port := 443
+        i8* Server := "google.com"
+
+        if (ArgC >= 3) {
+            Server := ArgV[2]
+        }
+        
+        if (ArgC >= 4) {
+            Port := AToI(ArgV[3]) As i32
+        }
+
+        if (Port < 1 || Port > 65535) {
+            Print("Invalid port %s\n", ArgV[3])
+            Exit(1)
+        }
+
+        Client(Server, Port)
+    }
+    else if (StringEquals(ArgV[1], "server")) {
+        i32 Port := 4433
+
+        if (ArgC >= 3) {
+            Port := AToI(ArgV[2]) As i32
+        }
+
+        IPV4SocketAddress* Address := new IPV4SocketAddress("127.0.0.1", Port As i16)
+        Socket S := Socket:New(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        S->SetOption(SO_REUSEADDR, 1)
+        
+        while (S->Bind(Address~>Base, #IPV4SocketAddress) != 0) {
+            Print("Failed to bind to %ipv4, retrying in 5 seconds...\n", Address)
+            MilliSleep(5000)
+        }
+
+        S->Listen(5)
+        Print("Listening on %ipv4\n", Address)
+
+        PointerArray* Clients := new PointerArray() ; TLS::Server
+
+        loop {
+            if (S->Poll(POLL_FOR_READ, 50)) {
+                Print("New connection!\n")
+
+                IPV4SocketAddress* ClientAddress := new IPV4SocketAddress()
+                Socket ClientSocket := S->Accept(ClientAddress~>Base, #IPV4SocketAddress)
+
+                Print("Accepted connection from %ipv4\n", ClientAddress)
+
+                TLS::Server* Client := new TLS::Server(ClientSocket)
+
+                Client->Establish()
+
+                Clients->Push(Client)
+            }
+
+
+            i32 Count := Clients->Count()
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                TLS::Server* Client := Clients->At(Index)
+
+                ;Client->Receive()
+            }
+
+            MilliSleep(100)
+        }
+    }
+    else {
+        Print("Unknown mode %s\n", ArgV[1])
+        Exit(1)
+    }
+    
 }
