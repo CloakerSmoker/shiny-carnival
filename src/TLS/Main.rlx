@@ -305,6 +305,8 @@ namespace TLS {
         TLS::HandshakeProtocol::ServerHelloHelper* ServerHello
         TLS::HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
 
+        HandshakeProtocol::CertificateHelper* Certificate
+
         CallbackNetworkLayer* OnHandshakeCallback
 
         define CallbackNetworkLayer* MakeCallback(void(void*, NetworkPacket*) Method) {
@@ -491,6 +493,8 @@ namespace TLS {
             else if (Record->Type = TLS::HandshakeProtocol::MessageType::Certificate) {
                 this->ExpectState(ClientState::ServerAccepted, "Certificate")
 
+                this->Certificate->Read(Packet)
+
                 this->State := ClientState::ServerSentCertificate
             }
             else if (Record->Type = TLS::HandshakeProtocol::MessageType::ServerKeyExchange) {
@@ -627,6 +631,7 @@ namespace TLS {
             this->ClientHello := new TLS::HandshakeProtocol::ClientHelloHelper(TLS::VersionNumber::TLS_1_2)
             this->ServerHello := new TLS::HandshakeProtocol::ServerHelloHelper()
             this->ServerKeyExchange := new TLS::HandshakeProtocol::ServerKeyExchangeHelper()
+            this->Certificate := new HandshakeProtocol::CertificateHelper()
 
             INetworkLayer* OnChangeCipherSpec := this->MakeCallback(&self.OnChangeCipherSpec)
 

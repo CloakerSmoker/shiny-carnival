@@ -1,3 +1,6 @@
+
+#Require "./src/ASN1/Core.rlx"
+
 namespace TLS::HandshakeProtocol {
     enum MessageType As i8 {
         HelloRequest := 0
@@ -767,6 +770,128 @@ namespace TLS::HandshakeProtocol {
             this->PublicKey := CloneMemory(Record->PublicKey, this->PublicKeyLength)
             this->Algorithm := Swap16(Tail->Algorithm As i16) As SignatureAlgorithm
             this->Signature := CloneMemory(Tail->Signature, this->SignatureLength)
+        }
+    }
+
+    struct CertificateRecord {
+        i8[3] LengthBytes ; Are you serious?
+
+        define i32 GetLength() {
+            i32 Low := (this->LengthBytes[2] As i32) & 0xFF
+            i32 Mid := (this->LengthBytes[1] As i32) & 0xFF
+            i32 High := (this->LengthBytes[0] As i32) & 0xFF
+
+            return (High << 16) | (Mid << 8) | Low
+        }
+    }
+
+    class CertificateHelper derives INew {
+        PointerArray* CertificatesData ; <NetworkPacket*>
+
+        define void New() {
+            this->CertificatesData := new PointerArray()
+        }
+
+        define void Read(NetworkPacket* Packet) {
+            CertificateRecord* Record := Packet->Mark("TLS::HandshakeProtocol::CertificateRecord", #CertificateRecord)
+
+            i32 Length := Record->GetLength()
+
+            Print("Certificates Length: %x\n", Length)
+
+            Packet->AssertBound(Length)
+            Packet->Mark("TLS::HandshakeProtocol::CertificateRecord::Data", Length)
+            Packet->Seek(Packet->GetOffset("TLS::HandshakeProtocol::CertificateRecord::Data"))
+
+            i32 End := Packet->Tell() + Length
+
+            while (Packet->Tell() < End) {
+                Packet->AssertBound(#CertificateRecord)
+                CertificateRecord* Record := Packet->Bump(#CertificateRecord)
+
+                Packet->AssertBound(Record->GetLength())
+                void* Data := Packet->Bump(Record->GetLength())
+                
+                this->CertificatesData->Push(new NetworkPacket(CloneMemory(Data, Record->GetLength()), Record->GetLength()))
+            }
+
+            i32 Count := this->CertificatesData->Count()
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                NetworkPacket* CertificatePacket := this->CertificatesData->At(Index)
+
+                ASN1::DER::Parser* Parser := new ASN1::DER::Parser(CertificatePacket->Buffer, CertificatePacket->Size)
+
+                ASN1::DER::IValue* RawCertificate := Parser->ParseValue()
+
+                if !(RawCertificate->Is(ASN1::DER::UniversalTag::SEQUENCE)) {
+                    Print("Certificate is not a sequence\n")
+                    Exit(0)
+                }
+
+                ASN1::DER::SequenceValue* Certificate := RawCertificate As ASN1::DER::SequenceValue*
+
+                if (Certificate->Count() != 3) {
+                    Print("Certificate sequence does not have 3 items\n")
+                    Exit(0)
+                }
+
+                ASN1::DER::IValue* RawTBS := Certificate->At(0)
+
+                if !(RawTBS->Is(ASN1::DER::UniversalTag::SEQUENCE)) {
+                    Print("Certificate TBS is not a sequence\n")
+                    Exit(0)
+                }
+
+                ASN1::DER::SequenceValue* TBS := RawTBS As ASN1::DER::SequenceValue*
+
+                if (TBS->Count() < 7) {
+                    Print("Certificate TBS sequence has less than 7 items\n")
+                    Exit(0)
+                }
+
+                ASN1::DER::IValue* RawVersion := TBS->At(0)
+
+                if !(RawVersion->GetClass() = ASN1::DER::IdentifierClass::CONTEXT_SPECIFIC && RawVersion->GetConstructed()) {
+                    Print("Certificate version is not a context-specific sequence\n")
+                    Exit(0)
+                }
+
+                ASN1::DER::SequenceValue* VersionSequence := RawVersion As ASN1::DER::SequenceValue*
+
+                i32 VersionCount := VersionSequence->Count()
+
+                for (i32 Index := 0, Index < VersionCount, Index++) {
+                    ASN1::DER::IValue* Item := VersionSequence->At(Index)
+
+                    if !(Item->Is(ASN1::DER::IdentifierClass::UNIVERSAL, ASN1::DER::UniversalTag::INTEGER)) {
+                        Print("Certificate version item %i is not an integer\n", Index)
+                        Exit(0)
+                    }
+                }
+
+                if (VersionCount != 1) {
+                    Print("Certificate version sequence does not have exactly 1 item\n")
+                    Exit(0)
+                }
+
+                ASN1::DER::IntegerValue* VersionValue := VersionSequence->At(0) As ASN1::DER::IntegerValue*
+                
+                if (VersionValue->Value->DigitCount != 1) {
+                    Print("Certificate version integer is greater than %i\n", BIG_NUMBER_BASE)
+                    Exit(0)
+                }
+
+                i32 Version := VersionValue->Value->Digits[0]
+
+                Print("Certificate Version: %i\n", Version)
+
+                ASN1::DER::IValue* RawSignatureAlgorithm := Certificate->At(1)
+                ASN1::DER::IValue* SignatureValue := Certificate->At(2)
+
+                Exit(0)
+
+            }
         }
     }
 }
