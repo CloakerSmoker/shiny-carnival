@@ -771,10 +771,15 @@ namespace TLS::HandshakeProtocol {
             this->Algorithm := Swap16(Tail->Algorithm As i16) As SignatureAlgorithm
             this->Signature := CloneMemory(Tail->Signature, this->SignatureLength)
         }
+
+        define void Write(NetworkPacket* Packet) {
+            
+        }
     }
 
     struct CertificateRecord {
         i8[3] LengthBytes ; Are you serious?
+        i8[0] Data
 
         define i32 GetLength() {
             i32 Low := (this->LengthBytes[2] As i32) & 0xFF
@@ -782,6 +787,12 @@ namespace TLS::HandshakeProtocol {
             i32 High := (this->LengthBytes[0] As i32) & 0xFF
 
             return (High << 16) | (Mid << 8) | Low
+        }
+
+        define void SetLength(i32 Length) {
+            this->LengthBytes[0] := ((Length >> 16) & 0xFF) As i8
+            this->LengthBytes[1] := ((Length >> 8) & 0xFF) As i8
+            this->LengthBytes[2] := (Length & 0xFF) As i8
         }
     }
 
@@ -891,6 +902,48 @@ namespace TLS::HandshakeProtocol {
 
                 Exit(0)
 
+            }
+        }
+
+        define void Add(NetworkPacket* CertificateData) {
+            this->CertificatesData->Push(CertificateData)
+        }
+        define void Add(void* Data, i32 Size) {
+            this->CertificatesData->Push(new NetworkPacket(CloneMemory(Data, Size), Size))
+        }
+        define void Add(Security::ICertificate* Certificate) {
+            i32 Size := 0
+            void* Data := Certificate->GetCertificateData(&Size)
+
+            this->Add(Data, Size)
+        }
+
+        define void Write(NetworkPacket* Packet) {
+            i32 TotalLength := 0
+
+            i32 Count := this->CertificatesData->Count()
+
+            for (i32 Index := 0, Index < this->CertificatesData->Length, Index++) {
+                NetworkPacket* CertificatePacket := this->CertificatesData->At(Index)
+
+                TotalLength += #CertificateRecord + CertificatePacket->Size
+            }
+
+            void* Certificates := Packet->Mark("TLS::HandshakeProtocol::Certificates", #CertificateRecord + TotalLength)
+
+            CertificateRecord* Record := Certificates
+            Record->SetLength(TotalLength)
+
+            CertificateRecord* Current := Certificates + #CertificateRecord
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                NetworkPacket* CertificatePacket := this->CertificatesData->At(Index)
+
+                Current->SetLength(CertificatePacket->Size)
+
+                MoveMemory(Current->Data, CertificatePacket->Buffer, CertificatePacket->Size)
+
+                Current += #CertificateRecord + CertificatePacket->Size
             }
         }
     }

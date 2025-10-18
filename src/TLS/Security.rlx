@@ -34,13 +34,6 @@ namespace TLS::Security {
         SHA2_512
     }
 
-    interface ICertificate {
-        virtual void* GetCertificateData(i32*)
-        virtual void* GetPublicKey(i32*)
-
-        virtual void* Sign(void*, i32, i32*)
-    }
-
     namespace PKCS1_5 {
         enum MessageType As i8 {
             DigestInfo := 0x01

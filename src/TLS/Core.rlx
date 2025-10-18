@@ -38,6 +38,13 @@ namespace TLS {
     }
 
     namespace Security {
+        interface ICertificate {
+            virtual void* GetCertificateData(i32*)
+            virtual void* GetPublicKey(i32*)
+
+            virtual void* Sign(void*, i32, i32*)
+        }
+
         interface IPseudoRandomFunction {
             virtual void* Generate(void* Key, i32 Size, i8* Label, void* Seed, i32 SeedSize, i32 NeededBytes)
             virtual void* GenerateMasterSecret(void* Key, i32 Size, i8* Label, i32 NeededBytes)

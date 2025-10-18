@@ -138,7 +138,7 @@ namespace TLS {
 
         Socket Remote
 
-        TLS::Security::ICertificate* Certificate
+        TLS::Security::ICertificate* SigningCertificate
 
         TLS::RecordProtocol::Layer* RecordLayer
         TLS::HandshakeProtocol::Layer* HandshakeLayer
@@ -155,6 +155,7 @@ namespace TLS {
 
         TLS::HandshakeProtocol::ClientHelloHelper* ClientHello
         TLS::HandshakeProtocol::ServerHelloHelper* ServerHello
+        TLS::HandshakeProtocol::CertificateHelper* Certificates
         TLS::HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
 
         CallbackNetworkLayer* OnHandshakeCallback
@@ -208,6 +209,43 @@ namespace TLS {
                     break
                 }
             }
+
+            if (SelectedSuite = TLS::CipherSuite::Invalid) {
+                Print("Client does not support any known cipher suites\n")
+                this->SendAlert(AlertProtocol::AlertLevel::Fatal, AlertProtocol::AlertDescription::HandshakeFailure)
+                this->State := ServerState::Closed
+                return
+            }
+
+            this->Security->Local->Random := AllocateSecureRandom(32)
+            MoveMemory(this->ServerHello->Random, this->Security->Local->Random, 32)
+
+            this->ServerHello->Cipher := SelectedSuite
+            this->ServerHello->Compression := TLS::HandshakeProtocol::CompressionMethod::Null
+
+            i32 Count := this->ClientHello->Extensions->Count()
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                TLS::HandshakeProtocol::ExtensionEntry* Entry := this->ClientHello->Extensions->At(Index)
+
+                
+            }
+
+            NetworkPacket* Packet := this->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::ServerHello)
+            this->ServerHello->Write(Packet)
+            this->HandshakeLayer->Leave(Packet)
+        }
+
+        define void SendCertificates() {
+            NetworkPacket* Packet := this->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::Certificate)
+            this->Certificates->Write(Packet)
+            this->HandshakeLayer->Leave(Packet)
+        }
+
+        define void SendServerKeyExchange() {
+            NetworkPacket* Packet := this->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::ServerKeyExchange)
+            this->ServerKeyExchange->Write(Packet)
+            this->HandshakeLayer->Leave(Packet)
         }
 
         define void OnHandshake(NetworkPacket* Packet) {
@@ -265,7 +303,7 @@ namespace TLS {
 
         define void New(Socket Remote, TLS::Security::ICertificate* Certificate) {
             this->Remote := Remote
-            this->Certificate := Certificate
+            this->SigningCertificate := Certificate
 
             this->RecordLayer := new TLS::RecordProtocol::Layer(Remote)
             this->HandshakeLayer := new TLS::HandshakeProtocol::Layer(this->RecordLayer)
@@ -276,7 +314,10 @@ namespace TLS {
 
             this->ClientHello := new TLS::HandshakeProtocol::ClientHelloHelper(TLS::VersionNumber::TLS_1_2)
             this->ServerHello := new TLS::HandshakeProtocol::ServerHelloHelper()
+            this->Certificates := new TLS::HandshakeProtocol::CertificateHelper()
             this->ServerKeyExchange := new TLS::HandshakeProtocol::ServerKeyExchangeHelper()
+
+            this->Certificates->Add(this->SigningCertificate)
 
             INetworkLayer* OnHandshake := this->MakeCallback(&self.OnHandshake)
 
