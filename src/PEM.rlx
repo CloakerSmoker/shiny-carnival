@@ -1,0 +1,41 @@
+
+
+define void* ParsePEM(i8* Header, i8* Footer, i32* OutSize, i8* PEM, i32 Length) {
+    i8* Header := "-----BEGIN PRIVATE KEY-----\r"
+    i8* Footer := "\r-----END PRIVATE KEY-----\r"
+
+    if (Length < StringLength(Header) + StringLength(Footer)) {
+        Throw("PEM data is too short to be valid" As i64)
+        return null
+    }
+
+    if (CompareMemory(PEM, Header, StringLength(Header)) != 0) {
+        Throw("PEM data does not start with expected header" As i64)
+        return null
+    }
+
+    if (CompareMemory(PEM + Length - StringLength(Footer), Footer, StringLength(Footer)) != 0) {
+        Throw("PEM data does not end with expected footer" As i64)
+        return null
+    }
+
+    void* Body := PEM + StringLength(Header)
+    i32 BodyLength := Length - StringLength(Header) - StringLength(Footer)
+
+    i32 DecodedLength := (BodyLength / 4) * 3 + 3
+    void* Decoded := Alloc(DecodedLength)
+
+    Print("PEM body:\n")
+    for (i32 Index := 0, Index < BodyLength, Index++) {
+        Print("%c", (Body As i8*)[Index])
+    }
+    Print("\n")
+
+    DecodedLength := DecodeBase64(Body, BodyLength, Decoded)
+
+    Print("Decoded PEM data:\n%hexdump\n", Decoded, DecodedLength)
+
+    *OutSize := DecodedLength
+
+    return Decoded
+}

@@ -67,9 +67,6 @@ namespace ASN1::DER {
         virtual i8 Is(IdentifierClass Class, i32 Tag) {
             return this->GetClass() = Class && this->GetTag() = Tag
         }
-        virtual i8 Is(IdentifierClass Class, UniversalTag Tag) {
-            return this->GetClass() = Class && this->GetTag() = (Tag As i32)
-        }
     }
 
     define void Indent(i32 Depth) {
@@ -156,6 +153,16 @@ namespace ASN1::DER {
             this->Components[Index] := Value
         }
 
+        define void Print(PrintOutputAdapterPrototype* Out) {
+            for (i32 Index := 0, Index < this->ComponentCount, Index++) {
+                Out->Print("%i", this->Components[Index])
+
+                if (Index + 1 < this->ComponentCount) {
+                    Out->Print(".")
+                }
+            }
+        }
+
         define void Print(i32 Depth) {
             Indent(Depth) Print("OBJECT IDENTIFIER ")
 
@@ -214,7 +221,11 @@ namespace ASN1::DER {
         #Include "./src/ASN1/ValueBase.rlx"
 
         i32 Offset
-        void* Value
+
+        union {
+            void* Value
+            i8* Bytes
+        }
 
         i32 Length
 
@@ -239,10 +250,10 @@ namespace ASN1::DER {
         define void Print(i32 Depth) {
             Indent(Depth)
 
-            Print("OCTET STRING (%i bits) ", this->Length)
+            Print("OCTET STRING (%i bytes) ", this->Length)
 
-            for (i32 Index := 0, Index < (this->Length / 8), Index++) {
-                Print("%B", this->Value[Index])
+            for (i32 Index := 0, Index < this->Length, Index++) {
+                Print("%B", this->Bytes[Index])
             }
 
             Print("\n")
@@ -350,6 +361,12 @@ namespace ASN1::DER {
         define void New(void* Buffer, i32 Size) {
             this->Buffer := Buffer
             this->Size := Size
+        }
+
+        define void Reset(void* Buffer, i32 Size) {
+            this->Buffer := Buffer
+            this->Size := Size
+            this->Offset := 0
         }
 
         define i32 PushSize(i32 New) {
@@ -642,4 +659,101 @@ namespace ASN1::DER {
             return null
         }
     }
+
+    class Verifier derives INew {
+        define void Raise(i8* Message) {
+            Throw(Message As i64)
+        }
+
+        define SequenceValue* ExpectSequence(IValue* Value, i8* Why) {
+            if (Value->GetClass() != IdentifierClass::UNIVERSAL || Value->GetTag() != UniversalTag::SEQUENCE) {
+                this->Raise(Why)
+            }
+
+            return Value As SequenceValue*
+        }
+
+        define IValue* Expect(UniversalTag Tag, IValue* Value, i8* Why) {
+            if (Value->GetClass() != IdentifierClass::UNIVERSAL || Value->GetTag() != (Tag As i32)) {
+                this->Raise(Why)
+            }
+
+            return Value
+        }
+
+        define IValue* Expect(IdentifierClass Class, IValue* Value, i8* Why) {
+            if (Value->GetClass() != Class) {
+                this->Raise(Why)
+            }
+
+            return Value
+        }
+
+        define SequenceValue* ExpectConstructed(IValue* Value, i8* Why) {
+            if (Value->GetConstructed() = false) {
+                this->Raise(Why)
+            }
+
+            return Value As SequenceValue*
+        }
+
+        define SequenceValue* ExpectConstructed(IdentifierClass Class, IValue* Value, i8* Why) {
+            if (Value->GetConstructed() = false) {
+                this->Raise(Why)
+            }
+
+            if (Value->GetClass() != Class) {
+                this->Raise(Why)
+            }
+
+            return Value As SequenceValue*
+        }
+
+        define SequenceValue* ExpectLength(i32 Length, SequenceValue* Sequence, i8* Why) {
+            if (Sequence->Count() != Length) {
+                this->Raise(Why)
+            }
+
+            return Sequence
+        }
+
+        define IValue* ExpectIndex(i32 Index, SequenceValue* Sequence, i8* Why) {
+            if (Index < 0 || Index >= Sequence->Count()) {
+                this->Raise(Why)
+            }
+
+            return Sequence->At(Index)
+        }
+
+        define i32 ExpectSmallPositiveInteger(i32 Max, IValue* RawValue, i8* Why) {
+            IntegerValue* Value := this->Expect(UniversalTag::INTEGER, RawValue, Why) As IntegerValue*
+
+            if (Value->Value->DigitCount != 1) {
+                this->Raise(Why)
+            }
+
+            i32 Result := Value->Value->Digits[0]
+
+            if (Result < 0 || Result > Max) {
+                this->Raise(Why)
+            }
+
+            return Result
+        }
+    }
 }
+
+define void DoPrintDEROID(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+	ASN1::DER::ObjectIdentifierValue* OID := Parameters[*ParameterIndex] As void*
+
+    OID->Print(this)
+	
+	*ParameterIndex += 1
+}
+
+PrintFormatPrototype DEROIDPrintPrototype {
+	Name: "asn1-der-oid",
+	Format: &DoPrintDEROID
+}
+
+i32 DER_OID_PRINT_PROTOTYPE_ID := AddPrintFormat(&DEROIDPrintPrototype)

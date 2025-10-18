@@ -4,6 +4,8 @@
 #Require "./src/PKCS5.rlx"
 #Require "./src/EC/RFC7748.rlx"
 
+#Require "./src/ASN1/PKCS8.rlx"
+
 namespace TLS::Security {
     enum PseudoRandomFunctionName {
         TLS_1_2_SHA2_256_HMAC
@@ -32,6 +34,113 @@ namespace TLS::Security {
         SHA2_512
     }
 
+    interface ICertificate {
+        virtual void* GetCertificateData(i32*)
+        virtual void* GetPublicKey(i32*)
+
+        virtual void* Sign(void*, i32, i32*)
+    }
+
+    namespace PKCS1_5 {
+        enum MessageType As i8 {
+            DigestInfo := 0x01
+        }
+
+        struct Message {
+            i8 Zero
+            MessageType Type
+        }
+    }
+
+    class RSACertificate implements ICertificate, derives INew {
+        ASN1::PKCS8::RSAPrivateKey* PrivateKey
+        ASN1::X509::Certificate* Certificate
+        SHA2_256* Hash
+
+        i32 PublicKeySize
+
+        void* CertificateData
+        i32 CertificateDataSize
+
+        define void New(ASN1::PKCS8::RSAPrivateKey* PrivateKey, ASN1::X509::Certificate* Certificate, void* CertificateData, i32 CertificateDataSize) {
+            this->PrivateKey := PrivateKey
+            this->Certificate := Certificate
+            this->CertificateData := CertificateData
+            this->CertificateDataSize := CertificateDataSize
+
+            this->PublicKeySize := this->PrivateKey->Modulus->BitCount() / 8
+
+            this->Hash := new SHA2_256()
+        }
+
+        define void* GetCertificateData(i32* OutSize) {
+            *OutSize := this->CertificateDataSize
+            return this->CertificateData
+        }
+
+        define void* GetPublicKey(i32* OutSize) {
+            *OutSize := this->PublicKeySize
+
+            void* Key := Alloc(*OutSize)
+
+            for (i32 Index := 0, Index < this->PublicKeySize, Index++) {
+                (Key As i8*)[Index] := this->PrivateKey->Modulus->GetByte(Index) As i8
+            }
+
+            return Key
+        }
+
+        define void* Sign(void* Data, i32 DataSize, i32* OutSignatureSize) {
+            void* Message := Alloc(this->PublicKeySize)
+            i8* MessageBytes := Message As i8*
+
+            i8* DigestInfoDER := i8[
+                0x30, 0x31, ; SEQUENCE (DigestInfo)
+                    0x30, 0x0d, ; SEQUENCE (AlgorithmIdentifier)
+                        ; OID for SHA-256
+                        0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01,
+                        0x05, 0x00, ; NULL
+                    0x04, 0x20 ; OCTET STRING of length 32
+            ]
+
+            PKCS1_5::Message* Header := Message
+            Header->Type := PKCS1_5::MessageType::DigestInfo
+
+
+            i32 PaddingNeeded := this->PublicKeySize - 3 - DataSize
+            i8* Tail := MessageBytes + 2
+
+            for (i32 Index := 0, Index < PaddingNeeded, Index++) {
+                Tail[Index] := 0xFF As i8
+            }
+
+            Tail += PaddingNeeded
+
+            MoveMemory(Tail, DigestInfoDER, 19)
+            Tail += 19
+
+            this->Hash->Prepare()
+            this->Hash->Update(Data, DataSize)
+            this->Hash->Finalize(Tail)
+
+            BigInteger* MessageInteger := BigInteger:FromBytes(MessageBytes, this->PublicKeySize)
+
+            BigInteger* Signature := this->PrivateKey->Encrypt(MessageInteger)
+
+            *OutSignatureSize := this->PublicKeySize
+
+            void* SignatureBytes := Alloc(*OutSignatureSize)
+
+            for (i32 Index := 0, Index < *OutSignatureSize, Index++) {
+                (SignatureBytes As i8*)[Index] := Signature->GetByte(*OutSignatureSize - Index - 1) As i8
+            }
+
+            return SignatureBytes
+        }
+
+
+    }
+
     struct DirectionalKeySet {
         void* Random
         void* PublicKey
@@ -51,6 +160,7 @@ namespace TLS::Security {
         DirectionalKeySet* Remote
 
         void* LocalPrivateKey
+        ICertificate* Certificate
 
         void* PreMasterSecret ; MasterSecret derived from this
         void* MasterSecret ; KeyBlock derived from this
@@ -200,6 +310,11 @@ namespace TLS::Security {
         }
     }
 
+    struct ECDHE_RSA_WITH_AES_128_GCM_SHA256_CurveInfo unaligned {
+        HandshakeProtocol::CurveType Type
+        HandshakeProtocol::NamedCurve Curve
+    }
+
     struct ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock {
         i8[16] ClientEncryptionKey
         i8[16] ServerEncryptionKey
@@ -224,7 +339,28 @@ namespace TLS::Security {
 
         define void New(SecurityParameters* Parameters) {
             this->Parameters := Parameters
+        }
 
+        define void SignEphemeralKey(void** OutSignature, i32* OutSignatureLength) {
+            this->Hash->Prepare()
+            this->Hash->Update(this->Parameters->Client->Random, 32)
+            this->Hash->Update(this->Parameters->Server->Random, 32)
+            
+            ECDHE_RSA_WITH_AES_128_GCM_SHA256_CurveInfo CurveInfo {
+                Type: HandshakeProtocol::CurveType::Named,
+                Curve: this->Parameters->ServerKeyExchange->Curve
+            }
+
+            this->Hash->Update(&CurveInfo, #ECDHE_RSA_WITH_AES_128_GCM_SHA256_CurveInfo)
+            this->Hash->Update(this->Parameters->ServerKeyExchange->PublicKey, this->Parameters->ServerKeyExchange->PublicKeyLength)
+
+            i8[32] Digest
+            this->Hash->Finalize(Digest)
+
+            *OutSignature := this->Parameters->Certificate->Sign(Digest, 32, OutSignatureLength)
+        }
+
+        define void GenerateKeys() {
             RFC7748::ICurve* Curve := null
 
             TLS::HandshakeProtocol::NamedCurve CurveName := this->Parameters->ServerKeyExchange->Curve
@@ -242,8 +378,8 @@ namespace TLS::Security {
 
             i32 ScalarSize := Curve->GetScalarSize()
 
-            BigInteger* RemotePublicKey := BigInteger:FromBytes(Parameters->Remote->PublicKey, ScalarSize)
-            BigInteger* LocalPrivateKey := BigInteger:FromBytes(Parameters->LocalPrivateKey, ScalarSize)
+            BigInteger* RemotePublicKey := BigInteger:FromBytes(this->Parameters->Remote->PublicKey, ScalarSize)
+            BigInteger* LocalPrivateKey := BigInteger:FromBytes(this->Parameters->LocalPrivateKey, ScalarSize)
 
             BigInteger* LocalPrivateKeyScalar := Curve->PrepareScalar(LocalPrivateKey)
 
@@ -258,26 +394,26 @@ namespace TLS::Security {
                 PreMasterSecretBytes[Index] := PreMasterSecret->GetByte(Index) As i8
             }
 
-            Parameters->Local->PublicKey := LocalPublicKeyBytes
-            Parameters->PreMasterSecret := PreMasterSecretBytes
+            this->Parameters->Local->PublicKey := LocalPublicKeyBytes
+            this->Parameters->PreMasterSecret := PreMasterSecretBytes
 
             this->Hash := new SHA2_256()
             this->HMAC := new HMACWrapper(this->Hash)
-            this->PRF := new TLS_1_2_PRF(Parameters, this->HMAC)
+            this->PRF := new TLS_1_2_PRF(this->Parameters, this->HMAC)
             this->BulkCipher := new AES_GCM(AESKeySize::128)
 
-            Parameters->MasterSecret := this->PRF->GenerateMasterSecret(Parameters->PreMasterSecret, ScalarSize, "master secret", 48)
+            this->Parameters->MasterSecret := this->PRF->GenerateMasterSecret(this->Parameters->PreMasterSecret, ScalarSize, "master secret", 48)
 
-            Print("Master Secret:\n%hexdump\n", Parameters->MasterSecret, 48)
+            Print("Master Secret:\n%hexdump\n", this->Parameters->MasterSecret, 48)
 
-            Parameters->KeyBlock := this->PRF->GenerateKeyMaterial(Parameters->MasterSecret, 48, "key expansion", #ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock)
+            this->Parameters->KeyBlock := this->PRF->GenerateKeyMaterial(this->Parameters->MasterSecret, 48, "key expansion", #ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock)
 
-            Print("Key Block:\n%hexdump\n", Parameters->KeyBlock, #ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock)
+            Print("Key Block:\n%hexdump\n", this->Parameters->KeyBlock, #ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock)
 
-            ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock* KeyBlock := Parameters->KeyBlock
+            ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock* KeyBlock := this->Parameters->KeyBlock
 
-            DirectionalKeySet* ClientKeys := &Parameters->Client
-            DirectionalKeySet* ServerKeys := &Parameters->Server
+            DirectionalKeySet* ClientKeys := this->Parameters~>Client
+            DirectionalKeySet* ServerKeys := this->Parameters~>Server
 
             ClientKeys->EncryptionKey := KeyBlock->ClientEncryptionKey
             ClientKeys->IV := KeyBlock->ClientIV
@@ -298,7 +434,7 @@ namespace TLS::Security {
             FileWrite(KeyLogFile, "CLIENT_RANDOM ", 14)
 
             for (i32 Index := 0, Index < 32, Index++) {
-                i8 Byte := (Parameters->Client->Random As i8*)[Index]
+                i8 Byte := (this->Parameters->Client->Random As i8*)[Index]
                 i32 Upper := (Byte >> 4) & 0xF
                 i32 Lower := Byte & 0xF
                 FileWrite(KeyLogFile, "0123456789abcdef" + Upper, 1)
@@ -308,7 +444,7 @@ namespace TLS::Security {
             FileWrite(KeyLogFile, " ", 1)
 
             for (i32 Index := 0, Index < 48, Index++) {
-                i8 Byte := (Parameters->MasterSecret As i8*)[Index]
+                i8 Byte := (this->Parameters->MasterSecret As i8*)[Index]
                 i32 Upper := (Byte >> 4) & 0xF
                 i32 Lower := Byte & 0xF
                 FileWrite(KeyLogFile, "0123456789abcdef" + Upper, 1)

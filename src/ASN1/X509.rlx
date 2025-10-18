@@ -1,0 +1,177 @@
+
+
+namespace ASN1::X509 {
+
+    enum VersionNumber {
+        V1 := 0,
+        V2 := 1,
+        V3 := 3
+    }
+
+    enum AlgorithmIdentifier {
+        None,
+        RSA_ENCRYPTION,
+        SHA2_256_WITH_RSA_ENCRYPTION
+    }
+
+    class Certificate derives INew {
+        VersionNumber Version
+        BigInteger* SerialNumber
+
+        DER::IStringValue* NotValidBefore
+        DER::IStringValue* NotValidAfter
+
+        AlgorithmIdentifier SignatureAlgorithm
+
+        define void New(VersionNumber Version) {
+            this->Version := Version
+        }
+
+
+    }
+
+    class DistributionPoint derives INew {
+        AVLTree* DistinguishedNames ; <Hash(OID), IValue*>
+
+        define i64 HashOID(DER::ObjectIdentifierValue* OID) {
+            i8[100] String
+            i32 Length := FormatString(String, 100, "%asn1-der-oid", OID)
+
+            return FNV1A(String, Length)
+        }
+
+        define void DefineName(DER::ObjectIdentifierValue* OID, DER::IValue* Value) {
+            i64 Hash := this->HashOID(OID)
+
+            this->DistinguishedNames->InsertPointer(Hash, Value)
+        }
+
+        define DER::IValue* LookupName(DER::ObjectIdentifierValue* OID) {
+            i64 Hash := this->HashOID(OID)
+
+            return this->DistinguishedNames->GetPointer(Hash) As DER::IValue*
+        }
+
+        define i8* GetOIDName(DER::ObjectIdentifierValue* OID) {
+            i8[100] String
+            FormatString(String, 100, "%asn1-der-oid", OID)
+
+            if (StringEquals(String, "2.5.4.3")) {
+                return "CommonName"
+            }
+            else if (StringEquals(String, "2.5.4.5")) {
+                return "SerialNumber"
+            }
+            else if (StringEquals(String, "2.5.4.6")) {
+                return "CountryName"
+            }
+            else if (StringEquals(String, "2.5.4.7")) {
+                return "LocalityName"
+            }
+            else if (StringEquals(String, "2.5.4.8")) {
+                return "StateOrProvinceName"
+            }
+            else if (StringEquals(String, "2.5.4.9")) {
+                return "StreetAddress"
+            }
+            else if (StringEquals(String, "2.5.4.10")) {
+                return "OrganizationName"
+            }
+            else if (StringEquals(String, "2.5.4.11")) {
+                return "OrganizationalUnitName"
+            }
+            else if (StringEquals(String, "2.5.4.15")) {
+                return "BusinessCategory"
+            }
+            else if (StringEquals(String, "2.5.4.17")) {
+                return "PostalCode"
+            }
+            else if (StringEquals(String, "1.2.840.113549.1.9.1")) {
+                return "EmailAddress"
+            }
+            else {
+                return String
+            }
+        }
+    }
+
+
+    class Parser derives INew {
+        DER::Verifier* Verifier
+
+        define VersionNumber ParseVersion(DER::IValue* RawVersion) {
+            DER::SequenceValue* VersionSequence := this->Verifier->ExpectConstructed(DER::IdentifierClass::CONTEXT_SPECIFIC, RawVersion, "Expected version to be a constructed context-specific value")
+
+            this->Verifier->ExpectLength(1, VersionSequence, "Expected certificate version to have exactly one element")
+
+            return this->Verifier->ExpectSmallPositiveInteger(2, VersionSequence->At(0), "Expected version number 0, 1, or 2") As VersionNumber
+        }
+
+        define void ParseValidityBounds(DER::IValue* RawBounds, DER::IStringValue** OutNotBefore, DER::IStringValue** OutNotAfter) {
+            DER::SequenceValue* BoundsSequence := this->Verifier->ExpectSequence(RawBounds, "Expected validity bounds to be a sequence")
+
+            this->Verifier->ExpectLength(2, BoundsSequence, "Expected validity bounds to have exactly two elements")
+
+            OutNotBefore[0] := this->Verifier->Expect(DER::UniversalTag::UTC_TIME, BoundsSequence->At(0), "Expected NotValidBefore to be a UTC timestamp") As DER::IStringValue*
+            OutNotAfter[0] := this->Verifier->Expect(DER::UniversalTag::UTC_TIME, BoundsSequence->At(1), "Expected NotValidAfter to be a UTC timestamp") As DER::IStringValue*
+        }
+
+        define AlgorithmIdentifier ParseAlgorithmIdentifier(DER::IValue* RawAlgorithm) {
+            DER::SequenceValue* AlgorithmSequence := this->Verifier->ExpectSequence(RawAlgorithm, "Expected algorithm identifier to be a sequence")
+
+            this->Verifier->ExpectLength(2, AlgorithmSequence, "Expected algorithm identifier to have exactly two elements")
+
+            DER::ObjectIdentifierValue* AlgorithmOID := this->Verifier->Expect(DER::UniversalTag::OBJECT_IDENTIFIER, AlgorithmSequence->At(0), "Expected algorithm OID to be an OID") As DER::ObjectIdentifierValue*
+
+            i8[100] OIDString
+            i32 Length := FormatString(OIDString, 100, "%asn1-der-oid", AlgorithmOID)
+            OIDString[Length] := 0
+
+            if (StringEquals(OIDString, "1.2.840.113549.1.1.1")) {
+                return AlgorithmIdentifier::RSA_ENCRYPTION
+            }
+            else if (StringEquals(OIDString, "1.2.840.113549.1.1.11")) {
+                return AlgorithmIdentifier::SHA2_256_WITH_RSA_ENCRYPTION
+            }
+            else {
+                this->Verifier->Raise("Unknown or unsupported algorithm OID")
+                return AlgorithmIdentifier::None
+            }
+        }
+        
+        define void ParseCertificateToBeSigned(DER::SequenceValue* TBS) {
+            VersionNumber Version := VersionNumber::V1
+
+            i32 Index := 0
+
+            DER::IValue* MaybeVersion := this->Verifier->ExpectIndex(0, TBS, "Expected TBS certificate to have at least one element")
+
+            if (MaybeVersion->GetClass() = DER::IdentifierClass::CONTEXT_SPECIFIC && MaybeVersion->GetConstructed()) {
+                Index += 1
+                Version := this->ParseVersion(MaybeVersion)
+            }
+
+            Certificate* Result := new Certificate(Version)
+
+            DER::IValue* RawSerialNumber := this->Verifier->ExpectIndex(Index++, TBS, "Expected TBS certificate to have a serial number")
+            DER::IntegerValue* SerialNumber := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawSerialNumber, "Expected serial number to be an integer") As DER::IntegerValue*
+            Result->SerialNumber := SerialNumber->Value
+
+            DER::IValue* RawValidityBounds := this->Verifier->ExpectIndex(Index++, TBS, "Expected TBS certificate to have validity bounds")
+            this->ParseValidityBounds(RawValidityBounds, Result~>NotValidBefore, Result~>NotValidAfter)
+
+            DER::IValue* RawSignatureAlgorithm := this->Verifier->ExpectIndex(Index++, TBS, "Expected TBS certificate to have a signature algorithm")
+            Result->SignatureAlgorithm := this->ParseAlgorithmIdentifier(RawSignatureAlgorithm)
+
+
+
+
+            
+        }
+
+        define void Parse() {
+
+        }
+    }
+
+}

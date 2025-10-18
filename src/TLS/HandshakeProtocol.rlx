@@ -864,7 +864,7 @@ namespace TLS::HandshakeProtocol {
                 for (i32 Index := 0, Index < VersionCount, Index++) {
                     ASN1::DER::IValue* Item := VersionSequence->At(Index)
 
-                    if !(Item->Is(ASN1::DER::IdentifierClass::UNIVERSAL, ASN1::DER::UniversalTag::INTEGER)) {
+                    if !(Item->Is(ASN1::DER::UniversalTag::INTEGER)) {
                         Print("Certificate version item %i is not an integer\n", Index)
                         Exit(0)
                     }

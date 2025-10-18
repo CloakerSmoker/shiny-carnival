@@ -138,6 +138,8 @@ namespace TLS {
 
         Socket Remote
 
+        TLS::Security::ICertificate* Certificate
+
         TLS::RecordProtocol::Layer* RecordLayer
         TLS::HandshakeProtocol::Layer* HandshakeLayer
 
@@ -261,8 +263,10 @@ namespace TLS {
             }
         }
 
-        define void New(Socket Remote) {
+        define void New(Socket Remote, TLS::Security::ICertificate* Certificate) {
             this->Remote := Remote
+            this->Certificate := Certificate
+
             this->RecordLayer := new TLS::RecordProtocol::Layer(Remote)
             this->HandshakeLayer := new TLS::HandshakeProtocol::Layer(this->RecordLayer)
 
@@ -732,6 +736,61 @@ define void Client(i8* Server, i32 Port) {
 
 #Require "./src/Time.rlx"
 
+define void* ReadFile(i8* Path, i32* OutSize) {
+    i64 F := FileOpen(Path, FILE_READ)
+
+    if (F < 0) {
+        Print("Failed to open file %s\n", Path)
+        Exit(1)
+    }
+
+    i64 Size := FileGetSize(F)
+
+    void* Buffer := Alloc(Size)
+    FileRead(F, Buffer, Size As i32)
+
+    FileClose(F)
+
+    if (OutSize != null) {
+        *OutSize := Size As i32
+    }
+
+    return Buffer
+}
+
+#Require "./src/PEM.rlx"
+
+define TLS::Security::ICertificate* LoadCertificate(i8* PrivateKeyPath, i8* CertificatePath) {
+    i32 PrivateKeyPEMSize := 0
+    i8* PrivateKeyPEM := ReadFile(PrivateKeyPath, &PrivateKeyPEMSize)
+
+    i32 CertificatePEMSize := 0
+    i8* CertificatePEM := ReadFile(CertificatePath, &CertificatePEMSize)
+
+    i32 CertificateDataSize := 0
+    void* CertificateData := ParsePEM(
+        "-----BEGIN CERTIFICATE-----\r",
+        "\r-----END CERTIFICATE-----\r",
+        &CertificateDataSize,
+        CertificatePEM,
+        CertificatePEMSize
+    )
+
+    ASN1::PKCS8::Parser* PrivateKeyParser := new ASN1::PKCS8::Parser()
+    ASN1::PKCS8::PrivateKeyInfo* PrivateKeyInfo := PrivateKeyParser->ParsePEM(PrivateKeyPEM, PrivateKeyPEMSize)
+
+    if (PrivateKeyInfo->Algorithm != ASN1::X509::AlgorithmIdentifier::RSA_ENCRYPTION) {
+        Print("Unsupported private key algorithm %s\n", nameof:(PrivateKeyInfo->Algorithm))
+        Exit(1)
+    }
+
+    ASN1::PKCS8::RSAPrivateKey* PrivateKey := PrivateKeyInfo->PrivateKey
+
+    TLS::Security::RSACertificate* Result := new TLS::Security::RSACertificate(PrivateKey, null, CertificateData, CertificateDataSize)
+
+    return Result
+}
+
 define void Main(i32 ArgC, i8** ArgV) {
     if (ArgC < 2) {
         Print("Usage: %s <client|server> <args>\n", ArgV[0])
@@ -758,6 +817,17 @@ define void Main(i32 ArgC, i8** ArgV) {
         Client(Server, Port)
     }
     else if (StringEquals(ArgV[1], "server")) {
+        i8* PrivateKeyPath := "key.pem"
+        i8* CertificatePath := "cert.pem"
+
+        TLS::Security::ICertificate* Certificate := LoadCertificate(PrivateKeyPath, CertificatePath)
+
+        TLS::Security::RSACertificate* RSACert := (Certificate As TLS::Security::RSACertificate*)
+
+        ASN1::PKCS8::RSAPrivateKey* PrivateKey := RSACert->PrivateKey
+
+        PrivateKey->Print()
+
         i32 Port := 4433
 
         if (ArgC >= 3) {
@@ -787,7 +857,7 @@ define void Main(i32 ArgC, i8** ArgV) {
 
                 Print("Accepted connection from %ipv4\n", ClientAddress)
 
-                TLS::Server* Client := new TLS::Server(ClientSocket)
+                TLS::Server* Client := new TLS::Server(ClientSocket, Certificate)
 
                 Client->Establish()
 

@@ -1398,6 +1398,23 @@ struct BigInteger {
         return self:Logarithm(this, Base)
     }
 
+    define i32 BitCount() {
+        BigInteger* BitCount := this->Reference()->Logarithm(self:Constant(2))
+        i32 Result := 0
+
+        if (BitCount->DigitCount = 1) {
+            Result := BitCount->Digits[0]
+        }
+        else {
+            Print("PANIC!!! BITCOUNT SUX!!!!!\n")
+            *null := 0
+        }
+
+        BitCount->Release()
+
+        return Result
+    }
+
     static Primality IsBasicPrime(BigInteger* In) {
         In->Shrink()
 

@@ -1,0 +1,224 @@
+
+
+#Require "$/Memory.rlx"
+#Require "$/Console.rlx"
+
+#Require "./src/ASN1/Core.rlx"
+#Require "./src/ASN1/X509.rlx"
+
+#Require "./src/Decode.rlx"
+
+namespace ASN1::PKCS8 {
+
+    interface IPrivateKey {
+        virtual void Print()
+    }
+
+    class PrivateKeyInfo derives INew {
+        i32 Version
+        X509::AlgorithmIdentifier Algorithm
+        DER::OctetStringValue* RawPrivateKey
+        IPrivateKey* PrivateKey
+
+        define void Print() {
+            Print("PrivateKeyInfo:\n")
+            Print("  Version: %i\n", this->Version)
+            Print("  Algorithm: %s\n", nameof:(this->Algorithm))
+            Print("  PrivateKey:\n")
+            this->PrivateKey->Print()
+        }
+    }
+
+    enum RSAPrivateKeyVersion {
+        V0 := 0
+        V1 := 1
+    }
+
+    
+
+    struct SignatureData {
+        i8 Zero
+
+    }
+
+    class RSAPrivateKey implements IPrivateKey, derives INew {
+        RSAPrivateKeyVersion Version
+        BigInteger* Modulus
+        BigInteger* PublicExponent
+        BigInteger* PrivateExponent
+        BigInteger* Prime1
+        BigInteger* Prime2
+        BigInteger* Exponent1
+        BigInteger* Exponent2
+        BigInteger* Coefficient
+
+        define i32 BitSize() {
+            return this->Modulus->BitCount()
+        }
+
+        define void Print() {
+            Print("RSAPrivateKey:\n")
+            Print("  Version: %s\n", nameof:(this->Version))
+            Print("  Modulus: %bn-base-16\n", this->Modulus)
+            Print("%i\n", this->Modulus->BitCount())
+            Print("  PublicExponent: %bn-base-16\n", this->PublicExponent)
+            Print("  PrivateExponent: %bn-base-16\n", this->PrivateExponent)
+            Print("  Prime1: %bn-base-16\n", this->Prime1)
+            Print("  Prime2: %bn-base-16\n", this->Prime2)
+            Print("  Exponent1: %bn-base-16\n", this->Exponent1)
+            Print("  Exponent2: %bn-base-16\n", this->Exponent2)
+            Print("  Coefficient: %bn-base-16\n", this->Coefficient)
+        }
+
+        define BigInteger* Encrypt(BigInteger* Message) {
+            return Message->Power(this->PublicExponent, this->Modulus)
+        }
+
+        define BigInteger* Sign(BigInteger* Message) {
+            return null
+        }
+    }
+
+    class Parser derives INew {
+        DER::Parser* DERParser
+        DER::Verifier* Verifier
+
+        X509::Parser* X509Parser
+
+        define void New() {
+            this->DERParser := new DER::Parser(null, 0)
+            this->Verifier := new DER::Verifier()
+            this->X509Parser := new X509::Parser()
+        }
+
+        define RSAPrivateKey* ParseRSA(DER::IValue* Root) {
+            DER::SequenceValue* RootSequence := this->Verifier->ExpectSequence(Root, "Expected RSA private key root value to be a sequence")
+
+            RSAPrivateKey* Result := new RSAPrivateKey()
+
+            Result->Version := this->Verifier->ExpectSmallPositiveInteger(0, RootSequence->At(0), "Expected RSA private key version to be 0") As RSAPrivateKeyVersion
+
+            DER::IValue* RawModulus := this->Verifier->ExpectIndex(1, RootSequence, "Expected RSA private key to have a modulus")
+            DER::IntegerValue* Modulus := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawModulus, "Expected modulus to be an integer") As DER::IntegerValue*
+            Result->Modulus := Modulus->Value
+            
+            DER::IValue* RawPublicExponent := this->Verifier->ExpectIndex(2, RootSequence, "Expected RSA private key to have a public exponent")
+            DER::IntegerValue* PublicExponent := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawPublicExponent, "Expected public exponent to be an integer") As DER::IntegerValue*
+            Result->PublicExponent := PublicExponent->Value
+
+            DER::IValue* RawPrivateExponent := this->Verifier->ExpectIndex(3, RootSequence, "Expected RSA private key to have a private exponent")
+            DER::IntegerValue* PrivateExponent := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawPrivateExponent, "Expected private exponent to be an integer") As DER::IntegerValue*
+            Result->PrivateExponent := PrivateExponent->Value
+
+            DER::IValue* RawPrime1 := this->Verifier->ExpectIndex(4, RootSequence, "Expected RSA private key to have prime1")
+            DER::IntegerValue* Prime1 := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawPrime1, "Expected prime1 to be an integer") As DER::IntegerValue*
+            Result->Prime1 := Prime1->Value
+
+            DER::IValue* RawPrime2 := this->Verifier->ExpectIndex(5, RootSequence, "Expected RSA private key to have prime2")
+            DER::IntegerValue* Prime2 := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawPrime2, "Expected prime2 to be an integer") As DER::IntegerValue*
+            Result->Prime2 := Prime2->Value
+
+            DER::IValue* RawExponent1 := this->Verifier->ExpectIndex(6, RootSequence, "Expected RSA private key to have exponent1")
+            DER::IntegerValue* Exponent1 := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawExponent1, "Expected exponent1 to be an integer") As DER::IntegerValue*
+            Result->Exponent1 := Exponent1->Value
+            
+            DER::IValue* RawExponent2 := this->Verifier->ExpectIndex(7, RootSequence, "Expected RSA private key to have exponent2")
+            DER::IntegerValue* Exponent2 := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawExponent2, "Expected exponent2 to be an integer") As DER::IntegerValue*
+            Result->Exponent2 := Exponent2->Value
+
+            DER::IValue* RawCoefficient := this->Verifier->ExpectIndex(8, RootSequence, "Expected RSA private key to have coefficient")
+            DER::IntegerValue* Coefficient := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawCoefficient, "Expected coefficient to be an integer") As DER::IntegerValue*
+            Result->Coefficient := Coefficient->Value
+
+            return Result
+        }
+
+        define PrivateKeyInfo* Parse(DER::IValue* Root) {
+            DER::SequenceValue* RootSequence := this->Verifier->ExpectSequence(Root, "Expected PKCS#8 root value to be a sequence")
+
+            PrivateKeyInfo* Result := new PrivateKeyInfo()
+
+            DER::IValue* RawVersion := this->Verifier->ExpectIndex(0, RootSequence, "Expected PKCS#8 sequence to have at least a version number")
+            Result->Version := this->Verifier->ExpectSmallPositiveInteger(0, RawVersion, "Expected version number 0")
+
+            DER::IValue* RawAlgorithm := this->Verifier->ExpectIndex(1, RootSequence, "Expected PKCS#8 sequence to have an algorithm identifier")
+            Result->Algorithm := this->X509Parser->ParseAlgorithmIdentifier(RawAlgorithm)
+
+            DER::IValue* RawPrivateKey := this->Verifier->ExpectIndex(2, RootSequence, "Expected PKCS#8 sequence to have a private key")
+            Result->RawPrivateKey := this->Verifier->Expect(DER::UniversalTag::OCTET_STRING, RawPrivateKey, "Expected private key to be an octet string") As DER::OctetStringValue*
+
+            DER::Parser* PrivateKeyParser := new DER::Parser(Result->RawPrivateKey->Value, Result->RawPrivateKey->Length)
+            DER::IValue* PrivateKeyRoot := PrivateKeyParser->ParseValue()
+
+            if (Result->Algorithm = X509::AlgorithmIdentifier::RSA_ENCRYPTION) {
+                Result->PrivateKey := this->ParseRSA(PrivateKeyRoot)
+            }
+            else {
+                this->Verifier->Raise("Unsupported or unknown private key algorithm")
+            }
+
+            return Result
+        }
+
+        define PrivateKeyInfo* ParsePEM(i8* PEM, i32 Length) {
+            i8* Header := "-----BEGIN PRIVATE KEY-----\r"
+            i8* Footer := "\r-----END PRIVATE KEY-----\r"
+
+            if (Length < StringLength(Header) + StringLength(Footer)) {
+                this->Verifier->Raise("PEM data is too short to be valid")
+            }
+
+            if (CompareMemory(PEM, Header, StringLength(Header)) != 0) {
+                this->Verifier->Raise("PEM data does not start with expected header")
+            }
+
+            if (CompareMemory(PEM + Length - StringLength(Footer), Footer, StringLength(Footer)) != 0) {
+                this->Verifier->Raise("PEM data does not end with expected footer")
+            }
+
+            void* Body := PEM + StringLength(Header)
+            i32 BodyLength := Length - StringLength(Header) - StringLength(Footer)
+
+            i32 DecodedLength := (BodyLength / 4) * 3 + 3
+            void* Decoded := Alloc(DecodedLength)
+
+            Print("PEM body:\n")
+            for (i32 Index := 0, Index < BodyLength, Index++) {
+                Print("%c", (Body As i8*)[Index])
+            }
+            Print("\n")
+
+            DecodedLength := DecodeBase64(Body, BodyLength, Decoded)
+
+            Print("Decoded PEM data:\n%hexdump\n", Decoded, DecodedLength)
+
+            this->DERParser->Reset(Decoded, DecodedLength)
+            DER::IValue* Root := this->DERParser->ParseValue()
+
+            return this->Parse(Root)
+        }
+    }
+}
+
+#Require "$/File.rlx"
+#Require "$/Debug.rlx"
+
+define i32 Main() {
+    i64 F := FileOpen("key.pem", FILE_READ)
+    i32 Size := FileGetSize(F)
+    void* Data := FileReadAll(F)
+    FileClose(F)
+
+    ASN1::PKCS8::Parser* PKCS8Parser := new ASN1::PKCS8::Parser()
+    
+    try {
+        auto Info := PKCS8Parser->ParsePEM(Data, Size)
+    }
+    catch (i64 RawMessage) {
+        Print("Error parsing PKCS#8: %s\n", RawMessage)
+        return 1
+    }
+
+    Info->Print()
+    return 0
+}
