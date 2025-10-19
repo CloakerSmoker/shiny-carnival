@@ -52,6 +52,12 @@ namespace TLS {
         }
 
         interface ICipherSuite {
+            virtual void SendServerKeyExchange(NetworkPacket*)
+            virtual void ReceiveServerKeyExchange(NetworkPacket*)
+
+            virtual void SendClientKeyExchange(NetworkPacket*)
+            virtual void ReceiveClientKeyExchange(NetworkPacket*)
+
             virtual ::IHashFunction* GetHashFunction()
             virtual IPseudoRandomFunction* GetPseudoRandomFunction()
 

@@ -1,5 +1,5 @@
 
-namespace TLS::AlertProtocol {
+namespace TLS {
     enum AlertLevel As i8 {
         Warning := 1
         Fatal := 2
@@ -34,5 +34,13 @@ namespace TLS::AlertProtocol {
     struct Alert {
         AlertLevel Level
         AlertDescription Description
+    }
+    
+    class FatalAlert derives INew {
+        AlertProtocol::AlertDescription Description
+
+        define void New(AlertProtocol::AlertDescription Description) {
+            this->Description := Description
+        }
     }
 }

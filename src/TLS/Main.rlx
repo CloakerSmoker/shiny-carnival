@@ -278,6 +278,10 @@ namespace TLS {
                     Print("[%i]: %s (%x bytes)\n", Index, nameof:(Entry->Type), Entry->Length)
                 }
 
+                this->SendServerHello()
+                this->SendCertificates()
+                this->SendServerKeyExchange()
+
                 this->State := ServerState::ClientHelloReceived
             }
             else if (Record->Type = TLS::HandshakeProtocol::MessageType::ClientKeyExchange) {

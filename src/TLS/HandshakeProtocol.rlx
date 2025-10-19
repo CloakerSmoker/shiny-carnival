@@ -725,22 +725,7 @@ namespace TLS::HandshakeProtocol {
         Named := 0x3
     }
 
-    struct ServerKeyExchangeRecord unaligned {
-        CurveType Type
-        NamedCurve Curve
-        i8 PublicKeyLength
-        i8[0] PublicKey
 
-        define ServerKeyExchangeRecordTail* GetTail() {
-            return (this->PublicKey + ((this->PublicKeyLength As i32) & 0xFF)) As void*
-        }
-    }
-
-    struct ServerKeyExchangeRecordTail {
-        SignatureAlgorithm Algorithm
-        i16 SignatureLength
-        i8[0] Signature
-    }
 
     class ServerKeyExchangeHelper derives INew {
         CurveType Type
@@ -773,7 +758,12 @@ namespace TLS::HandshakeProtocol {
         }
 
         define void Write(NetworkPacket* Packet) {
-            
+            ServerKeyExchangeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::ServerKeyExchangeRecord", #ServerKeyExchangeRecord)
+            ServerKeyExchangeRecordTail* Tail := Record->GetTail()
+
+            Record->Type := this->Type
+            Record->Curve := Swap16(this->Curve As i16) As NamedCurve
+            Record->PublicKeyLength := (this->PublicKeyLength As i8) & 0xFF
         }
     }
 
