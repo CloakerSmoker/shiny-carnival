@@ -31,16 +31,22 @@ namespace TLS {
         NoRenegotiation := 100
     }
 
-    struct Alert {
+    struct AlertRecord {
         AlertLevel Level
         AlertDescription Description
     }
     
     class FatalAlert derives INew {
-        AlertProtocol::AlertDescription Description
+        AlertDescription Description
+        i8* Message
 
-        define void New(AlertProtocol::AlertDescription Description) {
+        define void New(AlertDescription Description, i8* Message) {
             this->Description := Description
+            this->Message := Message
         }
     }
+}
+
+define void Throw(void* ExceptionObject) {
+    Throw(ExceptionObject As i64)
 }

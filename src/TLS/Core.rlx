@@ -51,7 +51,16 @@ namespace TLS {
             virtual void* GenerateKeyMaterial(void* Key, i32 Size, i8* Label, i32 NeededBytes)
         }
 
+        namespace ::TLS::HandshakeProtocol {
+            struct Dummy {
+                i8 Dummy
+            }
+        }
+
         interface ICipherSuite {
+            virtual void SendServerExtensions(TLS::HandshakeProtocol::ExtensionList*, TLS::HandshakeProtocol::ExtensionList*)
+            virtual void ReceiveServerExtensions(TLS::HandshakeProtocol::ExtensionList*)
+
             virtual void SendServerKeyExchange(NetworkPacket*)
             virtual void ReceiveServerKeyExchange(NetworkPacket*)
 

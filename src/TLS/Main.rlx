@@ -20,6 +20,7 @@ define void* AllocateSecureRandom(i32 Size) {
 #Require "./src/TLS/AlertProtocol.rlx"
 #Require "./src/TLS/HandshakeProtocol.rlx"
 #Require "./src/TLS/Security.rlx"
+#Require "./src/TLS/CipherSuites/ECDHE_RSA_WITH_AES_128_GCM_SHA256.rlx"
 
 #Require "./src/network/Socket.rlx"
 
@@ -156,7 +157,7 @@ namespace TLS {
         TLS::HandshakeProtocol::ClientHelloHelper* ClientHello
         TLS::HandshakeProtocol::ServerHelloHelper* ServerHello
         TLS::HandshakeProtocol::CertificateHelper* Certificates
-        TLS::HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
+        ;TLS::HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
 
         CallbackNetworkLayer* OnHandshakeCallback
 
@@ -164,10 +165,10 @@ namespace TLS {
             return new CallbackNetworkLayer(this, Method)
         }
 
-        define void SendAlert(AlertProtocol::AlertLevel Level, AlertProtocol::AlertDescription Description) {
+        define void SendAlert(TLS::AlertLevel Level, TLS::AlertDescription Description) {
             NetworkPacket* Packet := this->RecordLayer->Enter(TLS::RecordProtocol::ContentType::Alert)
 
-            AlertProtocol::Alert* Alert := Packet->Mark("TLS::AlertProtocol::Alert", #TLS::AlertProtocol::Alert)
+            TLS::AlertRecord* Alert := Packet->Mark("TLS::AlertProtocol::Alert", #TLS::AlertRecord)
 
             Alert->Level := Level
             Alert->Description := Description
@@ -175,7 +176,7 @@ namespace TLS {
             this->RecordLayer->Leave(Packet)
         }
 
-        define void SendServerHello() {
+        define i8 SendServerHello() {
             i8 ValidCompression := false
 
             i32 Length := this->ClientHello->CompressionMethods->Length
@@ -188,9 +189,9 @@ namespace TLS {
 
             if !(ValidCompression) {
                 Print("Client does not support null compression\n")
-                this->SendAlert(AlertProtocol::AlertLevel::Fatal, AlertProtocol::AlertDescription::HandshakeFailure)
+                this->SendAlert(AlertLevel::Fatal, AlertDescription::HandshakeFailure)
                 this->State := ServerState::Closed
-                return
+                return false
             }
 
             CipherSuite SelectedSuite := TLS::CipherSuite::Invalid
@@ -199,6 +200,8 @@ namespace TLS {
 
             for (i32 Index := 0, Index < Length, Index++) {
                 CipherSuite Candidate := this->ClientHello->CipherSuites->Suites[Index]
+
+                Print("Client supports cipher suite %s %x\n", nameof:(Candidate), Candidate)
 
                 if (Candidate = TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256) {
                     SelectedSuite := Candidate
@@ -212,9 +215,13 @@ namespace TLS {
 
             if (SelectedSuite = TLS::CipherSuite::Invalid) {
                 Print("Client does not support any known cipher suites\n")
-                this->SendAlert(AlertProtocol::AlertLevel::Fatal, AlertProtocol::AlertDescription::HandshakeFailure)
+                this->SendAlert(AlertLevel::Fatal, AlertDescription::HandshakeFailure)
                 this->State := ServerState::Closed
-                return
+                return false
+            }
+
+            if (SelectedSuite = TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256) {
+                this->CipherSuite := new TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256::Suite(this->Security)
             }
 
             this->Security->Local->Random := AllocateSecureRandom(32)
@@ -223,17 +230,15 @@ namespace TLS {
             this->ServerHello->Cipher := SelectedSuite
             this->ServerHello->Compression := TLS::HandshakeProtocol::CompressionMethod::Null
 
-            i32 Count := this->ClientHello->Extensions->Count()
+            HandshakeProtocol::ExtensionList* ReplyExtensions := this->ServerHello->Extensions
 
-            for (i32 Index := 0, Index < Count, Index++) {
-                TLS::HandshakeProtocol::ExtensionEntry* Entry := this->ClientHello->Extensions->At(Index)
-
-                
-            }
+            this->CipherSuite->SendServerExtensions(this->ClientHello->Extensions, ReplyExtensions)
 
             NetworkPacket* Packet := this->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::ServerHello)
             this->ServerHello->Write(Packet)
             this->HandshakeLayer->Leave(Packet)
+
+            return true
         }
 
         define void SendCertificates() {
@@ -244,12 +249,14 @@ namespace TLS {
 
         define void SendServerKeyExchange() {
             NetworkPacket* Packet := this->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::ServerKeyExchange)
-            this->ServerKeyExchange->Write(Packet)
+            this->CipherSuite->SendServerKeyExchange(Packet)
             this->HandshakeLayer->Leave(Packet)
         }
 
         define void OnHandshake(NetworkPacket* Packet) {
             TLS::HandshakeProtocol::HandshakeRecord* Record := Packet->Get("TLS::HandshakeProtocol::Record")
+
+            Print("Server received handshake message of type %s\n", nameof:(Record->Type))
 
             if (Record->Type = TLS::HandshakeProtocol::MessageType::ClientHello) {
                 if (this->State != ServerState::AwaitingClientHello) {
@@ -278,16 +285,26 @@ namespace TLS {
                     Print("[%i]: %s (%x bytes)\n", Index, nameof:(Entry->Type), Entry->Length)
                 }
 
-                this->SendServerHello()
-                this->SendCertificates()
-                this->SendServerKeyExchange()
-
-                this->State := ServerState::ClientHelloReceived
+                if (this->SendServerHello()) {
+                    this->SendCertificates()
+                    this->SendServerKeyExchange()
+                    this->State := ServerState::ClientHelloReceived
+                }
             }
             else if (Record->Type = TLS::HandshakeProtocol::MessageType::ClientKeyExchange) {
                 if (this->State != ServerState::ClientHelloReceived) {
                     Print("Unexpected ClientKeyExchange\n")
                     Exit(1)
+                }
+
+                try {
+                    this->CipherSuite->ReceiveClientKeyExchange(Packet)
+                }
+                catch (i64 RawException) {
+                    FatalAlert* Exception := RawException As void*
+
+                    Print("Error processing ClientKeyExchange: %s\n", Exception->Message)
+                    this->SendAlert(AlertLevel::Fatal, Exception->Description)
                 }
             }
         }
@@ -319,7 +336,7 @@ namespace TLS {
             this->ClientHello := new TLS::HandshakeProtocol::ClientHelloHelper(TLS::VersionNumber::TLS_1_2)
             this->ServerHello := new TLS::HandshakeProtocol::ServerHelloHelper()
             this->Certificates := new TLS::HandshakeProtocol::CertificateHelper()
-            this->ServerKeyExchange := new TLS::HandshakeProtocol::ServerKeyExchangeHelper()
+            ;this->ServerKeyExchange := new TLS::HandshakeProtocol::ServerKeyExchangeHelper()
 
             this->Certificates->Add(this->SigningCertificate)
 
@@ -352,7 +369,7 @@ namespace TLS {
 
         TLS::HandshakeProtocol::ClientHelloHelper* ClientHello
         TLS::HandshakeProtocol::ServerHelloHelper* ServerHello
-        TLS::HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
+        ;TLS::HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
 
         HandshakeProtocol::CertificateHelper* Certificate
 
@@ -373,10 +390,10 @@ namespace TLS {
             this->State := ClientState::ServerChangedCipher
         }
 
-        define void SendAlert(AlertProtocol::AlertLevel Level, AlertProtocol::AlertDescription Description) {
+        define void SendAlert(AlertLevel Level, AlertDescription Description) {
             NetworkPacket* Packet := this->RecordLayer->Enter(TLS::RecordProtocol::ContentType::Alert)
 
-            AlertProtocol::Alert* Alert := Packet->Mark("TLS::AlertProtocol::Alert", #TLS::AlertProtocol::Alert)
+            AlertRecord* Alert := Packet->Mark("TLS::AlertProtocol::Alert", #AlertRecord)
 
             Alert->Level := Level
             Alert->Description := Description
@@ -385,27 +402,27 @@ namespace TLS {
         }
 
         define void Close() {
-            this->SendAlert(AlertProtocol::AlertLevel::Warning, AlertProtocol::AlertDescription::CloseNotify)
+            this->SendAlert(AlertLevel::Warning, AlertDescription::CloseNotify)
 
             this->State := ClientState::ClientClosed
         }
 
         define void OnAlert(NetworkPacket* Packet) {
-            AlertProtocol::Alert* Alert := Packet->Mark("TLS::AlertProtocol::Alert", #TLS::AlertProtocol::Alert)
+            AlertRecord* Alert := Packet->Mark("TLS::AlertProtocol::Alert", #AlertRecord)
 
             Print("Received alert at %s level, description %s\n", nameof:(Alert->Level), nameof:(Alert->Description))
 
-            if (Alert->Description = AlertProtocol::AlertDescription::CloseNotify) {
+            if (Alert->Description = AlertDescription::CloseNotify) {
                 if (this->State = ClientState::Established) {
-                    this->SendAlert(AlertProtocol::AlertLevel::Warning, AlertProtocol::AlertDescription::CloseNotify)
+                    this->SendAlert(AlertLevel::Warning, AlertDescription::CloseNotify)
                     this->State := ClientState::Closed
                 }
                 else if (this->State = ClientState::ClientClosed) {
                     this->State := ClientState::Closed
                 }
             }
-            else if (Alert->Level = AlertProtocol::AlertLevel::Fatal) {
-                this->SendAlert(AlertProtocol::AlertLevel::Warning, AlertProtocol::AlertDescription::CloseNotify)
+            else if (Alert->Level = AlertLevel::Fatal) {
+                this->SendAlert(AlertLevel::Warning, AlertDescription::CloseNotify)
                 this->State := ClientState::Closed
             }
         }
@@ -549,24 +566,24 @@ namespace TLS {
             else if (Record->Type = TLS::HandshakeProtocol::MessageType::ServerKeyExchange) {
                 this->ExpectState(ClientState::ServerSentCertificate, "ServerKeyExchange")
 
-                this->ServerKeyExchange->Read(Packet)
+                ;this->ServerKeyExchange->Read(Packet)
 
-                Print("Server Curve Type: %s\n", nameof:(this->ServerKeyExchange->Type))
-                Print("Server Curve: %s\n", nameof:(this->ServerKeyExchange->Curve))
+                ;Print("Server Curve Type: %s\n", nameof:(this->ServerKeyExchange->Type))
+                ;Print("Server Curve: %s\n", nameof:(this->ServerKeyExchange->Curve))
 
                 ;Print("Server Public Key:\n%hexdump\n", this->ServerKeyExchange->PublicKey, this->ServerKeyExchange->PublicKeyLength)
 
-                Print("Server Signature Algorithm: %s\n", nameof:(this->ServerKeyExchange->Algorithm))
+                ;Print("Server Signature Algorithm: %s\n", nameof:(this->ServerKeyExchange->Algorithm))
 
                 ;Print("Server Signature:\n%hexdump\n", this->ServerKeyExchange->Signature, this->ServerKeyExchange->SignatureLength)
 
-                this->Security->ServerKeyExchange := this->ServerKeyExchange
-                this->Security~>Server->PublicKey := this->ServerKeyExchange->PublicKey
+                ;this->Security->ServerKeyExchange := this->ServerKeyExchange
+                ;this->Security~>Server->PublicKey := this->ServerKeyExchange->PublicKey
 
-                this->Security->LocalPrivateKey := "thirty two bytes of random!"
+                ;this->Security->LocalPrivateKey := "thirty two bytes of random!"
 
                 if (this->ServerHello->Cipher = TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256) {
-                    this->CipherSuite := new TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256(this->Security)
+                    this->CipherSuite := new TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256::Suite(this->Security)
                 }
                 ;else if (this->ServerHello->Cipher = TLS::CipherSuite::ECDH_RSA_WITH_AES_128_SHA256) {
                 ;    this->CipherSuite := new TLS::EncryptedRecordProtocol::ECDH_RSA_WITH_AES_128_SHA256(this->SecurityParameters)
@@ -640,17 +657,17 @@ namespace TLS {
             this->ClientHello->AddCipherSuite(TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256)
             this->ClientHello->AddCompressionMethod(TLS::HandshakeProtocol::CompressionMethod::Null)
 
-            this->ClientHello->AddServerHostName(ServerName)
+            ;this->ClientHello->AddServerHostName(ServerName)
 
-            this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::Ed25519)
-            this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::Ed448)
-            this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::RSA_PKCS1_SHA256) ; this is a lie
-            this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::RSA_PKCS1_SHA512) ; this is a lie
+            ;this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::Ed25519)
+            ;this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::Ed448)
+            ;this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::RSA_PKCS1_SHA256) ; this is a lie
+            ;this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::RSA_PKCS1_SHA512) ; this is a lie
 
-            this->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::NamedCurve::x25519)
-            this->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::NamedCurve::x448)
+            ;this->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::NamedCurve::x25519)
+            ;this->ClientHello->AddSupportedGroup(TLS::HandshakeProtocol::NamedCurve::x448)
 
-            this->ClientHello->AddPointFormat(TLS::HandshakeProtocol::ECPointFormat::Uncompressed)
+            ;this->ClientHello->AddPointFormat(TLS::HandshakeProtocol::ECPointFormat::Uncompressed)
 
             this->SendClientHello()
 
@@ -679,7 +696,7 @@ namespace TLS {
 
             this->ClientHello := new TLS::HandshakeProtocol::ClientHelloHelper(TLS::VersionNumber::TLS_1_2)
             this->ServerHello := new TLS::HandshakeProtocol::ServerHelloHelper()
-            this->ServerKeyExchange := new TLS::HandshakeProtocol::ServerKeyExchangeHelper()
+            ;this->ServerKeyExchange := new TLS::HandshakeProtocol::ServerKeyExchangeHelper()
             this->Certificate := new HandshakeProtocol::CertificateHelper()
 
             INetworkLayer* OnChangeCipherSpec := this->MakeCallback(&self.OnChangeCipherSpec)

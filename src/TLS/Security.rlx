@@ -137,6 +137,7 @@ namespace TLS::Security {
     struct DirectionalKeySet {
         void* Random
         void* PublicKey
+        i32 PublicKeyLength
         void* MACKey
         void* EncryptionKey
         void* IV
@@ -150,7 +151,7 @@ namespace TLS::Security {
     class SecurityParameters derives INew {
         ConnectionRole Role
         HandshakeProtocol::ServerHelloHelper* ServerHello
-        HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
+        ;HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
 
         DirectionalKeySet Client
         DirectionalKeySet Server
@@ -319,375 +320,27 @@ namespace TLS::Security {
         }
     }
 
-    namespace ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
-        struct CurveInfo unaligned {
-            HandshakeProtocol::CurveType Type
-            HandshakeProtocol::NamedCurve Curve
-        }
-
-        struct KeyBlock {
-            i8[16] ClientEncryptionKey
-            i8[16] ServerEncryptionKey
-            i8[4] ClientIV
-            i8[4] ServerIV
-        }
-
-        struct ClientKeyExchangeRecord {
-            i8 PublicKeyLength
-            i8[0] PublicKey
-        }
-
-        struct ServerKeyExchangeRecord unaligned {
-            CurveType Type
-            NamedCurve Curve
-            i8 PublicKeyLength
-            i8[0] PublicKey
-
-            define ServerKeyExchangeRecordTail* GetTail() {
-                return (this->PublicKey + ((this->PublicKeyLength As i32) & 0xFF)) As void*
-            }
-        }
-
-        struct ServerKeyExchangeRecordTail {
-            SignatureAlgorithm Algorithm
-            i16 SignatureLength
-            i8[0] Signature
-        }
-
-        class Suite implements ICipherSuite, derives INew {
-            SecurityParameters* Parameters
-
-            ; Suite parameters
-            TLS::HandshakeProtocol::NamedCurve CurveName
-            SignatureAlgorithm SigningAlgorithm
-
-            ; Components
-            SHA2_256* Hash
-            HMACWrapper* HMAC
-            TLS_1_2_PRF* PRF
-            AES_GCM* BulkCipher
-
-            RFC7748::ICurve* Curve
-
-            define IHashFunction* GetHashFunction() {
-                return this->Hash
-            }
-            define IPseudoRandomFunction* GetPseudoRandomFunction() {
-                return this->PRF
-            }
-
-            define void New(SecurityParameters* Parameters) {
-                this->Parameters := Parameters
-            }
-
-            define void SendServerKeyExchange(NetworkPacket* Packet) {
-                ServerKeyExchangeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::KeyExchange", #ServerKeyExchangeRecord)
-
-                Record->Type := CurveType::Named
-                Record->Curve := Swap16(this->CurveName As i16) As NamedCurve
-
-                i32 ScalarSize := this->Curve->GetScalarSize()
-
-                Record->PublicKeyLength := PublicKeyLength As i8
-                MoveMemory(Record->PublicKey, this->Parameters->Local->PublicKey, PublicKeyLength)
-
-                ServerKeyExchangeRecordTail* Tail := Record->GetTail()
-
-                Tail->Algorithm := this->SigningAlgorithm
-
-                void* Signature := this->
-            }
-
-            define void ReceiveServerKeyExchange(NetworkPacket* Packet) {
-                Packet->AssertBound(#ServerKeyExchangeRecord)
-                ServerKeyExchangeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::KeyExchange", #ServerKeyExchangeRecord)
-
-                this->CurveName := Swap16(Record->Curve As i16) As TLS::HandshakeProtocol::NamedCurve
-
-                i32 PublicKeyLength := (Record->PublicKeyLength As i32) & 0xFF
-                Packet->AssertBound(PublicKeyLength)
-
-                void* PublicKey := Packet->Mark("TLS::HandshakeProtocol::KeyExchange::PublicKey", PublickKeyLength)
-                this->Parameters->Remote->PublicKeyLength := CloneMemory(PublicKey, PublicKeyLength)
-
-                Packet->AssertBound(#ServerKeyExchangeRecordTail)
-                ServerKeyExchangeRecordTail* Tail := Record->GetTail()
-
-                this->SigningAlgorithm := Tail->Algorithm
-                i32 SignatureLength := Swap16(Tail->SignatureLength) As i32
-                Packet->AssertBound(SignatureLength)
-
-                void* Signature := Tail->Mark("TLS::HandshakeProtocol::KeyExchange::Signature", SignatureLength)
-
-                ; TODO: Verify signature
-            }
-
-            define void ReceiveClientKeyExchange(NetworkPacket* Packet) {
-                Packet->AssertBound(#ClientKeyExchangeRecord)
-                ClientKeyExchangeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::KeyExchange", #ClientKeyExchangeRecord)
-
-                i32 PublicKeyLength := (Record->PublicKeyLength As i32) & 0xFF
-                Packet->AssertBound(PublicKeyLength)
-
-                if (PublicKeyLength != this->Curve->GetScalarSize()) {
-                    Print("Invalid public key length %i for curve %i\n", PublicKeyLength, this->CurveName)
-                    Throw(new FatalAlert(AlertDescription::IllegalParameter))
-                }
-
-                void* PublicKey := Packet->Mark("TLS::HandshakeProtocol::KeyExchange::PublicKey", PublicKeyLength)
-                this->Parameters->Remote->PublicKey := CloneMemory(PublicKey, PublicKeyLength)
-
-            }
-
-            define void ReceiveKeyExchange(NetworkPacket* Packet) {
-                KeyExchangeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::KeyExchange", #ServerKeyExchangeRecord)
-
-                this->Curve := Swap16(Record->Curve As i16) As TLS::HandshakeProtocol::NamedCurve
-
-                i32 PublicKeyLength := (Record->PublicKeyLength As i32) & 0xFF
-                Packet->AssertBound(PublicKeyLength)
-                void* PublicKey := Packet->Mark("TLS::HandshakeProtocol::KeyExchange::PublicKey", #ServerKeyExchangeRecordTail)
-
-                this->Parameters->Remote->PublicKeyLength := PublicKeyLength
-                this->Parameters->Remote->PublicKey := CloneMemory(Record->PublicKey, PublicKeyLength)
-
-                if (this->Parameters->IsClient()) {
-                    Packet->AssertBound(#ServerKeyExchangeRecordTail)
-                    ServerKeyExchangeRecordTail* Tail := Record->GetTail()
-
-                    this->SigningAlgorithm := Tail->Algorithm
-                    i32 SignatureLength := Swap16(Tail->SignatureLength) As i32
-                    Packet->AssertBound(SignatureLength)
-                    void* Signature := Tail->Mark("TLS::HandshakeProtocol::KeyExchange::Signature", SignatureLength)
-
-                    ; TODO: Verify signature
-                }
-            }
-
-            define i8 SendKeyExchange(NetworkPacket* Packet) {
-                KeyExchangeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::KeyExchange", #ServerKeyExchangeRecord)
-                
-
-                Record->Type := HandshakeProtocol::HandshakeType::ServerKeyExchange
-                Record->Curve := Swap16(this->Curve As i16) As NamedCurve
-
-                RFC7748::ICurve* CurveImpl := null
-
-                if (this->Curve = TLS::HandshakeProtocol::NamedCurve::x25519) {
-                    CurveImpl := new RFC7748::Curve25519()
-                }
-                else if (this->Curve = TLS::HandshakeProtocol::NamedCurve::x448) {
-                    CurveImpl := new RFC7748::Curve448()
-                }
-                else {
-                    Print("Unsupported curve %i (%s)\n", this->Curve, nameof:(this->Curve))
-                    Exit(1)
-                }
-
-                i32 ScalarSize := CurveImpl->GetScalarSize()
-
-                this->Parameters->LocalPrivateKey := Alloc(ScalarSize)
-                SecureFillRandom(this->Parameters->LocalPrivateKey, ScalarSize)
-
-                BigInteger* LocalPrivateKeyScalar := CurveImpl->PrepareScalar(BigInteger:FromBytes(this->Parameters->LocalPrivateKey, ScalarSize))
-
-                BigInteger* LocalPublicKey := CurveImpl->Multiply(new BigInteger(9), LocalPrivateKeyScalar)
-
-                i32 PublicKeyLength := ScalarSize
-
-                Record->PublicKeyLength := (PublicKeyLength As i8) & 0xFF
-
-                Tail->PublicKey := Alloc(PublicKeyLength)
-
-                for (i32 Index := 0, Index < PublicKeyLength, Index++) {
-                    (Tail->PublicKey As i8*)[Index] := LocalPublicKey->GetByte(Index) As i8
-                }
-
-                return 1 ; indicates that a signature is present
-            }
-
-            define void SignEphemeralKey(void** OutSignature, i32* OutSignatureLength) {
-                this->Hash->Prepare()
-                this->Hash->Update(this->Parameters->Client->Random, 32)
-                this->Hash->Update(this->Parameters->Server->Random, 32)
-                
-                CurveInfo Info {
-                    Type: HandshakeProtocol::CurveType::Named,
-                    Curve: this->Parameters->ServerKeyExchange->Curve
-                }
-
-                this->Hash->Update(&Info, #CurveInfo)
-                this->Hash->Update(this->Parameters->ServerKeyExchange->PublicKey, this->Parameters->ServerKeyExchange->PublicKeyLength)
-
-                i8[32] Digest
-                this->Hash->Finalize(Digest)
-
-                *OutSignature := this->Parameters->Certificate->Sign(Digest, 32, OutSignatureLength)
-            }
-
-            define void GenerateKeys() {
-                RFC7748::ICurve* Curve := null
-
-                TLS::HandshakeProtocol::NamedCurve CurveName := this->Parameters->ServerKeyExchange->Curve
-
-                if (CurveName = TLS::HandshakeProtocol::NamedCurve::x25519) {
-                    Curve := new RFC7748::Curve25519()
-                }
-                else if (CurveName = TLS::HandshakeProtocol::NamedCurve::x448) {
-                    Curve := new RFC7748::Curve448()
-                }
-                else {
-                    Print("Unsupported curve %i (%s)\n", CurveName, nameof:(CurveName))
-                    Exit(1)
-                }
-
-                i32 ScalarSize := Curve->GetScalarSize()
-
-                BigInteger* RemotePublicKey := BigInteger:FromBytes(this->Parameters->Remote->PublicKey, ScalarSize)
-                BigInteger* LocalPrivateKey := BigInteger:FromBytes(this->Parameters->LocalPrivateKey, ScalarSize)
-
-                BigInteger* LocalPrivateKeyScalar := Curve->PrepareScalar(LocalPrivateKey)
-
-                BigInteger* LocalPublicKey := Curve->Multiply(new BigInteger(9), LocalPrivateKeyScalar->Reference())
-                BigInteger* PreMasterSecret := Curve->Multiply(RemotePublicKey, LocalPrivateKeyScalar)
-
-                i8* LocalPublicKeyBytes := Alloc(ScalarSize)
-                i8* PreMasterSecretBytes := Alloc(ScalarSize)
-
-                for (i32 Index := 0, Index < ScalarSize, Index++) {
-                    LocalPublicKeyBytes[Index] := LocalPublicKey->GetByte(Index) As i8
-                    PreMasterSecretBytes[Index] := PreMasterSecret->GetByte(Index) As i8
-                }
-
-                this->Parameters->Local->PublicKey := LocalPublicKeyBytes
-                this->Parameters->PreMasterSecret := PreMasterSecretBytes
-
-                this->Hash := new SHA2_256()
-                this->HMAC := new HMACWrapper(this->Hash)
-                this->PRF := new TLS_1_2_PRF(this->Parameters, this->HMAC)
-                this->BulkCipher := new AES_GCM(AESKeySize::128)
-
-                this->Parameters->MasterSecret := this->PRF->GenerateMasterSecret(this->Parameters->PreMasterSecret, ScalarSize, "master secret", 48)
-
-                Print("Master Secret:\n%hexdump\n", this->Parameters->MasterSecret, 48)
-
-                this->Parameters->KeyBlock := this->PRF->GenerateKeyMaterial(this->Parameters->MasterSecret, 48, "key expansion", #ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock)
-
-                Print("Key Block:\n%hexdump\n", this->Parameters->KeyBlock, #ECDHE_RSA_WITH_AES_128_GCM_SHA256_KeyBlock)
-
-                KeyBlock* Keys := this->Parameters->KeyBlock
-
-                DirectionalKeySet* ClientKeys := this->Parameters~>Client
-                DirectionalKeySet* ServerKeys := this->Parameters~>Server
-
-                ClientKeys->EncryptionKey := Keys->ClientEncryptionKey
-                ClientKeys->IV := Keys->ClientIV
-
-                ServerKeys->EncryptionKey := Keys->ServerEncryptionKey
-                ServerKeys->IV := Keys->ServerIV
-
-                Print("Client Encryption Key:\n%hexdump\n", ClientKeys->EncryptionKey, 16)
-                Print("Client IV:\n%hexdump\n", ClientKeys->IV, 4)
-
-                Print("Server Encryption Key:\n%hexdump\n", ServerKeys->EncryptionKey, 16)
-                Print("Server IV:\n%hexdump\n", ServerKeys->IV, 4)
-
-                i64 KeyLogFile := 69 ;  FileOpen("rlxkeylog.log", FILE_CREATE_NEW | FILE_WRITE)
-
-                FileSeek(KeyLogFile, 0, SEEK_END)
-
-                FileWrite(KeyLogFile, "CLIENT_RANDOM ", 14)
-
-                for (i32 Index := 0, Index < 32, Index++) {
-                    i8 Byte := (this->Parameters->Client->Random As i8*)[Index]
-                    i32 Upper := (Byte >> 4) & 0xF
-                    i32 Lower := Byte & 0xF
-                    FileWrite(KeyLogFile, "0123456789abcdef" + Upper, 1)
-                    FileWrite(KeyLogFile, "0123456789abcdef" + Lower, 1)
-                }
-
-                FileWrite(KeyLogFile, " ", 1)
-
-                for (i32 Index := 0, Index < 48, Index++) {
-                    i8 Byte := (this->Parameters->MasterSecret As i8*)[Index]
-                    i32 Upper := (Byte >> 4) & 0xF
-                    i32 Lower := Byte & 0xF
-                    FileWrite(KeyLogFile, "0123456789abcdef" + Upper, 1)
-                    FileWrite(KeyLogFile, "0123456789abcdef" + Lower, 1)
-                }
-
-                FileWrite(KeyLogFile, "\n", 1)
-                FileTruncate(KeyLogFile, FileTell(KeyLogFile))
-
-                FileClose(KeyLogFile)
-            }
-
-            define i32 CalculateLeadingCipherTextSize() {
-                return 8 ; prepend 8 byte explicit nonce
-            }
-            define i32 CalculateFollowingCipherTextSize(void* Data, i32 Size) {
-                return 16 ; append 16 byte tag
-            }
-
-            define void Encrypt(void* Data, i32 DataLength, void* Authenticate, i32 AuthenticateLength) {
-                this->BulkCipher->SetKey(this->Parameters->Local->EncryptionKey)
-
-                i8[12] IV
-                MoveMemory(IV, this->Parameters->Local->IV, 4)
-                ;MoveMemory(IV + 4, "random 8", 8)
-                
-                SecureFillRandom(IV + 4, 8)
-
-                MoveMemory(Data, IV + 4, 8) ; prepend explicit nonce
-
-                ;Print("Nonce:\n%hexdump\n", IV, 12)
-
-                this->BulkCipher->SetIV(IV, 12)
-                this->BulkCipher->AuthenticateBytes(Authenticate, AuthenticateLength)
-                this->BulkCipher->EncryptBytes(Data + 8, DataLength)
-
-                this->BulkCipher->CalculateTag(Data + 8 + DataLength, 16)
-            }
-            define void Decrypt(void* Data, i32 DataLength, void* Authenticate, i32 AuthenticateLength) {
-                ;Print("AAD:\n%hexdump\n", Authenticate, AuthenticateLength)
-
-                this->BulkCipher->SetKey(this->Parameters->Remote->EncryptionKey)
-
-                i8[12] IV
-                MoveMemory(IV, this->Parameters->Remote->IV, 4)
-                MoveMemory(IV + 4, Data, 8) ; prepend explicit nonce
-
-                void* Tag := Data + DataLength - 16
-
-                this->BulkCipher->SetIV(IV, 12)
-
-                ;Print("Encrypted Data: \n%hexdump\n", Data + 8, DataLength - 8 - 16)
-
-                this->BulkCipher->AuthenticateBytes(Authenticate, AuthenticateLength)
-                this->BulkCipher->DecryptBytes(Data + 8, DataLength - 8 - 16)
-
-                i8[16] CalculatedTag
-                this->BulkCipher->CalculateTag(CalculatedTag, 16)
-
-    /*             Print("Message Tag   : ")
-                for (i32 Index := 0, Index < 16, Index++) {
-                    Print("%B", (Tag As i8*)[Index])
-                }
-                Print("\n")
-
-                Print("Calculated Tag: ")
-                for (i32 Index := 0, Index < 16, Index++) {
-                    Print("%B", (CalculatedTag As i8*)[Index])
-                }
-                Print("\n") */
-
-                if !(CompareMemory(Tag, CalculatedTag, 16)) {
-                    Print("Tag does not match\n")
-                    Exit(1)
-                }
-            }
-        }
+    enum CurveType As i8 {
+        Named := 0x3
     }
+
+    enum NamedCurve As i16 {
+        x25519 := 0x1d
+        x448 := 0x1e
+    }
+
+    enum ECPointFormat As i8 {
+        Uncompressed := 0
+    }
+
+    enum SignatureAlgorithm As i16 {
+        Ed25519 := 0x0807
+        Ed448 := 0x0808
+        RSA_PKCS1_SHA256 := 0x0401
+        RSA_PKCS1_SHA512 := 0x0601
+    }
+
+    
 /* 
     class SecurityContext derives INew {
         SecurityParameters* Parameters
