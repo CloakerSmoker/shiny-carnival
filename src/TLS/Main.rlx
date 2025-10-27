@@ -213,6 +213,31 @@ namespace TLS {
                 }
             }
 
+            if (this->ClientHello->Extensions->Has(HandshakeProtocol::ExtensionType::RenegotiationInfo)) {
+                Print("Client supports secure renegotiation\n")
+                
+                this->ServerHello->Extensions->Add(
+                    TLS::HandshakeProtocol::ExtensionType::RenegotiationInfo,
+                    i8[0],
+                    1
+                )
+            }
+            else {
+                for (i32 Index := 0, Index < Length, Index++) {
+                    CipherSuite Suite := this->ClientHello->CipherSuites->Suites[Index]
+
+                    if (Suite = CipherSuite::SECURE_RENEGOTIATION_MARKER) {
+                        Print("Client supports secure renegotiation\n")
+                        
+                        this->ServerHello->Extensions->Add(
+                            TLS::HandshakeProtocol::ExtensionType::RenegotiationInfo,
+                            i8[0],
+                            1
+                        )
+                    }
+                }
+            }
+
             if (SelectedSuite = TLS::CipherSuite::Invalid) {
                 Print("Client does not support any known cipher suites\n")
                 this->SendAlert(AlertLevel::Fatal, AlertDescription::HandshakeFailure)
@@ -238,6 +263,8 @@ namespace TLS {
             this->ServerHello->Write(Packet)
             this->HandshakeLayer->Leave(Packet)
 
+            this->RecordLayer->SetVersion(TLS::VersionNumber::TLS_1_2)
+
             return true
         }
 
@@ -250,6 +277,11 @@ namespace TLS {
         define void SendServerKeyExchange() {
             NetworkPacket* Packet := this->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::ServerKeyExchange)
             this->CipherSuite->SendServerKeyExchange(Packet)
+            this->HandshakeLayer->Leave(Packet)
+        }
+
+        define void SendServerHelloDone() {
+            NetworkPacket* Packet := this->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::ServerHelloDone)
             this->HandshakeLayer->Leave(Packet)
         }
 
@@ -268,8 +300,8 @@ namespace TLS {
 
                 auto Parameters := new TLS::Security::SecurityParameters()
 
+                Parameters->Certificate := this->SigningCertificate
                 Parameters->SetLocalIsServer()
-
                 Parameters~>Client->Random := this->ClientHello->Random
 
                 this->Security := Parameters
@@ -288,6 +320,7 @@ namespace TLS {
                 if (this->SendServerHello()) {
                     this->SendCertificates()
                     this->SendServerKeyExchange()
+                    this->SendServerHelloDone()
                     this->State := ServerState::ClientHelloReceived
                 }
             }
@@ -301,6 +334,8 @@ namespace TLS {
                     this->CipherSuite->ReceiveClientKeyExchange(Packet)
                 }
                 catch (i64 RawException) {
+                    Print("Caught exception processing ClientKeyExchange %x\n", RawException)
+
                     FatalAlert* Exception := RawException As void*
 
                     Print("Error processing ClientKeyExchange: %s\n", Exception->Message)
@@ -338,11 +373,14 @@ namespace TLS {
             this->Certificates := new TLS::HandshakeProtocol::CertificateHelper()
             ;this->ServerKeyExchange := new TLS::HandshakeProtocol::ServerKeyExchangeHelper()
 
+            this->ServerHello->SetVersion(TLS::VersionNumber::TLS_1_2)
+
             this->Certificates->Add(this->SigningCertificate)
 
             INetworkLayer* OnHandshake := this->MakeCallback(&self.OnHandshake)
 
             this->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ClientHello, OnHandshake)
+            this->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ClientKeyExchange, OnHandshake)
 
             this->State := ServerState::AwaitingClientHello
         }

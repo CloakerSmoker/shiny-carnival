@@ -2,6 +2,7 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
     struct CurveInfo unaligned {
         CurveType Type
         NamedCurve Curve
+        i8 PublicKeyLength
     }
 
     struct KeyBlock {
@@ -60,13 +61,66 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             this->Parameters := Parameters
         }
 
+        define void SetCurve(NamedCurve Curve) {
+            this->CurveName := Curve
+
+            if (Curve = NamedCurve::x25519) {
+                this->Curve := new RFC7748::Curve25519()
+            }
+            else if (Curve = NamedCurve::x448) {
+                this->Curve := new RFC7748::Curve448()
+            }
+            else {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Unsupported curve"))
+            }
+
+            this->PublicKeyLength := this->Curve->GetScalarSize()
+            this->Parameters->LocalPrivateKey := AllocateSecureRandom(this->PublicKeyLength)
+
+            BigInteger* PrivateKey := BigInteger:FromBytes(this->Parameters->LocalPrivateKey, this->PublicKeyLength)
+            BigInteger* PrivateKeyScalar := this->Curve->PrepareScalar(PrivateKey)
+
+            BigInteger* LocalPublicKey := this->Curve->Multiply(new BigInteger(9), PrivateKeyScalar->Reference())
+
+            i8* LocalPublicKeyBytes := Alloc(this->PublicKeyLength)
+
+            for (i32 Index := 0, Index < this->PublicKeyLength, Index++) {
+                LocalPublicKeyBytes[Index] := LocalPublicKey->GetByte(Index) As i8
+            }
+
+            this->Parameters->Local->PublicKey := LocalPublicKeyBytes
+        }
+
         define void SendServerExtensions(HandshakeProtocol::ExtensionList* ClientExtensions, HandshakeProtocol::ExtensionList* ServerExtensions) {
+            if !(ClientExtensions->Has(HandshakeProtocol::ExtensionType::SignatureAlgorithms)) {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client did not provide supported signature algorithms extension"))
+            }
+
+            HandshakeProtocol::ExtensionEntry* SignatureAlgorithmsEntry := ClientExtensions->Get(HandshakeProtocol::ExtensionType::SignatureAlgorithms)
+
+            i32 Count := SignatureAlgorithmsEntry->Length / 2
+            i16* RawSignatureAlgorithms := SignatureAlgorithmsEntry->Data As i16*
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                SignatureAlgorithm Algorithm := Swap16(RawSignatureAlgorithms[Index]) As SignatureAlgorithm
+                
+                if (Algorithm = SignatureAlgorithm::RSA_PKCS1_SHA256) {
+                    this->SigningAlgorithm := SignatureAlgorithm::RSA_PKCS1_SHA256
+                    break
+                }
+            }
+
+            if (this->SigningAlgorithm = SignatureAlgorithm::Invalid) {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client does not support required signature algorithm"))
+            }
+
+
             if !(ClientExtensions->Has(HandshakeProtocol::ExtensionType::SupportedGroups)) {
                 Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client did not require supported groups extension"))
             }
 
             i16[2] SupportedGroups
-            SupportedGroups[0] := Swap16(4)
+            SupportedGroups[0] := Swap16(2)
             SupportedGroups[1] := Swap16(NamedCurve::x25519 As i16)
 
             ServerExtensions->Add(
@@ -75,8 +129,7 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
                 4
             )
 
-            this->CurveName := NamedCurve::x25519
-            this->Curve := new RFC7748::Curve25519()
+            this->SetCurve(NamedCurve::x25519) ; TODO: Choose based on client support
 
             if !(ClientExtensions->Has(HandshakeProtocol::ExtensionType::ECPointFormats)) {
                 Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client did not require EC point formats extension"))
@@ -97,6 +150,8 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             ; TODO
         }
 
+        declare void GenerateKeys()
+
         define void SendServerKeyExchange(NetworkPacket* Packet) {
             ServerKeyExchangeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::KeyExchange", #ServerKeyExchangeRecord)
 
@@ -115,12 +170,34 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             Packet->Mark("TLS::HandshakeProtocol::KeyExchange::Tail", #ServerKeyExchangeRecordTail)
             ServerKeyExchangeRecordTail* Tail := Record->GetTail()
 
-            Tail->Algorithm := this->SigningAlgorithm
+            Tail->Algorithm := Swap16(this->SigningAlgorithm As i16) As SignatureAlgorithm
+
+            void* SignatureData := Alloc(32 + 32 + 3 + ScalarSize)
+
+            MoveMemory(SignatureData, this->Parameters->Client->Random, 32)
+            MoveMemory(SignatureData + 32, this->Parameters->Server->Random, 32)
+            CurveInfo Info {
+                Type: CurveType::Named,
+                Curve: Swap16(this->CurveName As i16) As NamedCurve,
+                PublicKeyLength: ScalarSize As i8
+            }
+            MoveMemory(SignatureData + 64, &Info, #CurveInfo)
+            MoveMemory(SignatureData + 64 + #CurveInfo, Record->PublicKey, ScalarSize)
+
+            Print("Signature Data:\n%hexdump\n", SignatureData, 64 + #CurveInfo + ScalarSize)
+
+            Print("Signature Data: ")
+
+            for (i32 Index := 0, Index < 64 + #CurveInfo + ScalarSize, Index++) {
+                Print("%B", (SignatureData As i8*)[Index])
+            }
+
+            Print("\n")
 
             i32 SignatureLength := 0
             void* Signature := this->Parameters->Certificate->Sign(
-                this->Parameters->Server->PublicKey,
-                this->Parameters->Server->PublicKeyLength,
+                SignatureData,
+                64 + #CurveInfo + ScalarSize,
                 &SignatureLength
             )
 
@@ -134,7 +211,7 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             Packet->AssertBound(#ServerKeyExchangeRecord)
             ServerKeyExchangeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::KeyExchange", #ServerKeyExchangeRecord)
 
-            this->CurveName := Swap16(Record->Curve As i16) As NamedCurve
+            this->SetCurve(Swap16(Record->Curve As i16) As NamedCurve)
 
             i32 PublicKeyLength := (Record->PublicKeyLength As i32) & 0xFF
             Packet->AssertBound(PublicKeyLength)
@@ -147,7 +224,7 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             Packet->AssertBound(#ServerKeyExchangeRecordTail)
             ServerKeyExchangeRecordTail* Tail := Record->GetTail()
 
-            this->SigningAlgorithm := Tail->Algorithm
+            this->SigningAlgorithm := Swap16(Tail->Algorithm As i16) As SignatureAlgorithm
             i32 SignatureLength := Swap16(Tail->SignatureLength) As i32
             Packet->AssertBound(SignatureLength)
 
@@ -171,6 +248,7 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             void* PublicKey := Packet->Mark("TLS::HandshakeProtocol::KeyExchange::PublicKey", PublicKeyLength)
             this->Parameters->Remote->PublicKey := CloneMemory(PublicKey, PublicKeyLength)
 
+            this->GenerateKeys()
         }
 
         define void SendClientKeyExchange(NetworkPacket* Packet) {
@@ -205,38 +283,20 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
         }
 
         define void GenerateKeys() {
-            RFC7748::ICurve* Curve := null
-
-            if (this->CurveName = NamedCurve::x25519) {
-                Curve := new RFC7748::Curve25519()
-            }
-            else if (this->CurveName = NamedCurve::x448) {
-                Curve := new RFC7748::Curve448()
-            }
-            else {
-                Print("Unsupported curve %i (%s)\n", this->CurveName, nameof:(this->CurveName))
-                Exit(1)
-            }
-
-            i32 ScalarSize := Curve->GetScalarSize()
+            i32 ScalarSize := this->Curve->GetScalarSize()
 
             BigInteger* RemotePublicKey := BigInteger:FromBytes(this->Parameters->Remote->PublicKey, ScalarSize)
             BigInteger* LocalPrivateKey := BigInteger:FromBytes(this->Parameters->LocalPrivateKey, ScalarSize)
 
-            BigInteger* LocalPrivateKeyScalar := Curve->PrepareScalar(LocalPrivateKey)
+            BigInteger* LocalPrivateKeyScalar := this->Curve->PrepareScalar(LocalPrivateKey)
+            BigInteger* PreMasterSecret := this->Curve->Multiply(RemotePublicKey, LocalPrivateKeyScalar)
 
-            BigInteger* LocalPublicKey := Curve->Multiply(new BigInteger(9), LocalPrivateKeyScalar->Reference())
-            BigInteger* PreMasterSecret := Curve->Multiply(RemotePublicKey, LocalPrivateKeyScalar)
-
-            i8* LocalPublicKeyBytes := Alloc(ScalarSize)
             i8* PreMasterSecretBytes := Alloc(ScalarSize)
 
             for (i32 Index := 0, Index < ScalarSize, Index++) {
-                LocalPublicKeyBytes[Index] := LocalPublicKey->GetByte(Index) As i8
                 PreMasterSecretBytes[Index] := PreMasterSecret->GetByte(Index) As i8
             }
 
-            this->Parameters->Local->PublicKey := LocalPublicKeyBytes
             this->Parameters->PreMasterSecret := PreMasterSecretBytes
 
             this->Hash := new SHA2_256()
@@ -269,7 +329,7 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             Print("Server Encryption Key:\n%hexdump\n", ServerKeys->EncryptionKey, 16)
             Print("Server IV:\n%hexdump\n", ServerKeys->IV, 4)
 
-            i64 KeyLogFile := 69 ;  FileOpen("rlxkeylog.log", FILE_CREATE_NEW | FILE_WRITE)
+            i64 KeyLogFile := FileOpen("rlxkeylog.log", FILE_CREATE_NEW | FILE_WRITE)
 
             FileSeek(KeyLogFile, 0, SEEK_END)
 

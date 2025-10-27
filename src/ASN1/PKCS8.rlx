@@ -71,7 +71,7 @@ namespace ASN1::PKCS8 {
         }
 
         define BigInteger* Encrypt(BigInteger* Message) {
-            return Message->Power(this->PublicExponent, this->Modulus)
+            return Message->Power(this->PrivateExponent->Reference(), this->Modulus->Reference())
         }
 
         define BigInteger* Sign(BigInteger* Message) {

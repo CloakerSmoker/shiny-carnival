@@ -100,14 +100,14 @@ namespace TLS::Security {
             Header->Type := PKCS1_5::MessageType::DigestInfo
 
 
-            i32 PaddingNeeded := this->PublicKeySize - 3 - DataSize
+            i32 PaddingNeeded := this->PublicKeySize - 3 - 19 - 32
             i8* Tail := MessageBytes + 2
 
             for (i32 Index := 0, Index < PaddingNeeded, Index++) {
                 Tail[Index] := 0xFF As i8
             }
 
-            Tail += PaddingNeeded
+            Tail += PaddingNeeded + 1
 
             MoveMemory(Tail, DigestInfoDER, 19)
             Tail += 19
@@ -116,9 +116,29 @@ namespace TLS::Security {
             this->Hash->Update(Data, DataSize)
             this->Hash->Finalize(Tail)
 
+            Print("Data Hash:\n%hexdump\n", Tail, 32)
+
+            for (i32 Index := 0, Index < this->PublicKeySize / 2, Index++) {
+                i8 Temp := MessageBytes[Index]
+                MessageBytes[Index] := MessageBytes[this->PublicKeySize - Index - 1]
+                MessageBytes[this->PublicKeySize - Index - 1] := Temp
+            }
+
             BigInteger* MessageInteger := BigInteger:FromBytes(MessageBytes, this->PublicKeySize)
 
+            Print("Message to sign:\n%hexdump\n", Message, this->PublicKeySize)
+            Print("Message Integer: %bn-base-16\n", MessageInteger)
+
             BigInteger* Signature := this->PrivateKey->Encrypt(MessageInteger)
+
+            Print("Signature Integer: %bn-base-16\n", Signature)
+
+            BigInteger* Decrypted := Signature->Reference()->Power(
+                this->PrivateKey->PublicExponent->Reference(),
+                this->PrivateKey->Modulus->Reference()
+            )
+
+            Print("Decrypted Integer: %bn-base-16\n", Decrypted)
 
             *OutSignatureSize := this->PublicKeySize
 
@@ -334,6 +354,7 @@ namespace TLS::Security {
     }
 
     enum SignatureAlgorithm As i16 {
+        Invalid := 0x0000
         Ed25519 := 0x0807
         Ed448 := 0x0808
         RSA_PKCS1_SHA256 := 0x0401
