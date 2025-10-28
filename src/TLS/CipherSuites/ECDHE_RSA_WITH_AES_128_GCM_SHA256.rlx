@@ -75,7 +75,7 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             }
 
             this->PublicKeyLength := this->Curve->GetScalarSize()
-            this->Parameters->LocalPrivateKey := AllocateSecureRandom(this->PublicKeyLength)
+            this->Parameters->LocalPrivateKey := AllocateSecureRandom(32)
 
             BigInteger* PrivateKey := BigInteger:FromBytes(this->Parameters->LocalPrivateKey, this->PublicKeyLength)
             BigInteger* PrivateKeyScalar := this->Curve->PrepareScalar(PrivateKey)
@@ -158,37 +158,33 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             Record->Type := CurveType::Named
             Record->Curve := Swap16(this->CurveName As i16) As NamedCurve
 
-            i32 ScalarSize := this->Curve->GetScalarSize()
+            Packet->Mark("TLS::HandshakeProtocol::KeyExchange::PublicKey", this->PublicKeyLength)
 
-            this->Parameters->Server->PublicKey := AllocateSecureRandom(ScalarSize)
-
-            Packet->Mark("TLS::HandshakeProtocol::KeyExchange::PublicKey", ScalarSize)
-
-            Record->PublicKeyLength := ScalarSize As i8
-            MoveMemory(Record->PublicKey, this->Parameters->Server->PublicKey, ScalarSize)
+            Record->PublicKeyLength := this->PublicKeyLength As i8
+            MoveMemory(Record->PublicKey, this->Parameters->Server->PublicKey, this->PublicKeyLength)
 
             Packet->Mark("TLS::HandshakeProtocol::KeyExchange::Tail", #ServerKeyExchangeRecordTail)
             ServerKeyExchangeRecordTail* Tail := Record->GetTail()
 
             Tail->Algorithm := Swap16(this->SigningAlgorithm As i16) As SignatureAlgorithm
 
-            void* SignatureData := Alloc(32 + 32 + 3 + ScalarSize)
+            void* SignatureData := Alloc(32 + 32 + #CurveInfo + this->PublicKeyLength)
 
             MoveMemory(SignatureData, this->Parameters->Client->Random, 32)
             MoveMemory(SignatureData + 32, this->Parameters->Server->Random, 32)
             CurveInfo Info {
                 Type: CurveType::Named,
                 Curve: Swap16(this->CurveName As i16) As NamedCurve,
-                PublicKeyLength: ScalarSize As i8
+                PublicKeyLength: this->PublicKeyLength As i8
             }
             MoveMemory(SignatureData + 64, &Info, #CurveInfo)
-            MoveMemory(SignatureData + 64 + #CurveInfo, Record->PublicKey, ScalarSize)
+            MoveMemory(SignatureData + 64 + #CurveInfo, Record->PublicKey, this->PublicKeyLength)
 
-            Print("Signature Data:\n%hexdump\n", SignatureData, 64 + #CurveInfo + ScalarSize)
+            Print("Signature Data:\n%hexdump\n", SignatureData, 64 + #CurveInfo + this->PublicKeyLength)
 
             Print("Signature Data: ")
 
-            for (i32 Index := 0, Index < 64 + #CurveInfo + ScalarSize, Index++) {
+            for (i32 Index := 0, Index < 64 + #CurveInfo + this->PublicKeyLength, Index++) {
                 Print("%B", (SignatureData As i8*)[Index])
             }
 
@@ -197,7 +193,7 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             i32 SignatureLength := 0
             void* Signature := this->Parameters->Certificate->Sign(
                 SignatureData,
-                64 + #CurveInfo + ScalarSize,
+                64 + #CurveInfo + this->PublicKeyLength,
                 &SignatureLength
             )
 
@@ -240,7 +236,7 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             i32 PublicKeyLength := (Record->PublicKeyLength As i32) & 0xFF
             Packet->AssertBound(PublicKeyLength)
 
-            if (PublicKeyLength != this->Curve->GetScalarSize()) {
+            if (PublicKeyLength != this->PublicKeyLength) {
                 i8* Message := FormatString("Invalid public key length %i for curve %i\n", PublicKeyLength, this->CurveName)
                 Throw(new FatalAlert(AlertDescription::IllegalParameter, Message))
             }

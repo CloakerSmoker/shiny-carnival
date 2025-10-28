@@ -249,6 +249,8 @@ namespace TLS {
                 this->CipherSuite := new TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256::Suite(this->Security)
             }
 
+            this->RecordLayer->SetSecurityParameters(this->Security, this->CipherSuite)
+
             this->Security->Local->Random := AllocateSecureRandom(32)
             MoveMemory(this->ServerHello->Random, this->Security->Local->Random, 32)
 
@@ -282,6 +284,55 @@ namespace TLS {
 
         define void SendServerHelloDone() {
             NetworkPacket* Packet := this->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::ServerHelloDone)
+            this->HandshakeLayer->Leave(Packet)
+        }
+
+        define void* CalculateVerifyData(i8* Label, i32 IgnoreHandshakeCount) {
+            IHashFunction* Hash := this->CipherSuite->GetHashFunction()
+
+            Hash->Prepare()
+
+            i32 HandshakeCount := this->HandshakeLayer->Messages->Count() - IgnoreHandshakeCount
+
+            for (i32 Index := 0, Index < HandshakeCount, Index++) {
+                NetworkPacket* Message := this->HandshakeLayer->Messages->At(Index)
+
+                ;Print("Handshake Message %i:\n%hexdump\n", Index, Message->Buffer, Message->Size)
+
+                Hash->Update(Message->Buffer, Message->Size)
+            }
+
+            HashFunctionInfo Info
+            Hash->GetInfo(&Info)
+
+            void* HandshakeHash := Alloc(Info.OutputSize)
+
+            Hash->Finalize(HandshakeHash)
+
+            TLS::Security::IPseudoRandomFunction* PRF := this->CipherSuite->GetPseudoRandomFunction()
+
+            void* VerifyData := PRF->Generate(this->Security->MasterSecret, 48, Label, HandshakeHash, Info.OutputSize, 12)
+
+            Free(HandshakeHash)
+
+            return VerifyData
+        }
+
+        define void SendChangeCipherSpec() {
+            NetworkPacket* Packet := this->RecordLayer->Enter(TLS::RecordProtocol::ContentType::ChangeCipherSpec)
+            MoveMemory(Packet->Bump(1), i8[1], 1)
+            this->RecordLayer->Leave(Packet)
+
+            this->RecordLayer->EnableLocalEncryption()
+        }
+
+        define void SendServerHandshakeFinished() {
+            NetworkPacket* Packet := this->HandshakeLayer->Enter(TLS::HandshakeProtocol::MessageType::Finished)
+
+            void* VerifyData := this->CalculateVerifyData("server finished", 0)
+            MoveMemory(Packet->Bump(12), VerifyData, 12)
+            Free(VerifyData)
+
             this->HandshakeLayer->Leave(Packet)
         }
 
@@ -332,6 +383,7 @@ namespace TLS {
 
                 try {
                     this->CipherSuite->ReceiveClientKeyExchange(Packet)
+                    this->State := ServerState::ClientKeyExchanged
                 }
                 catch (i64 RawException) {
                     Print("Caught exception processing ClientKeyExchange %x\n", RawException)
@@ -342,8 +394,57 @@ namespace TLS {
                     this->SendAlert(AlertLevel::Fatal, Exception->Description)
                 }
             }
+            else if (Record->Type = TLS::HandshakeProtocol::MessageType::Finished) {
+                if (this->State != ServerState::ClientChangedCipher) {
+                    Print("Unexpected Finished\n")
+                    Exit(1)
+                }
+
+                void* ExpectedVerifyData := this->CalculateVerifyData("client finished", 1)
+
+                Packet->AssertBound(12)
+                void* ReceivedVerifyData := Packet->Bump(12)
+
+                Print("Expected Verify Data:\n%hexdump\n", ExpectedVerifyData, 12)
+                Print("Received Verify Data:\n%hexdump\n", ReceivedVerifyData, 12)
+
+                if (CompareMemory(ExpectedVerifyData, ReceivedVerifyData, 12)) {
+                    Print("Client Finished verify data matches expected value\n")
+                    this->State := ServerState::Established
+
+                    this->SendChangeCipherSpec()
+                    this->SendServerHandshakeFinished()
+                }
+                else {
+                    Print("Client Finished verify data does not match expected value\n")
+                    this->SendAlert(AlertLevel::Fatal, AlertDescription::HandshakeFailure)
+                    this->State := ServerState::Closed
+                }
+
+                Free(ExpectedVerifyData)
+            }
         }
 
+        define void OnChangeCipherSpec(NetworkPacket* Packet) {
+            if (this->State != ServerState::ClientKeyExchanged) {
+                Print("Unexpected ChangeCipherSpec\n")
+                Exit(1)
+            }
+
+            this->RecordLayer->EnableRemoteEncryption()
+
+            this->State := ServerState::ClientChangedCipher
+        }
+
+        define void OnApplicationData(NetworkPacket* Packet) {
+            TLS::RecordProtocol::RecordHeader* Header := Packet->Get("TLS::RecordProtocol::Record")
+            void* Body := (Header As void*) + #TLS::RecordProtocol::RecordHeader
+            i32 Size := Header->Length
+
+            *((Body + Size - 16) As i8*) := 0
+
+            Print("Got Application Data: %s", Body + 8)
+        }
         
 
         define void Establish() {
@@ -368,6 +469,12 @@ namespace TLS {
 
             this->RegisterContentType(TLS::RecordProtocol::ContentType::Handshake, this->HandshakeLayer)
 
+            INetworkLayer* OnChangeCipherSpec := this->MakeCallback(&self.OnChangeCipherSpec)
+            this->RegisterContentType(TLS::RecordProtocol::ContentType::ChangeCipherSpec, OnChangeCipherSpec)
+
+            INetworkLayer* OnApplicationData := this->MakeCallback(&self.OnApplicationData)
+            this->RegisterContentType(TLS::RecordProtocol::ContentType::ApplicationData, OnApplicationData)
+
             this->ClientHello := new TLS::HandshakeProtocol::ClientHelloHelper(TLS::VersionNumber::TLS_1_2)
             this->ServerHello := new TLS::HandshakeProtocol::ServerHelloHelper()
             this->Certificates := new TLS::HandshakeProtocol::CertificateHelper()
@@ -381,6 +488,7 @@ namespace TLS {
 
             this->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ClientHello, OnHandshake)
             this->RegisterMessageType(TLS::HandshakeProtocol::MessageType::ClientKeyExchange, OnHandshake)
+            this->RegisterMessageType(TLS::HandshakeProtocol::MessageType::Finished, OnHandshake)
 
             this->State := ServerState::AwaitingClientHello
         }
@@ -641,7 +749,8 @@ namespace TLS {
                 this->SendClientKeyExchange()
                 this->SendChangeCipherSpec()
 
-                this->RecordLayer->EnableLocalEncryption(this->Security, this->CipherSuite)
+                this->RecordLayer->SetSecurityParameters(this->Security, this->CipherSuite)
+                this->RecordLayer->EnableLocalEncryption()
 
                 this->SendClientHelloDone()
 
@@ -934,7 +1043,7 @@ define void Main(i32 ArgC, i8** ArgV) {
             Port := AToI(ArgV[2]) As i32
         }
 
-        IPV4SocketAddress* Address := new IPV4SocketAddress("127.0.0.1", Port As i16)
+        IPV4SocketAddress* Address := new IPV4SocketAddress("0.0.0.0", Port As i16)
         Socket S := Socket:New(AF_INET, SOCK_STREAM, IPPROTO_TCP)
         S->SetOption(SO_REUSEADDR, 1)
         
@@ -970,7 +1079,7 @@ define void Main(i32 ArgC, i8** ArgV) {
             for (i32 Index := 0, Index < Count, Index++) {
                 TLS::Server* Client := Clients->At(Index)
 
-                ;Client->Receive()
+                Client->RecordLayer->Receive()
             }
 
             MilliSleep(100)

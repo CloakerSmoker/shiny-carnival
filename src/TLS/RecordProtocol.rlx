@@ -79,10 +79,12 @@ namespace TLS::RecordProtocol {
             this->JoinNextPackets := Count
         }
 
-        define void EnableLocalEncryption(Security::SecurityParameters* Parameters, Security::ICipherSuite* Suite) {
+        define void SetSecurityParameters(Security::SecurityParameters* Parameters, Security::ICipherSuite* Suite) {
             this->Parameters := Parameters
             this->Suite := Suite
+        }
 
+        define void EnableLocalEncryption() {
             this->LocalEncryption := true
         }
 
@@ -258,6 +260,16 @@ namespace TLS::RecordProtocol {
 
             i32 Size := Swap16(Header->Length) + #RecordHeader
             ;Print("Receiving record of length %i\n", Size)
+
+            void* HeaderAndContentType := this->Stream->Peek(#RecordHeader + 1)
+
+            ContentType Type := *((HeaderAndContentType + #RecordHeader) As i8*) As ContentType
+
+            if (nameof:(Type) = null) {
+                Print("\n^S9Unknown content type %i received^R\n", Type As i32)
+            }
+
+
 
             void* Body := this->Stream->Take(Size)
 

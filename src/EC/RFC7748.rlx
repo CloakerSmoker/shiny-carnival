@@ -82,8 +82,8 @@ namespace RFC7748 {
         }
 
         define BigInteger* Multiply(BigInteger* U, BigInteger* K) {
-            ;Print("Point: %bn-base-16\n", U)
-            ;Print("Scalar: %bn-base-16\n", K)
+            Print("Point: %bn-base-16\n", U)
+            Print("Scalar: %bn-base-16\n", K)
 
             FiniteField* F := this->Field
 
@@ -156,7 +156,7 @@ namespace RFC7748 {
             ;BigInteger* Result := F->Multiply(X2, BigInteger:ModularInverse(Z2, this->PM2->Reference()))
             BigInteger* Result := F->Multiply(X2, Z2P)
 
-            ;Print("Result: %bn-base-16\n\n", Result)
+            Print("Result: %bn-base-16\n\n", Result)
 
             return Result
         }
