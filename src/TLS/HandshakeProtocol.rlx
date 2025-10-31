@@ -543,7 +543,7 @@ namespace TLS::HandshakeProtocol {
                 this->AddExtension(Entry->Type, Entry->Data, Length)
             }
 
-            Packet->DumpMarkers()
+            ;Packet->DumpMarkers()
 
 
             

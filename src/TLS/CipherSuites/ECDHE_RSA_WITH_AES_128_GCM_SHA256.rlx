@@ -180,15 +180,15 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             MoveMemory(SignatureData + 64, &Info, #CurveInfo)
             MoveMemory(SignatureData + 64 + #CurveInfo, Record->PublicKey, this->PublicKeyLength)
 
-            Print("Signature Data:\n%hexdump\n", SignatureData, 64 + #CurveInfo + this->PublicKeyLength)
+            ;Print("Signature Data:\n%hexdump\n", SignatureData, 64 + #CurveInfo + this->PublicKeyLength)
 
-            Print("Signature Data: ")
+            ;Print("Signature Data: ")
 
-            for (i32 Index := 0, Index < 64 + #CurveInfo + this->PublicKeyLength, Index++) {
-                Print("%B", (SignatureData As i8*)[Index])
-            }
+            ;for (i32 Index := 0, Index < 64 + #CurveInfo + this->PublicKeyLength, Index++) {
+            ;    Print("%B", (SignatureData As i8*)[Index])
+            ;}
 
-            Print("\n")
+            ;Print("\n")
 
             i32 SignatureLength := 0
             void* Signature := this->Parameters->Certificate->Sign(

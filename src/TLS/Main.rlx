@@ -166,6 +166,8 @@ namespace TLS {
         }
 
         define void SendAlert(TLS::AlertLevel Level, TLS::AlertDescription Description) {
+            this->RecordLayer->JoinNext(0)
+
             NetworkPacket* Packet := this->RecordLayer->Enter(TLS::RecordProtocol::ContentType::Alert)
 
             TLS::AlertRecord* Alert := Packet->Mark("TLS::AlertProtocol::Alert", #TLS::AlertRecord)
@@ -174,6 +176,21 @@ namespace TLS {
             Alert->Description := Description
 
             this->RecordLayer->Leave(Packet)
+        }
+
+        define void OnAlert(NetworkPacket* Packet) {
+            AlertRecord* Alert := Packet->Mark("TLS::AlertProtocol::Alert", #AlertRecord)
+
+            Print("Received alert at %s level, description %s\n", nameof:(Alert->Level), nameof:(Alert->Description))
+
+            if (Alert->Description = AlertDescription::CloseNotify) {
+                this->SendAlert(AlertLevel::Warning, AlertDescription::CloseNotify)
+                this->State := ServerState::Closed
+            }
+            else if (Alert->Level = AlertLevel::Fatal) {
+                this->SendAlert(AlertLevel::Warning, AlertDescription::CloseNotify)
+                this->State := ServerState::Closed
+            }
         }
 
         define i8 SendServerHello() {
@@ -368,6 +385,8 @@ namespace TLS {
                     Print("[%i]: %s (%x bytes)\n", Index, nameof:(Entry->Type), Entry->Length)
                 }
 
+                this->RecordLayer->JoinNext(4)
+
                 if (this->SendServerHello()) {
                     this->SendCertificates()
                     this->SendServerKeyExchange()
@@ -436,6 +455,12 @@ namespace TLS {
             this->State := ServerState::ClientChangedCipher
         }
 
+        define void SendApplicationData(void* Data, i32 Size) {
+            NetworkPacket* Packet := this->RecordLayer->Enter(TLS::RecordProtocol::ContentType::ApplicationData)
+            MoveMemory(Packet->Bump(Size), Data, Size)
+            this->RecordLayer->Leave(Packet)
+        }
+
         define void OnApplicationData(NetworkPacket* Packet) {
             TLS::RecordProtocol::RecordHeader* Header := Packet->Get("TLS::RecordProtocol::Record")
             void* Body := (Header As void*) + #TLS::RecordProtocol::RecordHeader
@@ -444,16 +469,24 @@ namespace TLS {
             *((Body + Size - 16) As i8*) := 0
 
             Print("Got Application Data: %s", Body + 8)
+
+            if (CompareMemory(Body + 8, "GET / HTTP/1.1", 14)) {
+                Print("Received HTTP Request:\n%s\n", Body + 8)
+
+                this->SendApplicationData(
+                    "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello, world!",
+                    52
+                )
+            }
         }
         
 
         define void Establish() {
             while (this->State != ServerState::Established) {
-                this->RecordLayer->Receive()
+                this->RecordLayer->TryReceive()
 
                 if (this->State = ServerState::Closed) {
-                    Print("Connection closed due to error\n")
-                    Exit(1)
+                    Print("Connection closed!\n")
                 }
             }
         }
@@ -474,6 +507,9 @@ namespace TLS {
 
             INetworkLayer* OnApplicationData := this->MakeCallback(&self.OnApplicationData)
             this->RegisterContentType(TLS::RecordProtocol::ContentType::ApplicationData, OnApplicationData)
+
+            INetworkLayer* OnAlert := this->MakeCallback(&self.OnAlert)
+            this->RegisterContentType(TLS::RecordProtocol::ContentType::Alert, OnAlert)
 
             this->ClientHello := new TLS::HandshakeProtocol::ClientHelloHelper(TLS::VersionNumber::TLS_1_2)
             this->ServerHello := new TLS::HandshakeProtocol::ServerHelloHelper()
@@ -819,7 +855,7 @@ namespace TLS {
             this->SendClientHello()
 
             while (this->State != ClientState::Established) {
-                this->RecordLayer->Receive()
+                this->RecordLayer->TryReceive()
 
                 if (this->State = ClientState::Closed) {
                     Print("Connection closed due to error\n")
@@ -829,7 +865,7 @@ namespace TLS {
         }
 
         define void Receive() {
-            this->RecordLayer->Receive()
+            this->RecordLayer->TryReceive()
         }
 
         define void New(Socket Remote) {
@@ -898,7 +934,7 @@ define void Client(i8* Server, i32 Port) {
 
     C->SendApplicationData(GetRequest, StringLength(GetRequest))
 
-    C->RecordLayer->Receive()
+    C->RecordLayer->TryReceive()
 
     C->Close()
 
@@ -1000,6 +1036,8 @@ define TLS::Security::ICertificate* LoadCertificate(i8* PrivateKeyPath, i8* Cert
     return Result
 }
 
+#Require "./src/network/epoll.rlx"
+
 define void Main(i32 ArgC, i8** ArgV) {
     if (ArgC < 2) {
         Print("Usage: %s <client|server> <args>\n", ArgV[0])
@@ -1055,10 +1093,15 @@ define void Main(i32 ArgC, i8** ArgV) {
         S->Listen(5)
         Print("Listening on %ipv4\n", Address)
 
+        i64 epoll_fd := epoll_create()
+        epoll_ctl(epoll_fd, EPOLL_CONTROL_ADD, S As i64, EPOLL_EVENT_IN)
+
+        epoll_event* events := Alloc(4 * #epoll_event)
+
         PointerArray* Clients := new PointerArray() ; TLS::Server
 
         loop {
-            if (S->Poll(POLL_FOR_READ, 50)) {
+            if (S->Poll(POLL_FOR_READ, 0)) {
                 Print("New connection!\n")
 
                 IPV4SocketAddress* ClientAddress := new IPV4SocketAddress()
@@ -1066,11 +1109,10 @@ define void Main(i32 ArgC, i8** ArgV) {
 
                 Print("Accepted connection from %ipv4\n", ClientAddress)
 
-                TLS::Server* Client := new TLS::Server(ClientSocket, Certificate)
+                Clients->Push(new TLS::Server(ClientSocket, Certificate))
 
-                Client->Establish()
-
-                Clients->Push(Client)
+                events := ReAlloc(events, (#epoll_event) * (Clients->Count() + 1))
+                epoll_ctl(epoll_fd, EPOLL_CONTROL_ADD, ClientSocket As i64, EPOLL_EVENT_IN)
             }
 
 
@@ -1079,10 +1121,14 @@ define void Main(i32 ArgC, i8** ArgV) {
             for (i32 Index := 0, Index < Count, Index++) {
                 TLS::Server* Client := Clients->At(Index)
 
-                Client->RecordLayer->Receive()
+                Client->RecordLayer->TryReceive()
             }
 
-            MilliSleep(100)
+            i64 Result := epoll_wait(epoll_fd, events, Clients->Count() + 1, 1000)
+
+            ;Print("epoll_wait returned %i\n", Result)
+
+
         }
     }
     else {

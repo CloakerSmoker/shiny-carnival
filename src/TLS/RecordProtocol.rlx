@@ -77,6 +77,8 @@ namespace TLS::RecordProtocol {
 
         define void JoinNext(i32 Count) {
             this->JoinNextPackets := Count
+            this->OutgoingPacket->ClearMarkers()
+            this->OutgoingPacket->Seek(0)
         }
 
         define void SetSecurityParameters(Security::SecurityParameters* Parameters, Security::ICipherSuite* Suite) {
@@ -253,7 +255,11 @@ namespace TLS::RecordProtocol {
 
         SocketStream* Stream
 
-        define void Receive() {
+        define i8 TryReceive() {
+            if !(this->Stream->TryReceive(#RecordHeader)) {
+                return false
+            }
+
             RecordHeader* Header := this->Stream->Peek(#RecordHeader)
 
             i32 Length := Swap16(Header->Length) As i32
@@ -261,15 +267,16 @@ namespace TLS::RecordProtocol {
             i32 Size := Swap16(Header->Length) + #RecordHeader
             ;Print("Receiving record of length %i\n", Size)
 
-            void* HeaderAndContentType := this->Stream->Peek(#RecordHeader + 1)
+            if (nameof:(Header->Type) = null) {
+                Print("\n^S9Unknown content type %x received^R\n", Header->Type)
 
-            ContentType Type := *((HeaderAndContentType + #RecordHeader) As i8*) As ContentType
-
-            if (nameof:(Type) = null) {
-                Print("\n^S9Unknown content type %i received^R\n", Type As i32)
+                Print("%s\n", Header)
+                Print("%hexdump\n", Header, #RecordHeader)
             }
 
-
+            if !(this->Stream->TryReceive(Size)) {
+                return false
+            }
 
             void* Body := this->Stream->Take(Size)
 
@@ -280,6 +287,8 @@ namespace TLS::RecordProtocol {
             this->Process(Packet)
 
             Packet->Free()
+
+            return true
         }
 
         define void New(Socket Remote) {

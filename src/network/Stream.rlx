@@ -1,5 +1,4 @@
 
-
 class SocketStream derives INew {
     Socket Base
 
@@ -20,13 +19,38 @@ class SocketStream derives INew {
         ret
     }
 
-    define void Receive(i32 Size) {
+    define void EnsureCapacity(i32 Size) {
         if (Size > this->Capacity) {
             i32 CapacityNeeded := 1 << (self:FindFirstBitSet(Size) + 1)
 
             this->Buffer := ReAlloc(this->Buffer, CapacityNeeded)
             this->Capacity := CapacityNeeded
         }
+    }
+
+    define i8 TryReceive(i32 Size) {
+        while (this->Size < Size) {
+            if !(this->Base->Poll(POLL_FOR_READ, 0)) {
+                return false
+            }
+
+
+            i32 Received := this->Base->Receive(this->Buffer + this->Size, this->Capacity - this->Size) As i32
+
+            ;Print("Received %i bytes, waiting until filled to at least %i\n", Received, Size)
+
+            if (Received <= 0) {
+                return false
+            }
+
+            this->Size += Received
+        }
+
+        return true
+    }
+
+    define void Receive(i32 Size) {
+
 
         while (this->Size < Size) {
             i32 Received := this->Base->Receive(this->Buffer + this->Size, this->Capacity - this->Size) As i32
