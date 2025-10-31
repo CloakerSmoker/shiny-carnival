@@ -1,0 +1,36 @@
+
+i64 LINUX_SYSCALL_EPOLL_CREATE1 := 213
+i64 LINUX_SYSCALL_EPOLL_WAIT    := 232
+i64 LINUX_SYSCALL_EPOLL_CTL     := 233
+
+define i64 epoll_create() {
+    return syscall:(LINUX_SYSCALL_EPOLL_CREATE1, 1)
+}
+
+i32 EPOLL_CONTROL_ADD := 1
+i32 EPOLL_CONTROL_DEL := 2
+i32 EPOLL_CONTROL_MOD := 3
+
+i32 EPOLL_EVENT_IN  := 0x001
+i32 EPOLL_EVENT_PRI := 0x002
+i32 EPOLL_EVENT_OUT := 0x004
+i32 EPOLL_EVENT_ERR := 0x008
+i32 EPOLL_EVENT_HUP := 0x010
+
+struct epoll_event unaligned {
+    i32 Events
+    i64 Data
+}
+
+define i64 epoll_ctl(i64 Handle, i32 Operation, i64 FileDescriptor, i32 Events) {
+    epoll_event Event {
+        Events: Events,
+        Data: FileDescriptor As i32
+    }
+
+    return syscall:(LINUX_SYSCALL_EPOLL_CTL, Handle, Operation, FileDescriptor, &Event)
+}
+
+define i64 epoll_wait(i64 Handle, epoll_event* Events, i32 MaxEvents, i32 Timeout) {
+    return syscall:(LINUX_SYSCALL_EPOLL_WAIT, Handle, Events, MaxEvents, Timeout)
+}
