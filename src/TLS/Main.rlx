@@ -134,6 +134,10 @@ namespace TLS {
         Closed ; duh
     }
 
+    class Socket derives INew {
+        
+    }
+
     class Server derives INew {
         ServerState State
 
@@ -741,7 +745,7 @@ namespace TLS {
             else if (Record->Type = TLS::HandshakeProtocol::MessageType::Certificate) {
                 this->ExpectState(ClientState::ServerAccepted, "Certificate")
 
-                this->Certificate->Read(Packet)
+                ;this->Certificate->Read(Packet)
 
                 this->State := ClientState::ServerSentCertificate
             }
@@ -774,6 +778,8 @@ namespace TLS {
                     Print("Unsupported CipherSuite %s (%x)\n", nameof:(this->ServerHello->Cipher), this->ServerHello->Cipher)
                     Exit(1)
                 }
+
+                this->CipherSuite->ReceiveServerKeyExchange(Packet)
 
                 this->State := ClientState::ServerKeyExchanged
             }
@@ -840,6 +846,49 @@ namespace TLS {
             this->ClientHello->AddCipherSuite(TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256)
             this->ClientHello->AddCompressionMethod(TLS::HandshakeProtocol::CompressionMethod::Null)
 
+            i16[2] SignatureAlgorithms
+            SignatureAlgorithms[0] := Swap16(2)
+            SignatureAlgorithms[1] := Swap16(TLS::Security::SignatureAlgorithm::RSA_PKCS1_SHA256 As i16)
+
+            this->ClientHello->AddExtension(
+                TLS::HandshakeProtocol::ExtensionType::SignatureAlgorithms,
+                SignatureAlgorithms,
+                4
+            )
+
+            i16[3] SupportedGroups
+            SupportedGroups[0] := Swap16(4)
+            SupportedGroups[1] := Swap16(TLS::Security::NamedCurve::x25519 As i16)
+            SupportedGroups[2] := Swap16(TLS::Security::NamedCurve::x448 As i16)
+
+            this->ClientHello->AddExtension(
+                TLS::HandshakeProtocol::ExtensionType::SupportedGroups,
+                SupportedGroups,
+                6
+            )
+
+            i8[2] ECPointFormats
+            ECPointFormats[0] := 1
+            ECPointFormats[1] := TLS::Security::ECPointFormat::Uncompressed As i8
+
+            this->ClientHello->AddExtension(
+                TLS::HandshakeProtocol::ExtensionType::ECPointFormats,
+                ECPointFormats,
+                2
+            )
+
+            TLS::HandshakeProtocol::ServerNameBuilder* SNI := new TLS::HandshakeProtocol::ServerNameBuilder()
+            SNI->AddHostName(ServerName)
+            
+            i32 ServerNameSize := 0
+            void* ServerNameData := SNI->Build(&ServerNameSize)
+
+            this->ClientHello->AddExtension(
+                TLS::HandshakeProtocol::ExtensionType::ServerName,
+                ServerNameData,
+                ServerNameSize
+            )
+
             ;this->ClientHello->AddServerHostName(ServerName)
 
             ;this->ClientHello->AddSignatureAlgorithm(TLS::HandshakeProtocol::SignatureAlgorithm::Ed25519)
@@ -897,6 +946,9 @@ namespace TLS {
             INetworkLayer* OnApplicationData := this->MakeCallback(&self.OnApplicationData)
 
             this->RegisterContentType(TLS::RecordProtocol::ContentType::ApplicationData, OnApplicationData)
+
+            INetworkLayer* OnAlert := this->MakeCallback(&self.OnAlert)
+            this->RegisterContentType(TLS::RecordProtocol::ContentType::Alert, OnAlert)
         }
     }
 }
@@ -904,7 +956,7 @@ namespace TLS {
 #Require "./src/DNS.rlx"
 
 define void Client(i8* Server, i32 Port) {
-    UseDNS(ParseIPV4("1.1.1.1"), 53, 1 * 60, 10 * 60, false)
+    UseDNS(ParseIPV4("1.1.1.1"), 53, 1 * 60, 10 * 60, true)
 
     IPV4SocketAddress* ServerAddress := DNSLookupIPV4(Server, Port As i16)
 
