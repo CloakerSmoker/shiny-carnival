@@ -14,8 +14,26 @@ struct StackTrace {
         for (i32 Index := 0, Index < this->Count, Index++) {
             StackTraceFrame* Frame := this->Frames[Index]
 
+            i32 RunLength := 0
+
+            while (Index + RunLength < this->Count) {
+                StackTraceFrame* Next := this->Frames[Index + RunLength]
+
+                if (Next->RIP != Frame->RIP) {
+                    break
+                }
+
+                RunLength += 1
+            }
+
             if (Frame->Name) {
                 Print(" [%i] %s\n", Index, Frame->Name)
+                
+                if (RunLength > 1) {
+                    Print("     (%i recursive frames)\n", RunLength)
+                }
+
+                Index += RunLength - 1
             }
             else {
                 Print(" [%i] returns to %x\n", Index, Frame->RIP)

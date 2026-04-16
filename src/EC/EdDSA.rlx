@@ -1,0 +1,477 @@
+
+#Require "$/Memory.rlx"
+#Require "./src/Big/Big.rlx"
+#Require "./src/SHA2.rlx"
+
+class Point derives INew {
+    BigInteger* X
+    BigInteger* Y
+    BigInteger* Z
+    BigInteger* T
+
+    i32 ReferenceCount
+
+    define void New(BigInteger* X, BigInteger* Y, BigInteger* Z, BigInteger* T) {
+        this->X := X
+        this->Y := Y
+        this->Z := Z
+        this->T := T
+
+        this->ReferenceCount := 1
+    }
+
+    define Point* Reference() {
+        this->ReferenceCount += 1
+
+        return this
+    }
+
+    define Point* Release() {
+        this->ReferenceCount -= 1
+
+        if (this->ReferenceCount = 0) {
+            this->X->Release()
+            this->Y->Release()
+            this->Z->Release()
+            this->T->Release()
+
+            ;this->Delete()
+
+            return null
+        }
+
+        return this
+    }
+}
+
+class Ed25519 derives INew {
+    BigInteger* P
+
+    BigInteger* Q
+    BigInteger* QM2 ; Q-2
+    BigInteger* QP3O8 ; (Q+3)/8
+    BigInteger* L
+
+    BigInteger* D
+    BigInteger* I
+
+    Point* B
+
+    IHashFunction* H
+
+    define BigInteger* ModQ(BigInteger* Value) {
+        return Value->Modulo(this->Q->Reference())
+    }
+
+    define BigInteger* Pow2(BigInteger* Value, i32 Exponent) {
+        BigInteger* Result := Value->Reference()
+
+        for (i32 Index := 0, Index < Exponent, Index++) {
+            Result := this->ModQ(Result->Square())
+        }
+
+        Value->Release()
+
+        return Result
+    }
+
+    define BigInteger* Inverse(BigInteger* Z) {
+
+        ;return BigInteger:PowerModulo(Z, this->QM2->Reference(), this->Q->Reference())->Label("Z^-1")
+
+        ;Print("inv(%bn-base-10)\n", Z)
+
+        BigInteger* Z2 := this->ModQ(Z->Reference()->Square())->Label("Z^2")
+
+        ; Z^9 = Z^2^4 * Z
+        BigInteger* Z9 := this->ModQ(this->Pow2(Z2->Reference(), 2)->Multiply(Z))->Label("Z^9")
+
+        ; Z released above by ->Multiply
+
+        ; Z^11 = Z^9 * Z^2
+        BigInteger* Z11 := this->ModQ(Z9->Reference()->Multiply(Z2))->Label("Z^11")
+
+        BigInteger* Z2_5_0 := this->ModQ(this->ModQ(Z11->Reference()->Square())->Multiply(Z9))->Label("Z2_5_0")
+
+        BigInteger* Z2_10_0  := this->ModQ(this->Pow2(Z2_5_0  ->Reference(), 5  )->Multiply(Z2_5_0))->Label("Z2_10_0")
+        BigInteger* Z2_20_0  := this->ModQ(this->Pow2(Z2_10_0 ->Reference(), 10 )->Multiply(Z2_10_0->Reference()))->Label("Z2_20_0")
+        BigInteger* Z2_40_0  := this->ModQ(this->Pow2(Z2_20_0 ->Reference(), 20 )->Multiply(Z2_20_0))->Label("Z2_40_0")
+        BigInteger* Z2_50_0  := this->ModQ(this->Pow2(Z2_40_0              , 10 )->Multiply(Z2_10_0))->Label("Z2_50_0")
+        BigInteger* Z2_100_0 := this->ModQ(this->Pow2(Z2_50_0 ->Reference(), 50 )->Multiply(Z2_50_0->Reference()))->Label("Z2_100_0")
+        BigInteger* Z2_200_0 := this->ModQ(this->Pow2(Z2_100_0->Reference(), 100)->Multiply(Z2_100_0))->Label("Z2_200_0")
+        BigInteger* Z2_250_0 := this->ModQ(this->Pow2(Z2_200_0             , 50 )->Multiply(Z2_50_0))->Label("Z2_250_0")
+
+        BigInteger* Result := this->ModQ(this->Pow2(Z2_250_0, 5)->Multiply(Z11))->Label("Z^-1")
+
+        ;Print("= %bn-base-10\n", Result)
+        
+        return Result
+
+        ; Z2_250_0 and Z11 released above
+    }
+
+    declare BigInteger* RecoverX(BigInteger*)
+
+    define void New() {
+        ; Q = 2^255 - 19
+        this->Q := BigInteger:Constant(2)->Power(255)->Subtract(BigInteger:Constant(19))
+        ; QM2 = Q - 2
+        this->QM2 := this->Q->Reference()->Subtract(BigInteger:Constant(2))
+        ; QP3O8 = (Q + 3) / 8
+        this->QP3O8 := this->Q->Reference()->Add(BigInteger:Constant(3))->Quotient(BigInteger:Constant(8))
+
+        ; L = 2^252 + 27742317777372353535851937790883648493
+        this->L := BigInteger:Constant(2)->Power(252)->Add(new BigInteger("27742317777372353535851937790883648493"))
+
+        ; D = -121665 * inv(121666)
+        BigInteger* Neg121665 := new BigInteger("-121665")
+        BigInteger* Inv121666 := this->Inverse(new BigInteger("121666"))
+
+        BigInteger* D := Neg121665->Multiply(Inv121666)
+
+        Print("D before mod Q: %bn-base-10\n", D)
+
+        this->D := this->ModQ(D)
+
+        Print("D: %bn-base-10\n", this->D)
+
+        ;Print("D mod Q: %bn-base-10\n", this->D)
+
+        ; I = expmod(2, (Q - 1) / 4, Q)
+        this->I := BigInteger:PowerModulo(
+            BigInteger:Constant(2),
+            this->Q->Reference()->Subtract(BigInteger:One())->Quotient(BigInteger:Constant(4)),
+            this->Q->Reference()
+        )
+
+        BigInteger* By := BigInteger:Constant(4)->Multiply(this->Inverse(BigInteger:Constant(5)))
+        BigInteger* Bx := this->RecoverX(By->Reference())
+
+        this->B := new Point(
+            Bx, By,
+            BigInteger:One(),
+            this->ModQ(Bx->Reference()->Multiply(By->Reference()))
+        )
+
+        this->H := new SHA2_512()
+    }
+
+    define BigInteger* RecoverX(BigInteger* Y) {
+        Print("Y: %bn-base-10\n", Y)
+
+        BigInteger* YSquared := Y->Reference()->Square()
+
+        Print("YSquared: %bn-base-10\n", YSquared)
+        Print("D: %bn-base-10\n", this->D)
+
+        ; Inlining YSquaredM1 gets the wrong result for some reason
+        BigInteger* YSquaredM1 := YSquared->Reference()->Subtract(BigInteger:One())
+
+        BigInteger* XX := YSquaredM1->Multiply(
+            this->Inverse(this->D->Reference()->Multiply(YSquared)->Add(BigInteger:One()))
+        )
+
+        Print("XX: %bn-base-10\n", XX)
+
+        BigInteger* X := BigInteger:PowerModulo(
+            XX->Reference(),
+            this->QP3O8->Reference(),
+            this->Q->Reference()
+        )
+
+        Print("X: %bn-base-10\n", X)
+
+        BigInteger* XSquared := X->Reference()->Square()
+
+        Print("XSquared: %bn-base-10\n", XSquared)
+
+        BigInteger* XSquaredMinusXX := XSquared->Reference()->Subtract(XX)
+
+        Print("pow(X, 2) - XX: %bn-base-10\n", XSquaredMinusXX)
+
+        BigInteger* XSquaredMinusXXModQ := XSquaredMinusXX->Reference()->Remainder(this->Q->Reference())
+
+        Print("pow(X, 2) - XX mod Q: %bn-base-10\n", XSquaredMinusXXModQ)
+
+        ; XX released by above
+
+        if (XSquaredMinusXXModQ->IsNotZero()) {
+            Print("pow(X, 2) - XX mod Q is not zero, trying X * I\n")
+
+            X := this->ModQ(X->Multiply(this->I->Reference()))
+
+            ; Previous X released by above
+        }
+
+        XSquaredMinusXXModQ->Release()
+
+        BigInteger* XMod2 := X->Reference()->Remainder(BigInteger:Constant(2))
+
+        Print("X mod 2: %bn-base-10\n", XMod2)
+
+        if (XMod2->IsNotZero()) {
+            X := this->Q->Reference()->Subtract(X)
+
+            ; Previous X released by above
+        }
+
+        XMod2->Release()
+
+        return X
+    }
+
+    define Point* Edwards(Point* P, Point* Q) {
+        BigInteger* X1 := P->X
+        BigInteger* Y1 := P->Y
+        BigInteger* X2 := Q->X
+        BigInteger* Y2 := Q->Y
+
+        ; D * X1 * X2 * Y1 * Y2
+
+        BigInteger* DX1X2Y1Y2 := this->D->Reference()
+            ->Multiply(X1->Reference())->Label("D*X1")
+            ->Multiply(X2->Reference())->Label("D*X1*X2")
+            ->Multiply(Y1->Reference())->Label("D*X1*X2*Y1")
+            ->Multiply(Y2->Reference())->Label("D*X1*X2*Y1*Y2")
+
+        ; XL (left) = X1 * Y2 + Y1 * X2
+
+        BigInteger* XL := BigInteger:Add(
+            X1->Reference()->Multiply(Y2->Reference())->Label("X1*Y2"),
+            Y1->Reference()->Multiply(X2->Reference())->Label("Y1*X2")
+        )
+
+        ; X = XL / (1 + D * X1 * X2 * Y1 * Y2)
+
+        BigInteger* X := XL->Multiply(
+            this->Inverse(
+                BigInteger:One()->Add(DX1X2Y1Y2->Reference())
+            )
+        )->Label("X")
+
+        ; XL released above by ->Add
+
+        ; YL (left) = Y1 * Y2 + X1 * X2
+
+        BigInteger* YL := BigInteger:Add(
+            Y1->Reference()->Multiply(Y2->Reference())->Label("Y1*Y2"),
+            X1->Reference()->Multiply(X2->Reference())->Label("X1*X2")
+        )
+
+        BigInteger* Y := YL->Multiply(
+            this->Inverse(
+                BigInteger:One()->Subtract(DX1X2Y1Y2)
+            )
+        )->Label("Y")
+
+        ; YL released above by ->Multiply, DX1X2Y1Y2 released above by ->Subtract
+
+        P->Release()
+        Q->Release()
+
+        BigInteger* XModQ := X->Modulo(this->Q->Reference())->Label("X mod Q")
+        BigInteger* YModQ := Y->Modulo(this->Q->Reference())->Label("Y mod Q")
+
+        return new Point(XModQ, YModQ, BigInteger:One(), BigInteger:Zero())
+    }
+
+    define Point* EdwardsAdd(Point* P, Point* Q) {
+        BigInteger* X1 := P->X
+        BigInteger* Y1 := P->Y
+        BigInteger* X2 := Q->X
+        BigInteger* Y2 := Q->Y
+        BigInteger* Z1 := P->Z
+        BigInteger* Z2 := Q->Z
+        BigInteger* T1 := P->T
+        BigInteger* T2 := Q->T
+
+        BigInteger* A := this->ModQ(BigInteger:Multiply(
+            Y1->Reference()->Subtract(X1->Reference())->Label("Y1 - X1"),
+            Y2->Reference()->Subtract(X2->Reference())->Label("Y2 - X2")
+        ))->Label("A")
+
+        BigInteger* B := this->ModQ(BigInteger:Multiply(
+            Y1->Reference()->Add(X1->Reference())->Label("Y1 + X1"),
+            Y2->Reference()->Add(X2->Reference())->Label("Y2 + X2")
+        ))->Label("B")
+
+        BigInteger* C := this->ModQ(Z1->Reference()
+            ->Multiply(BigInteger:Constant(2)
+            ->Multiply(T2->Reference())))->Label("C")
+        
+        BigInteger* D := this->ModQ(T1->Reference()
+            ->Multiply(BigInteger:Constant(2)
+            ->Multiply(Z2->Reference())))->Label("D")
+        
+        BigInteger* E := D->Reference()->Add(C->Reference())->Label("E")
+        BigInteger* F := B->Reference()->Subtract(A->Reference())->Label("F")
+        BigInteger* G := B->Add(A)->Label("G")
+        ; B and A released above
+        BigInteger* H := D->Subtract(C)->Label("H")
+        ; C and D released above
+
+        BigInteger* X3 := E->Reference()->Multiply(F->Reference())->Label("X3")
+        BigInteger* Y3 := G->Reference()->Multiply(H->Reference())->Label("Y3")
+        BigInteger* Z3 := F->Multiply(G)->Label("Z3")
+        ; F and G released above
+        BigInteger* T3 := E->Multiply(H)->Label("T3")
+        ; E and H released above
+
+        P->Release()
+        Q->Release()
+
+        return new Point(this->ModQ(X3), this->ModQ(Y3), this->ModQ(Z3), this->ModQ(T3))
+    }
+
+    define Point* EdwardsDouble(Point* P) {
+        BigInteger* X1 := P->X
+        BigInteger* Y1 := P->Y
+        BigInteger* Z1 := P->Z
+        BigInteger* T1 := P->T
+
+        BigInteger* A := this->Pow2(X1->Reference(), 1)->Label("A")
+        BigInteger* B := this->Pow2(Y1->Reference(), 1)->Label("B")
+        
+        BigInteger* _0 := this->Pow2(Z1->Reference(), 1)->Label("T0")
+        BigInteger* C := BigInteger:Constant(2)->Multiply(_0)->Label("C")
+        ; _0 released above
+
+        BigInteger* a := BigInteger:Constant(1)->Negate()
+        BigInteger* D := a->Multiply(A->Reference())->Label("D")
+        ; a released above
+
+        BigInteger* _1 := X1->Reference()->Add(Y1->Reference())->Label("_1")
+        BigInteger* _2 := this->Pow2(_1->Reference(), 1)->Label("_2")
+        BigInteger* _3 := _2->Subtract(A)->Label("_3")
+
+        P->Release() ; All done with input point
+
+        BigInteger* E := _3->Subtract(B->Reference())->Label("E")
+        ; _3 released above by
+        BigInteger* G := D->Reference()->Add(B->Reference())->Label("G")
+        BigInteger* F := G->Reference()->Subtract(C)->Label("F")
+        ; C released above
+        BigInteger* H := D->Subtract(B)->Label("H")
+        ; D, B released above
+
+        BigInteger* X3 := E->Reference()->Multiply(F->Reference())->Label("X3")
+        BigInteger* Y3 := G->Reference()->Multiply(H->Reference())->Label("Y3")
+        BigInteger* Z3 := F->Multiply(G)->Label("Z3")
+        ; F, G released above
+        BigInteger* T3 := E->Multiply(H)->Label("T3")
+        ; E, H released above
+
+        return new Point(this->ModQ(X3), this->ModQ(Y3), this->ModQ(Z3), this->ModQ(T3))
+    }
+
+    define Point* ScalarMultiply(Point* P, BigInteger* Scalar) {
+        Point* Q := new Point(
+            BigInteger:Zero(), BigInteger:One(),
+            BigInteger:One(), BigInteger:Zero()
+        )
+
+        if (Scalar->IsOdd()) {
+            Q := this->EdwardsAdd(Q, P->Reference())
+
+            Scalar := Scalar->Subtract(BigInteger:One())->Label("Scalar - 1")
+        }
+
+        while (Scalar->IsNotZero()) {
+            P := this->EdwardsDouble(P)
+            Scalar := Scalar->Quotient(BigInteger:Constant(2))->Label("Scalar / 2")
+        }
+
+        P->Release()
+        Scalar->Release()
+
+        return Q
+    }
+
+    define Point* PublicKey(i8* Hash) {
+        BigInteger* K := BigInteger:Constant(2)->Power(254)
+
+        for (i32 Index := 3, Index < 255, Index++) {
+            i32 Bit := (Hash[Index / 8] >> (Index % 8)) & 1
+
+            if (Bit) {
+                K := K->Add(BigInteger:Constant(2)->Power(Index))
+            }
+        }
+
+        Print("a: %bn-base-10\n", K)
+
+        return this->ScalarMultiply(this->B->Reference(), K->Label("K"))
+    }
+
+    define Point* PublicKey(void* Buffer, i32 Size) {
+        i8[64] Hash
+        this->H->Hash(Buffer, Size, Hash)
+
+        Print("Hash:\n%hexdump\n", Hash, 64)
+
+        return this->PublicKey(Hash)
+    }
+
+    /*define BigInteger* Sign(void* Message, i32 Size, BigInteger* SecretKey, BigInteger* ) {
+        Point* A := this->PublicKey(RawK->Reference())
+
+        i8[64] Hash
+
+        this->Hash->Prepare()
+        
+        
+        BigInteger* R := this->HashToNumber()
+
+        A->Release()
+    }*/
+
+    define i8 IsOnCurve(Point* P) {
+        BigInteger* X := P->X
+        BigInteger* Y := P->Y
+
+        BigInteger* XSquared := X->Reference()->Square()
+        BigInteger* YSquared := Y->Reference()->Square()
+
+        BigInteger* Left := XSquared->Reference()->Negate()->Add(YSquared->Reference())
+        BigInteger* Right := this->D->Reference()->Multiply(XSquared)->Multiply(YSquared)
+        ; XSquared and YSquared released above by ->Multiply
+
+        BigInteger* Difference := Left->Subtract(BigInteger:One())->Subtract(Right)
+        ; Left and Right released above by ->Subtract
+
+        BigInteger* Check := Difference->Modulo(this->Q->Reference())
+        ; Difference released above by ->Modulo
+
+        i8 Result := Check->IsZero()
+        Check->Release()
+
+        return Result
+    }
+}
+
+#Require "$/Console.rlx"
+#Require "$/MemoryDebug.rlx"
+
+define void Main() {
+    Ed25519* Ed := new Ed25519()
+
+    Print("Bx: %bn-base-10\n", Ed->B->X)
+    Print("By: %bn-base-10\n", Ed->B->Y)
+
+    Mark()
+    DumpHeap()
+
+    Point* BPow2 := Ed->ScalarMultiply(Ed->B->Reference(), BigInteger:Constant(2))
+
+    Print("2 * Bx: [%bn-base-10, %bn-base-10]\n", BPow2->X, BPow2->Y)
+    
+    BPow2->Release()
+
+    HadLeaks()
+
+    Point* PK := Ed->PublicKey("hello", 5)
+
+    Print("PK: [%bn-base-10, %bn-base-10]\n", PK->X, PK->Y)
+
+    HadLeaks()
+}

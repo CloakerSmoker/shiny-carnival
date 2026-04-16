@@ -134,9 +134,9 @@ namespace TLS {
         Closed ; duh
     }
 
-    class Socket derives INew {
-        
-    }
+    ;class Socket derives INew {
+    ;    
+    ;}
 
     class Server derives INew {
         ServerState State

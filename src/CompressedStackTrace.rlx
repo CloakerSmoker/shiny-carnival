@@ -1,0 +1,151 @@
+
+#Require "$/PointerArray.rlx"
+
+PointerArray* StackFrameCache := new PointerArray()
+
+struct CompressedStackFrame {
+    i64 RIP
+    i8* Name
+}
+
+define i16 FindCompressedStackFrame(i64 RIP, i8* Name) {
+    i32 Count := StackFrameCache->Count()
+
+    for (i32 Index := 0, Index < Count, Index++) {
+        CompressedStackFrame* Frame := StackFrameCache->At(Index)
+
+        if (Frame->RIP = RIP && Frame->Name = Name) {
+            return Index As i16
+        }
+    }
+
+    return -1 As i16
+}
+
+define i16 CompressStackTraceFrame(i64 RIP, i8* Name) {
+    i16 Result := FindCompressedStackFrame(RIP, Name)
+
+    if (Result = -1) {
+        CompressedStackFrame* Frame := Alloc(#CompressedStackFrame)
+        Frame->RIP := RIP
+        Frame->Name := Name
+
+        StackFrameCache->Push(Frame)
+
+        Result := (StackFrameCache->Count() - 1) As i16
+    }
+
+    return Result
+}
+
+define CompressedStackFrame* GetCompressedStackFrame(i16 Identifier) {
+    return StackFrameCache->At((Identifier As i32) & 0x7FFF)
+}
+
+struct CompressedStackTrace {
+    i32 Count
+    i16[0] Frames ; if negative, then it's a run length of the previous frame
+
+
+    define void Print() {
+        for (i32 Index := 0, Index < this->Count, Index++) {
+            i16 FrameIdentifier := this->Frames[Index]
+
+            if (FrameIdentifier >= 0) {
+                CompressedStackFrame* Frame := GetCompressedStackFrame(FrameIdentifier)
+
+                if (Frame->Name) {
+                    Print(" [%i] %s\n", Index, Frame->Name)
+                }
+                else {
+                    Print(" [%i] returns to %x\n", Index, Frame->RIP)
+                }
+            }
+            else {
+                Print("     (%i recursive frames)\n", -FrameIdentifier)
+            }
+        }
+    }
+}
+
+define void CaptureCompressedStackTrace(i32 IgnoreFrames, CompressedStackTrace* Trace) {
+    StackFrame* Next := GetRBP() As StackFrame*
+    i32 Index := 0
+    i32 Ignore := IgnoreFrames
+	
+	while (Next) {
+		if (Next->LastFrame & 1) {
+			Next := Next->LastFrame - 1
+		}
+		else {
+			if (Ignore) {
+				Ignore -= 1
+			}
+            else {
+                i64* MaybeMagic := (Next - 0x8) As i64*
+                i8** MaybeName := (Next - 0x10) As i8**
+
+                i8* Name := null
+
+                if (*MaybeMagic = 0x12345678) {
+                    Name := *MaybeName
+                }
+
+                i16 FrameIdentifier := CompressStackTraceFrame(Next->ReturnAddress As i64, Name)
+                
+                if (Index > 1 && Trace->Frames[Index - 1] < 0 && Trace->Frames[Index - 2] = FrameIdentifier) {
+                    ; Extending existing run
+                    Trace->Frames[Index - 1] -= 1
+                }
+                else if (Index > 1 && Trace->Frames[Index - 1] = FrameIdentifier && Trace->Frames[Index - 2] = FrameIdentifier) {
+                    ; Start run: convert duplicate slot to run counter
+                    Trace->Frames[Index - 1] := -1 As i16
+                }
+                else {
+                    Trace->Frames[Index++] := FrameIdentifier
+                }
+            }
+
+            Next := Next->LastFrame
+		}
+	}
+}
+define void CaptureCompressedStackTrace(CompressedStackTrace* Trace) {
+    CaptureCompressedStackTrace(2, Trace)
+}
+
+define i32 CaptureCompressedStackTraceHeight(i32 IgnoreFrames) {
+    StackFrame* Next := GetRBP() As StackFrame*
+    i32 Count := 0
+    i32 Ignore := IgnoreFrames
+
+    i64 LastRIP := 0
+    
+    while (Next) {
+        if (Next->LastFrame & 1) {
+            Next := Next->LastFrame - 1
+        }
+        else {
+            if (Ignore) {
+                Ignore -= 1
+            }
+            else {
+                if (Count > 1 && Next->ReturnAddress = LastRIP) {
+                    ; Detected run, skip frame
+                }
+                else {
+                    Count += 1
+                }
+            }
+            
+            LastRIP := Next->ReturnAddress As i64
+            Next := Next->LastFrame
+        }
+    }
+
+    return Count
+}
+define i32 CaptureCompressedStackTraceHeight() {
+    return CaptureCompressedStackTraceHeight(2)
+}
+

@@ -9,6 +9,7 @@ enum ComparisonResult {
 }
 
 #Require "./src/StackTrace.rlx"
+#Require "./src/CompressedStackTrace.rlx"
 
 BigInteger* FIRST_BIG_NUMBER := null
 BigInteger** BIG_NUMBERS_TAIL := null
@@ -57,7 +58,10 @@ struct BigInteger {
     i8 Negative
     i8 Constant
 
-    StackTrace AllocationTrace
+    i8* Name
+
+    ; MUST BE LAST FIELD. True size of this struct is sizeof(BigInteger) + (AllocationTrace.FrameCount * sizeof(StackFrame))
+    CompressedStackTrace AllocationTrace
 
     define self* Reference() {
         if (this->Constant) {
@@ -67,7 +71,7 @@ struct BigInteger {
         ;Print("Reference(%i) at refcount %i\n", this->ID, this->ReferenceCount)
 
         if (this->ReferenceCount <= 0) {
-            Print("REFERENCE COUNT BELOW ZERO %x\n", this)
+            Print("REFERENCE COUNT BELOW ZERO %x '%s'\n", this, this->Name)
             this~>AllocationTrace->Print()
 
             Print("Referenced from\n")
@@ -77,6 +81,16 @@ struct BigInteger {
         }
 
         this->ReferenceCount += 1
+
+        return this
+    }
+    define self* Reference(i8* Name) {
+        this->Name := Name
+
+        return this->Reference()
+    }
+    define self* Label(i8* Name) {
+        this->Name := Name
 
         return this
     }
@@ -91,7 +105,7 @@ struct BigInteger {
         this->ReferenceCount -= 1
 
         if (this->ReferenceCount < 0) {
-            Print("REFERENCE COUNT BELOW ZERO %x\n", this)
+            Print("REFERENCE COUNT BELOW ZERO %x '%s'\n", this, this->Name)
 
             Print("Released from\n")
             CaptureStackTrace()->Print()
@@ -154,13 +168,19 @@ struct BigInteger {
     static self* Allocate() {
         i32 TraceHeight := 0
         ;ENABLE_GC/*
-        + CaptureStackTraceHeight()
+        + CaptureCompressedStackTraceHeight()
         ;*/
-        self* this := Alloc(#self + (TraceHeight * #StackFrame))
+
+
+        i32 Size := #self + (TraceHeight * #i16)
+
+        ;Print("Allocating BigInteger of size %i with trace height %i\n", Size, TraceHeight)
+
+        self* this := Alloc(Size)
 
         ;ENABLE_GC/*
         this~>AllocationTrace->Count := TraceHeight
-        CaptureStackTrace(this~>AllocationTrace)
+        CaptureCompressedStackTrace(this~>AllocationTrace)
 
         *BIG_NUMBERS_TAIL := this
         this->pThis := BIG_NUMBERS_TAIL
@@ -552,6 +572,7 @@ struct BigInteger {
         ) {
             clc
             xor, eax, eax
+            xor, ecx, ecx
             mov, r15d, 16777216
             mov, r12d, 1
 
@@ -1177,6 +1198,14 @@ struct BigInteger {
             ;Result := self:LongDivide(Numerator, Denominator, OutRemainder)
         }
 
+        if (Numerator->Negative != Denominator->Negative) {
+            Result->Negative := true
+        }
+
+        if (Numerator->Negative) {
+            (*OutRemainder)->Negative := true
+        }
+
         Numerator->Release()
         Denominator->Release()
 
@@ -1202,7 +1231,23 @@ struct BigInteger {
         return Remainder
     }
     define BigInteger* Modulo(BigInteger* Denominator) {
-        return this->Remainder(Denominator)
+        BigInteger* Remainder := this->Remainder(Denominator->Reference())
+
+        ;Print("Modulo: %bn-base-10 and %bn-base-10 = %bn-base-10\n", this, Denominator, Remainder)
+
+        if (Remainder->Negative) {
+            if (Denominator->Negative) {
+                Remainder := Remainder->Subtract(Denominator)
+            }
+            else {
+                Remainder := Remainder->Add(Denominator)
+            }
+        }
+        else {
+            Denominator->Release()
+        }
+
+        return Remainder
     }
 
     define i8 DivisibleBy(BigInteger* Factor) {
@@ -1217,8 +1262,10 @@ struct BigInteger {
         BigInteger* Base := new BigInteger(RawBase)
         BigInteger* Result := new BigInteger(0)
 
+        i8 Negative := false
+
         if (String[0] = '-') {
-            Result->Negative := true
+            Negative := true
 
             String += 1
             Length -= 1
@@ -1243,6 +1290,8 @@ struct BigInteger {
         }
 
         Base->Release()
+
+        Result->Negative := Negative
 
         return Result
     }
@@ -1925,12 +1974,20 @@ define void Walk() {
     }
 }
 
+i32 MARK_GENERATION := 0
+
+define void Mark() {
+    MARK_GENERATION := NEXT_BIG_NUMBER_ID
+}
+
 define i8 HadLeaks() {
     BigInteger* Current := FIRST_BIG_NUMBER
 
+    Print("Marked generation: after %i\n", MARK_GENERATION)
+
     while (Current != null) {
-        if (!Current->Constant) {
-            Print("BN #%i was leaked with refcount %i, allocated at:\n", Current->ID, Current->ReferenceCount)
+        if (!Current->Constant && Current->ID >= MARK_GENERATION) {
+            Print("BN #%i '%s' was leaked with refcount %i, allocated at:\n", Current->ID, Current->Name, Current->ReferenceCount)
             Current~>AllocationTrace->Print()
         }
 
