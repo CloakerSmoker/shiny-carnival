@@ -638,7 +638,9 @@ struct BigInteger {
         ComparisonResult Comparison := BigInteger:CompareAbsoluteValue(Left, Right)
 
         if (Comparison = ComparisonResult::Equal || Comparison = ComparisonResult::Greater) {
-            return self:FastBaseSubtract(Left, Right)
+            BigInteger* Result := self:FastBaseSubtract(Left, Right)
+            Result->Negative := Left->Negative
+            return Result
         }
         else {
             BigInteger* Result := self:FastBaseSubtract(Right, Left)
@@ -655,7 +657,9 @@ struct BigInteger {
         ComparisonResult Comparison := BigInteger:CompareAbsoluteValue(Left, Right)
 
         if (Comparison = ComparisonResult::Equal || Comparison = ComparisonResult::Greater) {
-            return self:FastBaseSubtract(Left, Right)
+            BigInteger* Result := self:FastBaseSubtract(Left, Right)
+            Result->Negative := Left->Negative
+            return Result
         }
         else {
             i8 Sign := !Left->Negative
@@ -1165,6 +1169,14 @@ struct BigInteger {
     }
 
     static BigInteger* Divide(BigInteger* Numerator, BigInteger* Denominator, BigInteger** OutRemainder) {
+        if (Numerator->IsZero()) {
+            Numerator->Release()
+            Denominator->Release()
+
+            *OutRemainder := new BigInteger(0)
+            return new BigInteger(0)
+        }
+
         ComparisonResult Comparison := self:CompareAbsoluteValue(Numerator, Denominator)
 
         if (Comparison = ComparisonResult::Equal) {
@@ -1850,6 +1862,9 @@ struct BigInteger {
         i32 Digit := this->Digits[DigitIndex]
 
         return (Digit >> (ByteIndex * 8)) & 0xFF
+    }
+    define i32 ByteAt(i32 Index) {
+        return this->GetByte(Index)
     }
     define void _SetByte(i32 Index, i32 Value) {
         i32 DigitIndex := Index / 3
