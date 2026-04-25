@@ -82,7 +82,15 @@ define void DoPrintBigIntegerBase(PrintOutputAdapterPrototype* this, i8* Format,
         return
     }
 
-    i8* Buffer := Alloc((35 - RawBase) * N->DigitCount)
+    i8* DigitSizes := i8[
+        24, 16, 12, 11, 10, 9,
+        8, 8, 8,
+        7, 7, 7, 7, 7,
+        6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+        5, 5, 5, 5, 5, 5, 5, 5, 5
+    ] ; ceil(log(2**24) / log(base))) for base 2 to 36
+
+    i8* Buffer := Alloc((DigitSizes[RawBase - 2] * N->DigitCount) + 2)
 
     BigInteger* Value := N->Reference()->AbsoluteValue()
 
@@ -111,3 +119,4 @@ PrintFormatPrototype BigIntegerBasePrintPrototype {
 }
 
 i32 BIG_NUMBER_BASE_PRINT_PROTOTYPE_ID := AddPrintFormat(&BigIntegerBasePrintPrototype)
+

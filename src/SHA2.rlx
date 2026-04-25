@@ -279,7 +279,7 @@ class SHA2_512 implements IHashFunction, derives INew {
     define void UpdateChunk(i64* Chunk) {
         this->ChunkCursor := 0
 
-        Print("UpdateChunk:\n%hexdump\n", Chunk, 16 * 8)
+        ;Print("UpdateChunk:\n%hexdump\n", Chunk, 16 * 8)
 
         i64* W := this->W
 
