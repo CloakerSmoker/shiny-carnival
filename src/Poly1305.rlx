@@ -2,17 +2,6 @@
 #Require "$/Memory.rlx"
 #Require "$/Console.rlx"
 
-struct i128 {
-    union {
-        struct {
-            i64 Low
-            i64 High
-        }
-
-        i8[16] Bytes
-    }
-}
-
 class Poly1305 derives INew {
     i32[5] R
     i32[5] H
@@ -37,6 +26,10 @@ class Poly1305 derives INew {
         Print("R[4]: %x\n", this->R[4])*/
 
         MoveMemory(this->Pad, Key + 16, 16)
+
+        FastZeroMemory(this->H, 20)
+        FastZeroMemory(this->Buffer, 16)
+        this->Leftover := 0
 
         /*Print("Pad[0]: %x\n", this->Pad[0])
         Print("Pad[1]: %x\n", this->Pad[1])

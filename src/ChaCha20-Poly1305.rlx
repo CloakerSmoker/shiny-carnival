@@ -79,7 +79,7 @@ class ChaCha20Poly1305 derives INew {
 
         this->Poly->Finalize(ActualTag)
 
-        if (CompareMemory(ActualTag, Tag, 16) != 0) {
+        if (CompareMemory(ActualTag, Tag, 16) = 0) {
             return 0
         }
 
@@ -114,5 +114,12 @@ define void Main() {
     Cipher->Encrypt(Nonce, Plaintext, PlaintextSize, Authenticate, AuthenticateSize, Tag)
 
     Print("Ciphertext:\n%hexdump\n", Plaintext, PlaintextSize)
+
+    ;Tag[2] := 3
     Print("Tag:\n%hexdump\n", Tag, 16)
+
+    i8 Valid := Cipher->Decrypt(Nonce, Plaintext, PlaintextSize, Authenticate, AuthenticateSize, Tag)
+
+    Print("Decrypted Plaintext:\n%hexdump\n", Plaintext, PlaintextSize)
+    Print("Tag Valid: %i\n", Valid)
 }
