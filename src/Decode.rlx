@@ -101,3 +101,20 @@ define i32 DecodeBase64(i8* String, i32 Length, i8* Output) {
 
     return OutputIndex
 }
+
+define void* Hex(i8* String, i32* OutSize) {
+    i32 Length := StringLength(String)
+    i32 Size := (Length + 1) / 2
+
+    void* Result := Alloc(Size)
+    DecodeHex(String, Length, Result As i8*)
+
+    if (OutSize) {
+        *OutSize := Size
+    }
+
+    return Result
+}
+define void* Hex(i8* String) {
+    return Hex(String, null)
+}

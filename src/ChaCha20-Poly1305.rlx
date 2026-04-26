@@ -1,0 +1,118 @@
+
+
+#Require "$/Memory.rlx"
+
+#Require "./src/ChaCha.rlx"
+#Require "./src/Poly1305.rlx"
+
+class ChaCha20Poly1305 derives INew {
+    ChaCha20* ChaCha
+    Poly1305* Poly
+
+    define void New() {
+        this->ChaCha := new ChaCha20()
+        this->Poly := new Poly1305()
+    }
+
+    define void SetKey(void* Key) {
+        this->ChaCha->SetKey(Key)
+    }
+
+    define void SetPolyKey(void* Nonce) {
+        this->ChaCha->SetNonce(Nonce)
+        this->ChaCha->SetCounter(0)
+
+        i32[16] Block
+        this->ChaCha->GenerateBlock(Block)
+
+        this->Poly->SetKey(Block)
+    }
+
+    define void PolyUpdateWithPad(void* Buffer, i32 Size) {
+        this->Poly->Update(Buffer, Size)
+
+        i32 Remainder := Size % 16
+
+        if (Remainder) {
+            i32 PaddingNeeded := 16 - Remainder
+
+            i8[16] Padding
+            FastZeroMemory(Padding, 16)
+
+            this->Poly->Update(Padding, PaddingNeeded)
+        }
+    }
+
+    define void Encrypt(void* Nonce, void* Data, i32 DataSize, void* Authenticate, i32 AuthenticateSize, void* OutTag) {
+        this->ChaCha->SetNonce(Nonce)
+        this->ChaCha->SetCounter(1)
+
+        this->ChaCha->EncryptBytes(Data, DataSize)
+
+        this->SetPolyKey(Nonce)
+
+        this->PolyUpdateWithPad(Authenticate, AuthenticateSize)
+        this->PolyUpdateWithPad(Data, DataSize)
+
+        this->Poly->Update(&AuthenticateSize, 4)
+        this->Poly->Update(i8[0, 0, 0, 0], 4) ; Pad to 8 bytes
+
+        this->Poly->Update(&DataSize, 4)
+        this->Poly->Update(i8[0, 0, 0, 0], 4) ; Pad to 8 bytes
+
+        this->Poly->Finalize(OutTag)
+    }
+
+    define i8 Decrypt(void* Nonce, void* Data, i32 DataSize, void* Authenticate, i32 AuthenticateSize, void* Tag) {
+        i8[16] ActualTag
+
+        this->SetPolyKey(Nonce)
+
+        this->PolyUpdateWithPad(Authenticate, AuthenticateSize)
+        this->PolyUpdateWithPad(Data, DataSize)
+
+        this->Poly->Update(&AuthenticateSize, 4)
+        this->Poly->Update(i8[0, 0, 0, 0], 4) ; Pad to 8 bytes
+
+        this->Poly->Update(&DataSize, 4)
+        this->Poly->Update(i8[0, 0, 0, 0], 4) ; Pad to 8 bytes
+
+        this->Poly->Finalize(ActualTag)
+
+        if (CompareMemory(ActualTag, Tag, 16) != 0) {
+            return 0
+        }
+
+        this->ChaCha->SetNonce(Nonce)
+        this->ChaCha->SetCounter(1)
+        this->ChaCha->DecryptBytes(Data, DataSize)
+
+        return true
+    }
+}
+
+#Require "$/Console.rlx"
+
+define void Main() {
+
+    i32 PlaintextSize := 0
+    i8* Plaintext := Hex("4c616469657320616e642047656e746c656d656e206f662074686520636c617373206f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c79206f6e652074697020666f7220746865206675747572652c2073756e73637265656e20776f756c642062652069742e", &PlaintextSize)
+
+    i32 AuthenticateSize := 0
+    i8* Authenticate := Hex("50515253c0c1c2c3c4c5c6c7", &AuthenticateSize)
+
+    i32 KeySize := 0
+    i8* Key := Hex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f", &KeySize)
+
+    i32 NonceSize := 0
+    i8* Nonce := Hex("070000004041424344454647", &NonceSize)
+
+    i8[16] Tag
+
+    ChaCha20Poly1305* Cipher := new ChaCha20Poly1305()
+    Cipher->SetKey(Key)
+    Cipher->Encrypt(Nonce, Plaintext, PlaintextSize, Authenticate, AuthenticateSize, Tag)
+
+    Print("Ciphertext:\n%hexdump\n", Plaintext, PlaintextSize)
+    Print("Tag:\n%hexdump\n", Tag, 16)
+}

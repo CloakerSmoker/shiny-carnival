@@ -1,0 +1,297 @@
+
+#Require "$/Memory.rlx"
+#Require "$/Console.rlx"
+
+struct i128 {
+    union {
+        struct {
+            i64 Low
+            i64 High
+        }
+
+        i8[16] Bytes
+    }
+}
+
+class Poly1305 derives INew {
+    i32[5] R
+    i32[5] H
+    i32[4] Pad
+
+    i32 Leftover
+    i8[16] Buffer
+
+    define void SetKey(void* RawKey) {
+        i32* Key := RawKey As i32*
+
+        this->R[0] := Key[0] & 0x3ffffff
+        this->R[1] := ((Key[0] >> 26) | (Key[1] << 6)) & 0x3ffff03
+        this->R[2] := ((Key[1] >> 20) | (Key[2] << 12)) & 0x3ffc0ff
+        this->R[3] := ((Key[2] >> 14) | (Key[3] << 18)) & 0x3f03fff
+        this->R[4] := (Key[3] >> 8) & 0x00fffff
+
+        /*Print("R[0]: %x\n", this->R[0])
+        Print("R[1]: %x\n", this->R[1])
+        Print("R[2]: %x\n", this->R[2])
+        Print("R[3]: %x\n", this->R[3])
+        Print("R[4]: %x\n", this->R[4])*/
+
+        MoveMemory(this->Pad, Key + 16, 16)
+
+        /*Print("Pad[0]: %x\n", this->Pad[0])
+        Print("Pad[1]: %x\n", this->Pad[1])
+        Print("Pad[2]: %x\n", this->Pad[2])
+        Print("Pad[3]: %x\n", this->Pad[3])*/
+    }
+
+    define void UpdateBlocks(void* Blocks, i32 Count, i32 Final) {
+        i32 HighBit := !Final * (1 << 24)
+
+        i32 R0 := this->R[0]
+        i32 R1 := this->R[1]
+        i32 R2 := this->R[2]
+        i32 R3 := this->R[3]
+        i32 R4 := this->R[4]
+
+        i32 S1 := R1 * 5
+        i32 S2 := R2 * 5
+        i32 S3 := R3 * 5
+        i32 S4 := R4 * 5
+
+        i32 H0 := this->H[0]
+        i32 H1 := this->H[1]
+        i32 H2 := this->H[2]
+        i32 H3 := this->H[3]
+        i32 H4 := this->H[4]
+
+        /*Print("UpdateBlocks: %i Blocks, Final: %i\n", Count, Final)
+        Print("%hexdump\n", Blocks, Count * 16)
+
+        Print("H0: %x\n", H0)
+        Print("H1: %x\n", H1)
+        Print("H2: %x\n", H2)
+        Print("H3: %x\n", H3)
+        Print("H4: %x\n\n", H4)*/
+
+        for (i32 Index := 0, Index < Count, Index++) {
+            i32* Block := Blocks + (Index * 16)
+
+            H0 +=  *(Block + 0)         & 0x3ffffff
+            H1 += (*(Block + 3 ) >> 2 ) & 0x3ffffff
+            H2 += (*(Block + 6 ) >> 4 ) & 0x3ffffff
+            H3 += (*(Block + 9 ) >> 6 ) & 0x3ffffff
+            H4 += (*(Block + 12) >> 8 ) | HighBit
+
+            /*Print("H0: %x\n", H0)
+            Print("H1: %x\n", H1)
+            Print("H2: %x\n", H2)
+            Print("H3: %x\n", H3)
+            Print("H4: %x\n\n", H4)*/
+
+            i64 D0 := ((H0 As i64) * R0) + ((H1 As i64) * S4) + ((H2 As i64) * S3) + ((H3 As i64) * S2) + ((H4 As i64) * S1)
+            i64 D1 := ((H0 As i64) * R1) + ((H1 As i64) * R0) + ((H2 As i64) * S4) + ((H3 As i64) * S3) + ((H4 As i64) * S2)
+            i64 D2 := ((H0 As i64) * R2) + ((H1 As i64) * R1) + ((H2 As i64) * R0) + ((H3 As i64) * S4) + ((H4 As i64) * S3)
+            i64 D3 := ((H0 As i64) * R3) + ((H1 As i64) * R2) + ((H2 As i64) * R1) + ((H3 As i64) * R0) + ((H4 As i64) * S4)
+            i64 D4 := ((H0 As i64) * R4) + ((H1 As i64) * R3) + ((H2 As i64) * R2) + ((H3 As i64) * R1) + ((H4 As i64) * R0)
+
+            /*Print("D0: %x\n", D0)
+            Print("D1: %x\n", D1)
+            Print("D2: %x\n", D2)
+            Print("D3: %x\n", D3)
+            Print("D4: %x\n\n", D4)*/
+
+            i32 C := (D0 >> 26) As i32
+            H0 := (D0 & 0x3ffffff) As i32
+
+            D1 += C
+            C := (D1 >> 26) As i32
+            H1 := (D1 & 0x3ffffff) As i32
+
+            D2 += C
+            C := (D2 >> 26) As i32
+            H2 := (D2 & 0x3ffffff) As i32
+
+            D3 += C
+            C := (D3 >> 26) As i32
+            H3 := (D3 & 0x3ffffff) As i32
+
+            D4 += C
+            C := (D4 >> 26) As i32
+            H4 := (D4 & 0x3ffffff) As i32
+
+            H0 += C * 5
+            C := (H0 >> 26) As i32
+            H0 &= 0x3ffffff
+
+            H1 += C
+        }
+
+        this->H[0] := H0
+        this->H[1] := H1
+        this->H[2] := H2
+        this->H[3] := H3
+        this->H[4] := H4
+    }
+    define void UpdateBlocks(void* Blocks, i32 Count) {
+        this->UpdateBlocks(Blocks, Count, false)
+    }
+    define void UpdateFinalBlock(void* Block) {
+        this->UpdateBlocks(Block, 1, true)
+    }
+
+    define void Update(void* Buffer, i32 Size) {
+        i8* Bytes := Buffer As i8*
+
+        if (this->Leftover) {
+            i32 Remainder := 16 - this->Leftover
+
+            if (Remainder > Size) {
+                Remainder := Size
+            }
+
+            for (i32 Index := 0, Index < Remainder, Index++) {
+                this->Buffer[this->Leftover++] := Bytes[Index]
+            }
+
+            Size -= Remainder
+            Bytes += Remainder
+
+            if (this->Leftover != 16) {
+                return
+            }
+
+            this->UpdateBlocks(this->Buffer, 1)
+            this->Leftover := 0
+        }
+
+        if (Size >= 16) {
+            i32 BlockCount := Size / 16
+            this->UpdateBlocks(Bytes, BlockCount)
+
+            i32 Processed := BlockCount * 16
+
+            Size -= Processed
+            Bytes += Processed
+        }
+
+        if (Size) {
+            for (i32 Index := 0, Index < Size, Index++) {
+                this->Buffer[this->Leftover++] := Bytes[Index]
+            }
+        }
+    }
+
+    define void Finalize(void* Tag) {
+        if (this->Leftover) {
+            this->Buffer[this->Leftover++] := 1
+
+            for (i32 Index := this->Leftover, Index < 16, Index++) {
+                this->Buffer[Index] := 0
+            }
+
+            this->UpdateFinalBlock(this->Buffer)
+        }
+
+        i32 H0 := this->H[0]
+        i32 H1 := this->H[1]
+        i32 H2 := this->H[2]
+        i32 H3 := this->H[3]
+        i32 H4 := this->H[4]
+
+        i32 C := H1 >> 26
+        H1 &= 0x3ffffff
+
+        H2 += C
+        C := H2 >> 26
+        H2 &= 0x3ffffff
+
+        H3 += C
+        C := H3 >> 26
+        H3 &= 0x3ffffff
+
+        H4 += C
+        C := H4 >> 26
+        H4 &= 0x3ffffff
+
+        H0 += C * 5
+        C := H0 >> 26
+        H0 &= 0x3ffffff
+
+        H1 += C
+
+        i32 G0 := H0 + 5
+        C := G0 >> 26
+        G0 &= 0x3ffffff
+
+        i32 G1 := H1 + C
+        C := G1 >> 26
+        G1 &= 0x3ffffff
+
+        i32 G2 := H2 + C
+        C := G2 >> 26
+        G2 &= 0x3ffffff
+
+        i32 G3 := H3 + C
+        C := G3 >> 26
+        G3 &= 0x3ffffff
+
+        i32 G4 := H4 + C - (1 << 26)
+
+        i32 Mask := (G4 >> 31) - 1
+        G0 &= Mask
+        G1 &= Mask
+        G2 &= Mask
+        G3 &= Mask
+        G4 &= Mask
+
+        Mask := ~Mask
+        H0 := (H0 & Mask) | G0
+        H1 := (H1 & Mask) | G1
+        H2 := (H2 & Mask) | G2
+        H3 := (H3 & Mask) | G3
+        H4 := (H4 & Mask) | G4
+
+        H0 := (((H0      ) | (H1 << 26)) & 0xffffffff) As i32
+        H1 := (((H1 >> 6 ) | (H2 << 20)) & 0xffffffff) As i32
+        H2 := (((H2 >> 12) | (H3 << 14)) & 0xffffffff) As i32
+        H3 := (((H3 >> 18) | (H4 << 8 )) & 0xffffffff) As i32
+
+        i64 F := (H0 As i64) + (this->Pad[0] As i64)
+        H0 := (F & 0xffffffff) As i32
+
+        F := (H1 As i64) + (this->Pad[1] As i64) + (F >> 32)
+        H1 := (F & 0xffffffff) As i32
+
+        F := (H2 As i64) + (this->Pad[2] As i64) + (F >> 32)
+        H2 := (F & 0xffffffff) As i32
+
+        F := (H3 As i64) + (this->Pad[3] As i64) + (F >> 32)
+        H3 := (F & 0xffffffff) As i32
+
+        i32* Output := Tag As i32*
+
+        Output[0] := H0
+        Output[1] := H1
+        Output[2] := H2
+        Output[3] := H3
+    }
+}
+
+#Require "./src/Decode.rlx"
+
+/*
+define void Main() {
+    i8* Key := Hex("1c9240a5eb55d38af333888604f6b5f0473917c1402b80099dca5cbc207075c0")
+    i8* Message := Hex("2754776173206272696c6c69672c20616e642074686520736c6974687920746f7665730a446964206779726520616e642067696d626c6520696e2074686520776162653a0a416c6c206d696d737920776572652074686520626f726f676f7665732c0a416e6420746865206d6f6d65207261746873206f757467726162652e")
+
+    Print("%hexdump\n", Key, 32)
+    Print("%hexdump\n", Message, 127)
+
+    Poly1305* Poly := new Poly1305()
+    Poly->Initialize(Key)
+    Poly->Update(Message, 127)
+    i8[16] Tag
+    Poly->Finalize(Tag)
+
+    Print("Tag:\n%hexdump\n", Tag, 16)
+}*/
