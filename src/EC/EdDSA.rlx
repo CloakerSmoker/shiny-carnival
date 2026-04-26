@@ -36,7 +36,7 @@ namespace Ed25519 {
                 this->Z->Release()
                 this->T->Release()
 
-                ;this->Delete()
+                this->Delete()
 
                 return null
             }
@@ -534,7 +534,7 @@ namespace Ed25519 {
         define BigInteger* HashToScalar(i8* Hash) {
             BigInteger* K := BigInteger:Constant(2)->Power(254)
 
-            for (i32 Index := 3, Index < 255, Index++) {
+            for (i32 Index := 3, Index < 254, Index++) {
                 i32 Bit := (Hash[Index / 8] >> (Index % 8)) & 1
 
                 if (Bit) {
@@ -562,7 +562,7 @@ namespace Ed25519 {
         define Point* HashToPoint(i8* Hash) {
             BigInteger* K := this->HashToScalar(Hash)
 
-            ;Print("a: %bn-base-10\n", K)
+            ;Print("Hash to Scalar K: %bn-base-36\n", K)
 
             return this->ScalarMultiply(this->B->Reference(), K->Label("K"))
         }
@@ -835,9 +835,196 @@ namespace Ed25519 {
 }
 
 #Require "$/Console.rlx"
+#Require "$/File.rlx"
 #Require "$/MemoryDebug.rlx"
+#Require "./src/Decode.rlx"
+#Require "./src/StringHelpers.rlx"
+
+define i8* SplitField(i8* Field) {
+    i32 FieldLength := StringLength(Field)
+    i8* Divider := FindFirstMatch(Field, FieldLength, ":")
+
+    if !(Divider) {
+        return null
+    }
+
+    *Divider := 0
+
+    return Divider + 1
+}
+
+define void TestAssert(i8 Condition, i32 LineNumber, i8* Message) {
+    if !(Condition) {
+        Print("Test failure on input line %i: %s\n", LineNumber, Message)
+        Exit(1)
+    }
+}
+
+define void TestVectorLine(Ed25519::Curve* Curve, i8* Line, i32 LineNumber) {
+    i8* SKPKHex := Line
+    i8* PKHex := SplitField(SKPKHex)
+    i8* MessageHex := null
+    i8* SignatureMessageHex := null
+
+    if (PKHex) {
+        MessageHex := SplitField(PKHex)
+    }
+
+    if (MessageHex) {
+        SignatureMessageHex := SplitField(MessageHex)
+    }
+
+    TestAssert(PKHex && MessageHex && SignatureMessageHex, LineNumber, "expected sk:pk:m:sm fields")
+
+    i8* Trailing := SplitField(SignatureMessageHex)
+
+    if (Trailing) {
+        TestAssert(Trailing[0] = 0, LineNumber, "expected exactly 4 colon-terminated fields")
+    }
+
+    i32 SKPKHexLength := StringLength(SKPKHex)
+    i32 PKHexLength := StringLength(PKHex)
+    i32 MessageHexLength := StringLength(MessageHex)
+    i32 SignatureMessageHexLength := StringLength(SignatureMessageHex)
+
+    i8[64] ExpectedSKPK
+    i8[32] ExpectedPK
+    i8[32] SecretKey
+
+    TestAssert(SKPKHexLength = 128, LineNumber, "sk field must contain sk||pk in hex")
+    TestAssert(PKHexLength = 64, LineNumber, "pk field must be 32 bytes in hex")
+    TestAssert(DecodeHex(SKPKHex, SKPKHexLength, ExpectedSKPK) = 64, LineNumber, "invalid sk hex")
+    TestAssert(DecodeHex(PKHex, PKHexLength, ExpectedPK) = 32, LineNumber, "invalid pk hex")
+
+    MoveMemory(SecretKey, ExpectedSKPK, 32)
+
+    i32 MessageSize := DecodeHex(MessageHex, MessageHexLength, null)
+    TestAssert(MessageSize >= 0, LineNumber, "invalid message hex")
+
+    i8* Message := Alloc(MessageSize + 1)
+    TestAssert(DecodeHex(MessageHex, MessageHexLength, Message) = MessageSize, LineNumber, "could not decode message")
+
+    i32 ExpectedSignatureMessageSize := DecodeHex(SignatureMessageHex, SignatureMessageHexLength, null)
+    TestAssert(ExpectedSignatureMessageSize >= 0, LineNumber, "invalid signature+message hex")
+
+    i8* ExpectedSignatureMessage := Alloc(ExpectedSignatureMessageSize + 1)
+    TestAssert(
+        DecodeHex(SignatureMessageHex, SignatureMessageHexLength, ExpectedSignatureMessage) = ExpectedSignatureMessageSize,
+        LineNumber,
+        "could not decode signature+message"
+    )
+
+    Ed25519::Point* PublicKey := Curve->PublicKey(SecretKey, 32)
+
+    i8[32] PublicKeyCompressed
+    Curve->CompressPoint(PublicKey->Reference(), PublicKeyCompressed)
+
+    ;Print("Expected:\n%hexdump\n", ExpectedPK, 32)
+    ;Print("Actual:\n%hexdump\n", PublicKeyCompressed, 32)
+
+    TestAssert(CompareMemory(PublicKeyCompressed, ExpectedPK, 32), LineNumber, "public key mismatch")
+    TestAssert(CompareMemory(ExpectedSKPK + 32, PublicKeyCompressed, 32), LineNumber, "sk field pk suffix mismatch")
+
+    Ed25519::Signature Signature
+
+    Curve->Sign(Message, MessageSize, SecretKey, 32, PublicKey->Reference(), &Signature)
+
+    i8 Valid := Curve->CheckSignature(&Signature, 64, Message, MessageSize, PublicKey)
+    TestAssert(Valid, LineNumber, "signature should verify for original message")
+
+    i32 ForgedMessageSize := MessageSize
+    i8* ForgedMessage := null
+
+    if (MessageSize = 0) {
+        ForgedMessageSize := 1
+        ForgedMessage := Alloc(2)
+        ForgedMessage[0] := 'x'
+    }
+    else {
+        ForgedMessage := Alloc(ForgedMessageSize + 1)
+        MoveMemory(ForgedMessage, Message, ForgedMessageSize)
+        ForgedMessage[ForgedMessageSize - 1] := (ForgedMessage[ForgedMessageSize - 1] + 1) As i8
+    }
+
+    i8 ForgedValid := Curve->CheckSignature(&Signature, 64, ForgedMessage, ForgedMessageSize, PublicKey)
+    TestAssert(!(ForgedValid), LineNumber, "signature should not verify for forged message")
+
+    i8* SignatureMessage := Alloc(64 + MessageSize + 1)
+    MoveMemory(SignatureMessage, &Signature, 64)
+    MoveMemory(SignatureMessage + 64, Message, MessageSize)
+
+    TestAssert(ExpectedSignatureMessageSize = 64 + MessageSize, LineNumber, "sm field size mismatch")
+    TestAssert(
+        CompareMemory(SignatureMessage, ExpectedSignatureMessage, ExpectedSignatureMessageSize),
+        LineNumber,
+        "signature bytes mismatch"
+    )
+
+    Free(SignatureMessage)
+    Free(ForgedMessage)
+    PublicKey->Release()
+    Free(ExpectedSignatureMessage)
+    Free(Message)
+
+    Print(".")
+}
+
+define void Test() {
+    i64 InputFile := FileOpen("sign.input", FILE_READ)
+
+    if !(InputFile) {
+        Print("No sign.input found. Skipping Ed25519 test vectors.\n")
+        return
+    }
+
+    i32 InputSize := FileGetSize(InputFile)
+    i8* Input := Alloc(InputSize + 1)
+
+    FileRead(InputFile, Input, InputSize)
+    FileClose(InputFile)
+
+    Input[InputSize] := 0
+
+    Ed25519::Curve* Curve := new Ed25519::Curve()
+
+    i32 LineNumber := 0
+    i32 TestedLines := 0
+
+    i8* Line := Input
+
+    while (Line) {
+        i32 LineLength := 0
+        i8* NextLine := GetNextLine(Input, InputSize, Line, &LineLength)
+        LineNumber += 1
+
+        if (LineLength > 0 && Line[LineLength - 1] = '\r') {
+            Line[LineLength - 1] := 0
+        }
+
+        if (Line[0] = 0) {
+            Line := NextLine
+            continue
+        }
+
+        Mark()
+        Print("Line %i: %s\n", LineNumber, Line)
+        TestVectorLine(Curve, Line, LineNumber)
+        TestedLines += 1
+        HadLeaks()
+
+        Line := NextLine
+    }
+
+    Curve->B->Release()
+    Free(Curve)
+    Free(Input)
+
+    Print("Ed25519 vector tests passed: %i lines\n", TestedLines)
+}
 
 define void Main() {
+    Test()
+
     Ed25519::Curve* Ed := new Ed25519::Curve()
 
     Print("Bx: %bn-base-10\n", Ed->B->X)

@@ -1,6 +1,8 @@
 define i8* FindFirstMatch(i8* String, i32 Length, i8* Characters) {
+    i32 CharactersLength := StringLength(Characters)
+
     for (i32 Index := 0, Index < Length, Index++) {
-        for (i32 Check := 0, Check < StringLength(Characters), Check++) {
+        for (i32 Check := 0, Check < CharactersLength, Check++) {
             if (String[Index] = Characters[Check]) {
                 return String + Index
             }
@@ -11,10 +13,12 @@ define i8* FindFirstMatch(i8* String, i32 Length, i8* Characters) {
 }
 
 define i8* FindFirstNonMatch(i8* String, i32 Length, i8* Characters) {
+    i32 CharactersLength := StringLength(Characters)
+
     for (i32 Index := 0, Index < Length, Index++) {
         i8 Match := false
 
-        for (i32 Check := 0, Check < StringLength(Characters), Check++) {
+        for (i32 Check := 0, Check < CharactersLength, Check++) {
             if (String[Index] = Characters[Check]) {
                 Match := true
                 break
@@ -30,6 +34,9 @@ define i8* FindFirstNonMatch(i8* String, i32 Length, i8* Characters) {
 }
 
 define i32 SubStringOffset(i8* Base, i8* SubString) {
+
+    Print("%x - %x = %i\n", SubString, Base, (SubString As i64) - (Base As i64))
+
     return ((SubString As i64) - (Base As i64)) As i32
 }
 
@@ -63,7 +70,9 @@ define i8* FindSubString(i8* String, i32 Length, i8* SubString) {
 }
 
 define i8* GetNextLine(i8* LineEnding, i8* Base, i32 Length, i8* Last, i32* OutLineLength) {
-    i8* Next := FindFirstMatch(Last, Length - SubStringOffset(Base, Last), LineEnding)
+    i32 Offset := SubStringOffset(Base, Last)
+
+    i8* Next := FindFirstMatch(Last, Length - Offset, LineEnding)
 
     if (Next) {
         *OutLineLength := SubStringOffset(Last, Next)
