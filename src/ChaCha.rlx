@@ -1,0 +1,128 @@
+
+#Require "$/Memory.rlx"
+
+class ChaCha {
+    union {
+        i32[16] InitialState
+        
+        struct {
+            i32[4] Constant
+            i32[8] Key
+
+            union {
+                i32[2] Counter
+
+                struct {
+                    i32 BlockCounter0
+                    i32 BlockCounter1
+                }
+            }
+            
+            i32[2] Nonce
+        }
+    }
+
+    i32[16] State
+
+    i32 Rounds
+
+    define void Initialize(i32 Rounds, i8* Key, i64 StreamPosition, i64 Nonce) {
+        this->Rounds := Rounds
+
+        MoveMemory(this->Constant, "expand 32-byte k", 16)
+        MoveMemory(this->Key, Key, 32)
+        MoveMemory(this->Counter, &StreamPosition, 8)
+        MoveMemory(this->Nonce, &Nonce, 8)
+    }
+
+    define void Initialize(i8* Key, i64 StreamPosition, i64 Nonce) {
+        this->Initialize(20, Key, StreamPosition, Nonce)
+    }
+
+    define void Initialize(i8* Key, i64 Nonce) {
+        this->Initialize(20, Key, 0, Nonce)
+    }
+
+    define i32 RotateLeft(i32 Value, i32 Amount) {
+        return (Value << Amount) | (Value >> (32 - Amount))
+    }
+
+    define void QuarterRound(i32* A, i32* B, i32* C, i32* D) {
+        A[0] += B[0]
+        D[0] ^= A[0]
+        D[0] := this->RotateLeft(D[0], 16)
+
+        C[0] += D[0]
+        B[0] ^= C[0]
+        B[0] := this->RotateLeft(B[0], 12)
+
+        A[0] += B[0]
+        D[0] ^= A[0]
+        D[0] := this->RotateLeft(D[0], 8)
+
+        C[0] += D[0]
+        B[0] ^= C[0]
+        B[0] := this->RotateLeft(B[0], 7)
+    }
+
+    define void QuarterRound(i32 A, i32 B, i32 C, i32 D) {
+        this->QuarterRound(&this->State[A], &this->State[B], &this->State[C], &this->State[D])
+    }
+
+    define void OddRound() {
+        this->QuarterRound(0 , 4 , 8 , 12)
+        this->QuarterRound(1 , 5 , 9 , 13)
+        this->QuarterRound(2 , 6 , 10, 14)
+        this->QuarterRound(3 , 7 , 11, 15)
+    }
+
+    define void EvenRound() {
+        this->QuarterRound(0 , 5 , 10, 15)
+        this->QuarterRound(1 , 6 , 11, 12)
+        this->QuarterRound(2 , 7 , 8 , 13)
+        this->QuarterRound(3 , 4 , 9 , 14)
+    }
+
+    define void GenerateBlock(i32* Out) {
+        MoveMemory(this~>State, this~>InitialState, 16 * 4)
+
+        for (i32 Round := 0, Round < this->Rounds, Round += 2) {
+            this->OddRound()
+            this->EvenRound()
+        }
+
+        for (i32 Index := 0, Index < 16, Index++) {
+            Out[Index] := this->State[Index] + this->InitialState[Index]
+        }
+
+        this->BlockCounter0 += 1
+
+        if (this->BlockCounter0 = 0) {
+            this->BlockCounter1 += 1
+        }
+    }
+}
+
+#Require "$/Console.rlx"
+#Require "./src/Decode.rlx"
+
+define void Main() {
+
+    i8* Key := Alloc(64)
+    DecodeHex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", 64, Key)
+
+    i64 Nonce
+    DecodeHex("0001020304050607", 16, &Nonce As i8*)
+
+    ChaCha Cipher
+    Cipher.Initialize(Key, 0, Nonce)
+
+    i32[64] Block
+    Cipher.GenerateBlock(Block)
+    Cipher.GenerateBlock(Block + 64)
+    Cipher.GenerateBlock(Block + 128)
+    Cipher.GenerateBlock(Block + 192)
+
+    Print("%hexdump\n", Block, 64 * 4)
+
+}
