@@ -1,0 +1,280 @@
+
+#Require "$/Memory.rlx"
+#Require "$/Console.rlx"
+#Require "$/Debug.rlx"
+
+declare i8 TrackAllocations(i8)
+i8 ALLOCATIONS_ARE_TRACKED := TrackAllocations(false)
+
+declare i8 EnterMetadataHeap()
+declare void ExitMetadataHeap(i8)
+
+#Require "./src/CompressedStackTrace.rlx"
+
+#Require "./src/DebugHeap.rlx"
+
+interface IReadStream {
+    virtual i8 Peek(i32, void*)
+    virtual i8 Advance(i32)
+    virtual i8 Read(i32, void*)
+}
+
+interface IWriteStream {
+    virtual i8 Write(void*, i32)
+}
+
+class MemoryStream implements IReadStream, IWriteStream, derives INew {
+    void* Buffer
+    i32 Length
+    i32 Capacity
+
+    define void New(i32 Capacity) {
+        this->Buffer := Alloc(Capacity)
+        this->Capacity := Capacity
+        this->Length := 0
+    }
+
+    define void Free() {
+        Free(this->Buffer)
+        Free(this)
+    }
+
+    define i8 Peek(i32 Size, void* Out) {
+        Print("Peek(%i) = ", Size)
+
+        if (Size > this->Length) {
+            Print("null\n")
+            return false
+        }
+
+        Print("\n%hexdump\n", this->Buffer, Size)
+
+        MoveMemory(Out, this->Buffer, Size)
+        return true
+    }
+
+    define i8 Advance(i32 Size) {
+        Print("Advance(%i)\n", Size)
+
+        if (Size > this->Length) {
+            return false
+        }
+
+        this->Length -= Size
+        MoveMemory(this->Buffer, this->Buffer + Size, this->Length)
+        return true
+    }
+
+    define i8 Read(i32 Size, void* Out) {
+        Print("Read(%i)\n", Size)
+
+        if (this->Peek(Size, Out)) {
+            this->Advance(Size)
+            return true
+        }
+
+        return false
+    }
+
+    define i8 Write(void* Data, i32 Size) {
+        Print("Write(%i)\n", Size)
+
+        if (this->Length + Size > this->Capacity) {
+            return false
+        }
+
+        MoveMemory(this->Buffer + this->Length, Data, Size)
+        this->Length += Size
+        return true
+    }
+}
+
+#Require "./src/Endianess.rlx"
+#Require "./src/network/Socket.rlx"
+
+/*class SocketStream implements IReadStream, IWriteStream, derives INew {
+    Socket Base
+
+    void* Buffer
+    i32 Size
+    i32 Capacity
+
+    define void New(Socket Base) {
+        this->Base := Base
+
+        this->Capacity := 8192
+        this->Buffer := Alloc(this->Capacity)
+        this->Size := 0
+    }
+
+    static i8 FindFirstBitSet(i64 Number) asm {
+        bsr, rax, rdi
+        ret
+    }
+
+    define void EnsureCapacity(i32 Size) {
+        if (Size > this->Capacity) {
+            i32 CapacityNeeded := 1 << (self:FindFirstBitSet(Size) + 1)
+
+            this->Buffer := ReAlloc(this->Buffer, CapacityNeeded)
+            this->Capacity := CapacityNeeded
+        }
+    }
+
+    define i8 TryReceive(i32 Size) {
+        while (this->Size < Size) {
+            if !(this->Base->Poll(POLL_FOR_READ, 0)) {
+                return false
+            }
+
+
+            i32 Received := this->Base->Receive(this->Buffer + this->Size, this->Capacity - this->Size) As i32
+
+            ;Print("Received %i bytes, waiting until filled to at least %i\n", Received, Size)
+
+            if (Received <= 0) {
+                return false
+            }
+
+            this->Size += Received
+        }
+
+        return true
+    }
+
+    define i8 Peek(i32 Size, void* Out) {
+        ;Print("Peeking %i bytes, currently have %i\n", Size, this->Size)
+
+        if (Size > this->Size) {
+            this->TryReceive(Size)
+        }
+
+        if (Size > this->Size) {
+            return false
+        }
+
+        MoveMemory(Out, this->Buffer, Size)
+        return true
+    }
+    define i8 Advance(i32 Size) {
+        if (Size > this->Size) {
+            this->TryReceive(Size)
+        }
+
+        if (Size > this->Size) {
+            return false
+        }
+
+        this->Size -= Size
+        MoveMemory(this->Buffer, this->Buffer + Size, this->Size)
+
+        return true
+    }
+    define i8 Read(i32 Size, void* Out) {
+        if (this->Peek(Size, Out)) {
+            this->Advance(Size)
+            return true
+        }
+
+        return false
+    }
+
+    define i8 Write(void* Data, i32 Size) {
+        i32 Sent := this->Base->Send(Data, Size) As i32
+
+        if (Sent < 0) {
+            return false
+        }
+
+        return true
+    }
+}
+
+class PrintStream implements IWriteStream, derives INew {
+    define i8 Write(void* Data, i32 Size) {
+        PrintCharacters(Data, Size)
+        return true
+    }
+}*/
+
+#Require "./src/HTTP/Server.rlx"
+
+class MathRouteHandler implements HTTP::IRouteHandler, derives INew {
+    define i32 Handle(HTTP::String* Operation, HTTP::RequestInfo* Request, HTTP::ResponseInfo* Response) {
+        Print("MathRouteHandler::Handle(%S)\n", Operation)
+
+        if (Operation->Length = 0) {
+            Response->Body := new HTTP::String("Missing operation")
+            return 404
+        }
+
+        i64 A := 0
+        i64 B := 0
+
+        if !(Request->Parameters->GetInteger("a", &A) && Request->Parameters->GetInteger("b", &B)) {
+            Response->Body := new HTTP::String("Missing parameters")
+            return 404
+        }
+
+        i64 Result := 0
+
+        if (Operation->Equals("add")) {
+            Result := A + B
+        }
+        else if (Operation->Equals("subtract")) {
+            Result := A - B
+        }
+        else {
+            Operation->Free()
+            Response->Body := new HTTP::String("Unknown operation")
+            return 404
+        }
+        
+        Operation->Free()
+        Response->Body := HTTP::String:Format("%i", Result)
+        return 200
+    }
+}
+
+#Require "./src/Time.rlx"
+
+#Require "./src/TLS/Server.rlx"
+#Require "./src/HTTP/TLS.rlx"
+
+define void Main(i32 ArgC, i8** ArgV) {
+    DebugHeapMark()
+
+    i32 ListenPort := AToI(ArgV[1]) As i32
+    i8* PrivateKeyPath := ArgV[2]
+    i8* CertificatePath := ArgV[3]  
+
+    IPV4SocketAddress* Address := new IPV4SocketAddress("0.0.0.0", ListenPort As i16)
+    Socket ListenSocket := Socket:New(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+    ListenSocket->SetOption(SO_REUSEADDR, 1)
+
+    while (ListenSocket->Bind(Address~>Base, #IPV4SocketAddress)) {
+        Print("Failed to bind to port %i, retrying in 5 seconds...\n", ListenPort)
+        Sleep(5)
+    }
+
+    ListenSocket->Listen(10)
+
+    TLS::Security::ICertificate* Certificate := TLSLoadCertificate(PrivateKeyPath, CertificatePath)
+
+    i32 PublicKeySize := 0
+    void* PublicKey := Certificate->GetPublicKey(&PublicKeySize)
+
+    Print("Using Public Key:\n%hexdump\n", PublicKey, PublicKeySize)
+
+    TLS::HTTPSocketServer* SocketServer := new TLS::HTTPSocketServer(ListenSocket, Certificate)
+    HTTP::Server* Server := new HTTP::Server(SocketServer)
+
+    HTTP::IRouteHandler* MathHandler := new MathRouteHandler()
+    Server->RootRouteDirectory->Add("math", MathHandler)
+
+    DebugHeapMark()
+
+    Print("Starting server on port %i...\n", ListenPort)
+
+    Server->Start()
+}

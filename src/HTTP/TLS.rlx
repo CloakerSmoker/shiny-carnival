@@ -1,0 +1,23 @@
+    
+namespace TLS {
+    class HTTPSocketServer implements HTTP::ISocketServer, derives INew {
+        Socket Remote
+        TLS::Security::ICertificate* SigningCertificate
+
+        define void New(Socket Remote, TLS::Security::ICertificate* SigningCertificate) {
+            this->Remote := Remote
+            this->SigningCertificate := SigningCertificate
+        }
+
+        define i32 GetFileDescriptor() {
+            return this->Remote As i32
+        }
+
+        define HTTP::ISocket* Accept(SocketAddress* Address, i32 AddressSize) {
+            Socket Client := this->Remote->Accept(Address, AddressSize)
+            TLS::Server* TLSClient := new TLS::Server(Client, this->SigningCertificate)
+
+            return TLSClient
+        }
+    }
+}

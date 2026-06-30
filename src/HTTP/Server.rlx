@@ -1,0 +1,1097 @@
+
+#Require "$/AVLTree.rlx"
+#Require "$/PointerArray.rlx"
+#Require "$/Print.rlx"
+
+#Require "./src/network/epoll.rlx"
+
+namespace HTTP {
+
+    struct String {
+        i8* Buffer
+        i32 Length
+        i32 Capacity
+        i8 Owner
+
+        ; Constructors
+
+        static self* New() {
+            return Alloc(#self)
+        }
+
+        static self* New(i8* Buffer, i32 Length) {
+            self* this := Alloc(#self)
+
+            this->Buffer := Buffer
+            this->Length := Length
+            this->Capacity := Length
+            this->Owner := false
+
+            return this
+        }
+
+        static self* New(i8* Buffer) {
+            return self:New(Buffer, StringLength(Buffer))
+        }
+
+        static self* New(i32 Capacity) {
+            self* this := Alloc(#self)
+
+            this->Buffer := Alloc(Capacity)
+            this->Length := 0
+            this->Capacity := Capacity
+            this->Owner := true
+
+            return this
+        }
+
+        static self* Format(i8* Format, ... Parameters) {
+            i8* Buffer := RawFormatString(Format, Parameters)
+            i32 Length := StringLength(Buffer)
+
+            self* this := self:New(Buffer, Length)
+            this->Owner := true
+
+            return this
+        }
+
+        ; Accessors
+
+        define i32 Length() {
+            return this->Length
+        }
+        define i8 At(i32 Index) {
+            if (Index < 0 || Index >= this->Length) {
+                return 0
+            }
+
+            return this->Buffer[Index]
+        }
+
+        define i32 Find(i8 Character) {
+            for (i32 Index := 0, Index < this->Length, Index++) {
+                if (this->Buffer[Index] = Character) {
+                    return Index
+                }
+            }
+
+            return -1
+        }
+
+        define i64 Hash() {
+            return FNV1A(this->Buffer, this->Length)
+        }
+
+        ; Equality
+
+        define i8 Equals(String* Other) {
+            if (this->Length != Other->Length) {
+                return false
+            }
+
+            return CompareMemory(this->Buffer, Other->Buffer, this->Length)
+        }
+
+        define i8 Equals(i8* Other) {
+            i32 OtherLength := StringLength(Other)
+
+            if (this->Length != OtherLength) {
+                return false
+            }
+
+            return CompareMemory(this->Buffer, Other, this->Length)
+        }
+
+        ; Ownership and capacity
+
+        define void EnsureOwnership() {
+            if !(this->Owner) {
+                this->Buffer := CloneMemory(this->Buffer, this->Length)
+                this->Capacity := this->Length
+                this->Owner := true
+            }
+        }
+
+        define void EnsureCapacity(i32 Capacity) {
+            this->EnsureOwnership()
+
+            i32 DesiredCapacity := this->Capacity
+
+            while (Capacity > DesiredCapacity) {
+                DesiredCapacity *= 2
+            }
+
+            if (DesiredCapacity != this->Capacity) {
+                this->Buffer := ReAlloc(this->Buffer, DesiredCapacity)
+                this->Capacity := DesiredCapacity
+            }
+        }
+
+        ; Mutators
+
+        define void Append(i8 Character) {
+            this->EnsureOwnership()
+            this->EnsureCapacity(this->Length + 1)
+
+            this->Buffer[this->Length++] := Character
+        }
+
+        define void Append(i8* Buffer, i32 Length) {
+            this->EnsureOwnership()
+            this->EnsureCapacity(this->Length + Length)
+
+            MoveMemory(this->Buffer + this->Length, Buffer, Length)
+            this->Length += Length
+        }
+
+        define void Append(String* Other) {
+            this->Append(Other->Buffer, Other->Length)
+        }
+
+        define void Append(i8* Buffer) {
+            this->Append(Buffer, StringLength(Buffer))
+        }
+
+        define void AppendFormat(i8* Format, ... Parameters) {
+            this->EnsureOwnership()
+
+            i32 Length := RawFormatLength(Format, Parameters)
+            this->EnsureCapacity(this->Length + Length)
+
+            RawFormatString(this->Buffer + this->Length, Length, Format, Parameters)
+            this->Length += Length
+        }
+
+        ; Slices
+
+        define String* Slice(i32 Start, i32 Length) {
+            if (Start + Length > this->Length) {
+                return null
+            }
+
+            return new String(this->Buffer + Start, Length)
+        }
+        define String* SliceToEnd(i32 Start) {
+            if (Start > this->Length) {
+                return null
+            }
+
+            return new String(this->Buffer + Start, this->Length - Start)
+        }
+
+        ; Parsing
+
+        define i8 ParseInteger(i32 Base, i64* Out) {
+            i64 Result := 0
+            i64 Sign := 1
+
+            i32 Start := 0
+
+            if (this->Buffer[Start] = '-') {
+                Sign := -1
+                Start += 1
+            }
+
+            if !(IsNumeric(this->Buffer[Start], Base)) {
+                return false
+            }
+
+            for (i32 Index := Start, Index < this->Length, Index++) {
+                i8 Character := this->Buffer[Index]
+
+                if !(IsNumeric(Character, Base)) {
+                    return false
+                }
+
+                Result *= Base
+                Result += GetCharacterValue(Character)
+            }
+
+            *Out := Sign * Result
+            return true
+        }
+
+        define i8 ParseInteger(i64* Out) {
+            return this->ParseInteger(10, Out)
+        }
+
+        ; Destructors
+
+        define void Free() {
+            if (this->Owner) {
+                Free(this->Buffer)
+            }
+
+            Free(this)
+        }
+    }
+
+    struct RequestHeader {
+        String* Name
+        String* Value
+    }
+
+    class Headers derives INew {
+        AVLTree* Headers ; <FNV1A(String*), RequestHeader>
+
+        define void New() {
+            this->Headers := AVLTree:New(#RequestHeader)
+        }
+
+        define String* Get(i64 Hash) {
+            RequestHeader* Entry := this->Headers->Get(Hash)
+
+            if (Entry != null) {
+                return Entry->Value
+            }
+
+            return null
+        }
+        define String* Get(String* Name) {
+            return this->Get(Name->Hash())
+        }
+        define String* Get(i8* Name) {
+            return this->Get(FNV1A(Name, StringLength(Name)))
+        }
+
+        define void Set(String* Name, String* Value) {
+            i64 Hash := Name->Hash()
+            
+            RequestHeader Entry {
+                Name: Name,
+                Value: Value
+            }
+
+            this->Headers->Add(Hash, &Entry)
+        }
+
+        define i32 Count() {
+            return this->Headers->Count()
+        }
+        define RequestHeader* At(i32 Index) {
+            return this->Headers->At(Index)
+        }
+
+        define i8 GetInteger(i8* Name, i64* Out) {
+            String* Value := this->Get(Name)
+
+            if (Value = null) {
+                return false
+            }
+
+            return Value->ParseInteger(Out)
+        }
+
+        define void Free() {
+            i32 Count := this->Count()
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                RequestHeader* Header := this->At(Index)
+
+                Header->Name->Free()
+                Header->Value->Free()
+            }
+
+            this->Headers->Free()
+            Free(this->Headers)
+            Free(this)
+        }
+    }
+
+    enum Method {
+        GET,
+        POST,
+        PUT,
+        DELETE,
+        HEAD
+    }
+
+    struct RequestQueryParameter {
+        String* Name
+        String* Value
+    }
+
+    class Parameters derives INew {
+        AVLTree* Parameters ; <FNV1A(String*), RequestQueryParameter>
+
+        define void New() {
+            this->Parameters := AVLTree:New(#RequestQueryParameter)
+        }
+
+        define String* Get(i64 Hash) {
+            RequestQueryParameter* Entry := this->Parameters->Get(Hash)
+
+            if (Entry != null) {
+                return Entry->Value
+            }
+
+            return null
+        }
+        define String* Get(String* Name) {
+            return this->Get(Name->Hash())
+        }
+        define String* Get(i8* Name) {
+            return this->Get(FNV1A(Name, StringLength(Name)))
+        }
+
+        define void Add(String* Name, String* Value) {
+            i64 Hash := Name->Hash()
+
+            RequestQueryParameter Entry {
+                Name: Name,
+                Value: Value
+            }
+
+            this->Parameters->Add(Hash, &Entry)
+        }
+
+        define i32 Count() {
+            return this->Parameters->Count()
+        }
+        define RequestQueryParameter* At(i32 Index) {
+            return this->Parameters->At(Index)
+        }
+
+        define i8 GetInteger(i8* Name, i64* Out) {
+            String* Value := this->Get(Name)
+
+            if (Value = null) {
+                return false
+            }
+
+            return Value->ParseInteger(Out)
+        }
+
+        define void Free() {
+            i32 Count := this->Count()
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                RequestQueryParameter* Parameter := this->At(Index)
+
+                Parameter->Name->Free()
+
+                if (Parameter->Value) {
+                    Parameter->Value->Free()
+                }
+            }
+
+            this->Parameters->Free()
+            Free(this->Parameters)
+            Free(this)
+        }
+    }
+
+    class RequestInfo derives INew {
+        Method Method
+
+        String* Path
+        Parameters* Parameters
+        Headers* Headers
+        String* Body
+
+        define void New() {
+            this->Parameters := new Parameters()
+            this->Headers := new Headers()
+        }
+
+        define void Print() {
+            Print("Method: %s\n", nameof:(this->Method))
+            Print("Path: %S\n", this->Path)
+
+            i32 Count := this->Parameters->Count()
+
+            Print("Query Parameters (%i): [\n", Count)
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                HTTP::RequestQueryParameter* Parameter := this->Parameters->At(Index)
+
+                Print("\t%S = %S\n", Parameter->Name, Parameter->Value)
+            }
+
+            Print("]\n")
+
+            Count := this->Headers->Count()
+
+            Print("Headers (%i): [\n", Count)
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                HTTP::RequestHeader* Header := this->Headers->At(Index)
+
+                Print("  %S: %S\n", Header->Name, Header->Value)
+            }
+
+            Print("]\n")
+
+            Print("Body {%S}\n", this->Body)
+        }
+
+        define void Free() {
+            if (this->Path) {
+                this->Path->Free()
+            }
+
+            this->Parameters->Free()
+            this->Headers->Free()
+
+            if (this->Body) {
+                this->Body->Free()
+            }
+
+            Free(this)
+        }
+    }
+
+    class ResponseInfo derives INew {
+        i32 Status
+        Headers* Headers
+        String* Body
+
+        define void New() {
+            this->Headers := new Headers()
+        }
+
+        define void Free() {
+            this->Headers->Free()
+
+            if (this->Body) {
+                this->Body->Free()
+            }
+
+            Free(this)
+        }
+    }
+
+    interface ISocket {
+        virtual i32 GetFileDescriptor()
+
+        virtual i8 Peek(i32, void*)
+        virtual i8 Advance(i32)
+        virtual i8 Read(i32, void*)
+
+        virtual i8 Write(void*, i32)
+
+        virtual void Free()
+    }
+
+    interface ISocketServer {
+        virtual i32 GetFileDescriptor()
+
+        virtual ISocket* Accept(SocketAddress*, i32)
+    }
+
+    enum RequestParsingState {
+        Method,
+        Path,
+        ParameterName,
+        ParameterValue,
+        Version,
+        HeaderName,
+        HeaderValue,
+        Body,
+        Complete
+    }
+
+    struct ServerClient {
+        union {
+            SocketAddress Address
+            AnySocketAddress AnyAddress
+        }
+
+        i32 AddressSize
+
+        ISocket* Socket
+
+        RequestParsingState State
+        RequestInfo* Request
+        ResponseInfo* Response
+
+        String* CurrentQueryParameterName
+        String* CurrentQueryParameterValue
+
+        String* CurrentHeaderName
+        String* CurrentHeaderValue
+
+        i64 ExpectedContentLength
+
+        ; The farthest we peek into the stream is 10 bytes for the HTTP version
+        i8[10] Buffer
+    }
+
+    interface IRouteHandler {
+        ; First parameter is the "tail" of the request path, modified
+        ;  by previous route handlers to remove parts they handled
+        virtual i32 Handle(String*, RequestInfo*, ResponseInfo*)
+    }
+
+    struct RouteDirectoryEntry {
+        String* Name,
+        IRouteHandler* Handler
+    }
+
+    class RouteDirectory implements IRouteHandler, derives INew {
+        IRouteHandler* DefaultHandler
+        AVLTree* Children ; <FNV1A(String*), RouteDirectoryEntry>
+
+        define void New(IRouteHandler* DefaultHandler) {
+            this->DefaultHandler := DefaultHandler
+            this->Children := AVLTree:New(#RouteDirectoryEntry)
+        }
+
+        define void Add(String* Name, IRouteHandler* Child) {
+            i64 Hash := Name->Hash()
+
+            RouteDirectoryEntry Entry {
+                Name: Name,
+                Handler: Child
+            }
+
+            this->Children->Insert(Hash, &Entry)
+        }
+        define void Add(i8* Name, IRouteHandler* Child) {
+            this->Add(new String(Name), Child)
+        }
+
+        define IRouteHandler* Get(String* Name) {
+            i64 Hash := Name->Hash()
+
+            RouteDirectoryEntry* Entry := this->Children->Get(Hash)
+
+            if (Entry != null) {
+                return Entry->Handler
+            }
+
+            return null
+        }
+
+        define i32 Handle(String* Tail, RequestInfo* Request, ResponseInfo* Response) {
+            i32 NextSlashIndex := Tail->Find('/')
+            String* LocalName := Tail->Slice(0, NextSlashIndex)
+
+            IRouteHandler* Handler := this->Get(LocalName)
+
+            LocalName->Free()
+
+            if (Handler != null) {
+                String* NewTail := Tail->SliceToEnd(NextSlashIndex + 1)
+                Tail->Free()
+
+                return Handler->Handle(NewTail, Request, Response)
+            }
+            else if (this->DefaultHandler != null) {
+                return this->DefaultHandler->Handle(Tail, Request, Response)
+            }
+            else {
+                ; Return 0 for global default handler
+                return 0
+            }
+        }
+
+        define i32 Count() {
+            return this->Children->Count()
+        }
+        define IRouteHandler* At(i32 Index) {
+            RouteDirectoryEntry* Entry := this->Children->At(Index)
+
+            if (Entry != null) {
+                return Entry->Handler
+            }
+
+            return null
+        }
+    }
+
+    class Server implements IRouteHandler, derives INew {
+        ISocketServer* SocketServer
+
+        PointerArray* Clients ; <ServerClient*>
+
+        i64 epoll
+        epoll_event* Events
+
+        RouteDirectory* RootRouteDirectory
+
+        define void New(ISocketServer* SocketServer) {
+            this->SocketServer := SocketServer
+
+            this->Clients := PointerArray:New()
+
+            this->epoll := epoll_create()
+            epoll_ctl(this->epoll, EPOLL_CONTROL_ADD, this->SocketServer->GetFileDescriptor(), EPOLL_EVENT_IN)
+            this->Events := Alloc(#epoll_event)
+
+            this->RootRouteDirectory := new RouteDirectory(this)
+        }
+
+        define void Route(String* Path, IRouteHandler* Handler) {
+            this->RootRouteDirectory->Add(Path, Handler)
+        }
+        define void Route(i8* Path, IRouteHandler* Handler) {
+            this->Route(new String(Path), Handler)
+        }
+
+        ; Note: This is actually the default handler
+        define i32 Handle(String* Tail, RequestInfo* Request, ResponseInfo* Response) {
+            return 404
+        }
+
+        define void SendResponse(ServerClient* Client) {
+            ResponseInfo* Response := Client->Response
+            String* Content := new String(32)
+
+            if (Response->Status = 0) {
+                Response->Status := 404
+            }
+
+            Content->AppendFormat("HTTP/1.1 %i NUTS\r\n", Response->Status)
+
+            i32 Count := Response->Headers->Count()
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                RequestHeader* Header := Response->Headers->At(Index)
+
+                Content->Append(Header->Name)
+                Content->Append(": ")
+                Content->Append(Header->Value)
+                Content->Append("\r\n")
+            }
+            
+            if !(Response->Headers->Get("Content-Length")) {
+                i32 ContentLength := 0
+
+                if (Response->Body) {
+                    ContentLength := Response->Body->Length
+                }
+
+                Content->AppendFormat("Content-Length: %i\r\n", ContentLength)
+            }
+
+            Content->Append("\r\n")
+
+            if (Response->Body) {
+                Content->Append(Response->Body)
+            }
+
+            Response->Free()
+            Client->Response := null
+
+            Client->Socket->Write(Content->Buffer, Content->Length)
+            
+            Content->Free()
+        }
+
+        define void HandleClient(ServerClient* Client) {
+            loop {
+                if (Client->State = RequestParsingState::Method) {
+                    if !(Client->Socket->Peek(4, Client->Buffer)) {
+                        return
+                    }
+
+                    if (CompareMemory(Client->Buffer, "GET ", 4)) {
+                        Print("GET request\n")
+
+                        Client->Socket->Advance(4)
+
+                        Client->Request := new RequestInfo()
+                        Client->Request->Method := Method::GET
+                        Client->Request->Path := new String(32)
+                        Client->State := RequestParsingState::Path
+                    }
+                    else if (CompareMemory(Client->Buffer, "PUT ", 4)) {
+                        Client->Socket->Advance(4)
+
+                        Client->Request := new RequestInfo()
+                        Client->Request->Method := Method::PUT
+                        Client->Request->Path := new String(32)
+                        Client->State := RequestParsingState::Path
+                    }
+                    else {
+                        if !(Client->Socket->Peek(5, Client->Buffer)) {
+                            return
+                        }
+
+                        if (CompareMemory(Client->Buffer, "POST ", 5)) {
+                            Client->Socket->Advance(5)
+
+                            Client->Request := new RequestInfo()
+                            Client->Request->Method := Method::POST
+                            Client->Request->Path := new String(32)
+                            Client->State := RequestParsingState::Path
+                        }
+                        else {
+                            if !(Client->Socket->Peek(7, Client->Buffer)) {
+                                return
+                            }
+
+                            if (CompareMemory(Client->Buffer, "DELETE ", 7)) {
+                                Client->Socket->Advance(7)
+
+                                Client->Request := new RequestInfo()
+                                Client->Request->Method := Method::DELETE
+                                Client->Request->Path := new String(32)
+                                Client->State := RequestParsingState::Path
+                            }
+                            else {
+                                if !(Client->Socket->Peek(5, Client->Buffer)) {
+                                    return
+                                }
+
+                                if (CompareMemory(Client->Buffer, "HEAD ", 5) = 0) {
+                                    Client->Socket->Advance(5)
+
+                                    Client->Request->Method := Method::HEAD
+                                }
+                                else {
+                                    Print("Unknown HTTP method\n")
+                                    return
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (Client->State = RequestParsingState::Path) {
+                    while (Client->Socket->Read(1, Client->Buffer)) {
+                        i8 Character := *(Client->Buffer As i8*)
+
+                        if (Character = '?') {
+                            Print("Path: %S\n", Client->Request->Path)
+                            Print("Path -> Query Parameters\n")
+
+                            Client->State := RequestParsingState::ParameterName
+                            Client->CurrentQueryParameterName := new String(32)
+                            break
+                        }
+                        else if (Character = ' ') {
+                            Print("Path: %S\n", Client->Request->Path)
+                            Print("Path -> Version\n")
+
+                            Client->State := RequestParsingState::Version
+                            break
+                        }
+                        else {
+                            Client->Request->Path->Append(Character)
+                        }
+                    }
+                }
+                else if (Client->State = RequestParsingState::ParameterName) {
+                    while (Client->Socket->Read(1, Client->Buffer)) {
+                        i8 Character := *(Client->Buffer As i8*)
+
+                        if (Character = '=') {
+                            Print("Parameter Name: %S\n", Client->CurrentQueryParameterName)
+                            Print("Parameter Name -> Parameter Value\n")
+
+                            Client->State := RequestParsingState::ParameterValue
+                            Client->CurrentQueryParameterValue := new String(32)
+                            break
+                        }
+                        else if (Character = '&') {
+                            Print("Parameter Name: %S\n", Client->CurrentQueryParameterName)
+                            Print("Parameter Name -> Parameter Name\n")
+
+                            Client->Request->Parameters->Add(Client->CurrentQueryParameterName, null)
+                            Client->CurrentQueryParameterName := new String(32)
+                            break
+                        }
+                        else if (Character = ' ') {
+                            Print("Parameter Name: %S\n", Client->CurrentQueryParameterName)
+                            Print("Parameter Name -> Version\n")
+
+                            Client->Request->Parameters->Add(Client->CurrentQueryParameterName, null)
+                            Client->CurrentQueryParameterName := null
+                            Client->State := RequestParsingState::Version
+                            break
+                        }
+                        else {
+                            Client->CurrentQueryParameterName->Append(Character)
+                        }
+                    }
+                }
+                else if (Client->State = RequestParsingState::ParameterValue) {
+                    while (Client->Socket->Read(1, Client->Buffer)) {
+                        i8 Character := *(Client->Buffer As i8*)
+
+                        if (Character = '&') {
+                            Print("Parameter Name: %S\n", Client->CurrentQueryParameterName)
+                            Print("Parameter Value: %S\n", Client->CurrentQueryParameterValue)
+                            Print("Parameter Value -> Parameter Name\n")
+
+                            Client->Request->Parameters->Add(Client->CurrentQueryParameterName, Client->CurrentQueryParameterValue)
+                            Client->CurrentQueryParameterName := new String(32)
+                            Client->CurrentQueryParameterValue := null
+                            Client->State := RequestParsingState::ParameterName
+                            break
+                        }
+                        else if (Character = ' ') {
+                            Print("Parameter Name: %S\n", Client->CurrentQueryParameterName)
+                            Print("Parameter Value: %S\n", Client->CurrentQueryParameterValue)
+                            Print("Parameter Value -> Version\n")
+
+                            Client->Request->Parameters->Add(Client->CurrentQueryParameterName, Client->CurrentQueryParameterValue)
+                            Client->CurrentQueryParameterName := null
+                            Client->CurrentQueryParameterValue := null
+                            Client->State := RequestParsingState::Version
+                            break
+                        }
+                        else {
+                            Client->CurrentQueryParameterValue->Append(Character)
+                        }
+                    }
+                }
+                else if (Client->State = RequestParsingState::Version) {
+                    if !(Client->Socket->Read(10, Client->Buffer)) {
+                        return
+                    }
+
+                    if (CompareMemory(Client->Buffer, "HTTP/1.1\r\n", 10)) {
+                        Print("Version -> Header Name\n")
+                        Client->State := RequestParsingState::HeaderName
+                        Client->CurrentHeaderName := new String(32)
+                    }
+                    else {
+                        Print("Unknown HTTP version\n")
+                        return
+                    }
+                }
+                else if (Client->State = RequestParsingState::HeaderName) {
+                    while (Client->Socket->Peek(1, Client->Buffer)) {
+                        i8 Character := *(Client->Buffer As i8*)
+
+                        if (Character = ':') {
+                            if !(Client->Socket->Peek(2, Client->Buffer)) {
+                                return
+                            }
+
+                            if (CompareMemory(Client->Buffer, ": ", 2)) {
+                                Client->Socket->Advance(2)
+
+                                Print("Header Name: %S\n", Client->CurrentHeaderName)
+                                Print("Header Name -> Header Value\n")
+
+                                Client->State := RequestParsingState::HeaderValue
+                                Client->CurrentHeaderValue := new String(32)
+                                break
+                            }
+                            else {
+                                Print("Malformed HTTP header\n")
+                                return
+                            }
+                        }
+                        else if (Character = '\r') {
+                            if !(Client->Socket->Peek(2, Client->Buffer)) {
+                                return
+                            }
+
+                            if (CompareMemory(Client->Buffer, "\r\n", 2)) {
+                                Client->Socket->Advance(2)
+
+                                Client->ExpectedContentLength := 0
+                                Client->Request->Headers->GetInteger("Content-Length", &Client->ExpectedContentLength)
+
+                                if (Client->ExpectedContentLength = 0) {
+                                    Print("Header Name -> Complete\n")
+                                    Client->State := RequestParsingState::Complete
+                                }
+                                else {
+                                    Print("Header Name -> Body\n")
+                                    Client->State := RequestParsingState::Body
+                                    Client->Request->Body := new String(32)
+                                }
+
+                                break
+                            }
+                        }
+
+                        Client->Socket->Advance(1)
+                        Client->CurrentHeaderName->Append(Character)
+                    }
+                }
+                else if (Client->State = RequestParsingState::HeaderValue) {
+                    while (Client->Socket->Peek(1, Client->Buffer)) {
+                        i8 Character := *(Client->Buffer As i8*)
+
+                        if (Character = '\r') {
+                            if !(Client->Socket->Read(2, Client->Buffer)) {
+                                return
+                            }
+
+                            if !(CompareMemory(Client->Buffer, "\r\n", 2)) {
+                                Print("Malformed HTTP header\n")
+                                return
+                            }
+
+                            Print("Header Name: %S\n", Client->CurrentHeaderName)
+                            Print("Header Value: %S\n", Client->CurrentHeaderValue)
+                            Client->Request->Headers->Set(Client->CurrentHeaderName, Client->CurrentHeaderValue)
+                            Client->CurrentHeaderName := new String(32)
+                            Client->CurrentHeaderValue := null
+
+
+                            Print("Header Value -> Header Name\n")
+                            Client->State := RequestParsingState::HeaderName
+
+                            break
+                        }
+                        else {
+                            Client->Socket->Advance(1)
+                            Client->CurrentHeaderValue->Append(Character)
+                        }
+                    }
+                }
+                else if (Client->State = RequestParsingState::Body) {
+                    while (Client->Socket->Peek(1, Client->Buffer)) {
+                        i8 Character := *(Client->Buffer As i8*)
+
+                        if (Character = '\r') {
+                            if !(Client->Socket->Peek(4, Client->Buffer)) {
+                                return
+                            }
+
+                            if (CompareMemory(Client->Buffer, "\r\n\r\n", 4)) {
+                                Client->Socket->Advance(4)
+
+                                Client->State := RequestParsingState::Complete
+                                break
+                            }
+                        }
+
+                        Client->Socket->Advance(1)
+                        Client->Request->Body->Append(Character)
+                    }
+                }
+                else if (Client->State = RequestParsingState::Complete) {
+                    Print("Request complete\n")
+
+                    if (Client->CurrentQueryParameterName) {
+                        Client->CurrentQueryParameterName->Free()
+                    }
+
+                    if (Client->CurrentQueryParameterValue) {
+                        Client->CurrentQueryParameterValue->Free()
+                    }
+
+                    if (Client->CurrentHeaderName) {
+                        Client->CurrentHeaderName->Free()
+                    }
+
+                    if (Client->CurrentHeaderValue) {
+                        Client->CurrentHeaderValue->Free()
+                    }
+
+                    Client->Request->Print()
+
+                    Client->Response := new ResponseInfo()
+
+                    if (Client->Request->Path->At(0) = '/') {
+                        String* Tail := Client->Request->Path->SliceToEnd(1)
+
+                        Client->Response->Status := this->RootRouteDirectory->Handle(Tail, Client->Request, Client->Response)
+                    }
+
+                    this->SendResponse(Client)
+
+                    Client->Request->Free()
+                    Client->Request := null
+
+                    Client->State := RequestParsingState::Method
+
+                    break
+                }
+            }
+        }
+
+        define void CloseClient(ServerClient* Client) {
+            epoll_ctl(this->epoll, EPOLL_CONTROL_DEL, Client->Socket->GetFileDescriptor(), 0)
+            Client->Socket->Free()
+
+            if (Client->Request) {
+                Client->Request->Free()
+            }
+
+            if (Client->Response) {
+                Client->Response->Free()
+            }
+
+            this->Clients->RemoveValue(Client)
+            Free(Client)
+        }
+
+        define void Start() {
+            loop {
+                i64 EventCount := epoll_wait(this->epoll, this->Events, this->Clients->Count() + 1, -1)
+
+                Print("Epoll event count: %i\n", EventCount)
+
+                for (i32 Index := 0, Index < EventCount, Index++) {
+                    epoll_event* Event := this->Events[Index]
+
+                    Print("Event: fd=%i, events=%i\n", Event->fd, Event->Events)
+
+                    if (Event->fd = this->SocketServer->GetFileDescriptor()) {
+                        if (Event->Events & EPOLL_EVENT_IN) {
+                            DebugHeapMark()
+
+                            ServerClient* Client := Alloc(#ServerClient)
+                            ISocket* Connection := this->SocketServer->Accept(Client~>Address, #AnySocketAddress)
+                            Client->Socket := Connection
+
+                            this->Clients->Push(Client)
+                            this->Events := ReAlloc(this->Events, (this->Clients->Count() + 1) * #epoll_event)
+
+                            epoll_ctl(this->epoll, EPOLL_CONTROL_ADD, Connection->GetFileDescriptor(), EPOLL_EVENT_IN | EPOLL_EVENT_ERR | EPOLL_EVENT_HUP)
+                        }
+                    }
+                    else {
+                        ServerClient* OutstandingClient := null
+
+                        i32 ClientCount := this->Clients->Count()
+
+                        for (i32 ClientIndex := 0, ClientIndex < ClientCount, ClientIndex++) {
+                            ServerClient* Client := this->Clients->At(ClientIndex)
+
+                            if (Client->Socket->GetFileDescriptor() = Event->fd) {
+                                OutstandingClient := Client
+                                break
+                            }
+                        }
+
+                        if (OutstandingClient != null) {
+                            if (Event->Events & EPOLL_EVENT_IN) {
+                                this->HandleClient(OutstandingClient)
+                            }
+                            
+                            if (Event->Events & EPOLL_EVENT_ERR) {
+                                Print("Socket error!\n")
+                                this->CloseClient(OutstandingClient)
+                                DebugHeapSweep()
+                            }
+                            else if (Event->Events & EPOLL_EVENT_HUP) {
+                                Print("Socket hangup!\n")
+                                this->CloseClient(OutstandingClient)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+define void DoStringFormat(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+    HTTP::String* S := Parameters[*ParameterIndex] As void*
+
+    if (S = null) {
+        this->PrintCharacters("<null string>", 13)
+    }
+    else {
+        this->PrintCharacters(S->Buffer, S->Length)
+    }
+
+    *ParameterIndex += 1
+}
+
+PrintFormatPrototype StringPrintPrototype {
+    Name: "S",
+    Format: &DoStringFormat
+}
+
+i32 STRING_PRINT_PROTOTYPE_ID := AddPrintFormat(&StringPrintPrototype)
