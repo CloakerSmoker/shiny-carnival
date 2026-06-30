@@ -1,0 +1,323 @@
+
+#Require "./src/ASN1/Core.rlx"
+
+class EcDSA derives INew {
+    ShortWeierstrass::Curve* Curve
+
+    define void New(ShortWeierstrass::Curve* Curve) {
+        this->Curve := Curve
+    }
+
+    define BigInteger* TruncateHash(BigInteger* Hash) {
+        BigInteger* N := this->Curve->N
+
+        i32 NBitCount := N->BitCount()
+        i32 HashBitCount := Hash->BitCount()
+
+        BigInteger* Truncated := new BigInteger(Hash)
+
+        Hash->Release()
+
+        if (HashBitCount > NBitCount) {
+            Truncated := Truncated->RightShift(HashBitCount - NBitCount)
+        }
+
+        if (Truncated->IsGreaterThanOrEqualTo(N)) {
+            Truncated := Truncated->Modulo(N->Reference())
+        }
+
+        return Truncated
+    }
+
+    define SignaturePair* Sign(BigInteger* PrivateKey, BigInteger* MessageHash) {
+        BigInteger* N := this->Curve->N
+
+        BigInteger* Z := this->TruncateHash(MessageHash)
+
+        Mark()
+
+        loop {
+            BigInteger* K := this->Curve->GenerateScalar()
+            ShortWeierstrass::AffinePoint* AP := this->Curve->Multiply(K->Reference())
+            BigInteger* R := AP->X->Reference()->Modulo(N->Reference())
+
+            AP->Release()
+
+            if (R->IsNotZero()) {
+                BigInteger* KInv := K->ModularInverse(N->Reference())
+                BigInteger* ZPlusRD := Z->Reference()->Add(R->Reference()->Multiply(PrivateKey->Reference()))
+                BigInteger* S := KInv->Multiply(ZPlusRD)->Modulo(N->Reference())
+
+                if (S->IsNotZero()) {
+                    Z->Release()
+                    PrivateKey->Release()
+
+                    Print("Signature R: %bn-base-16\n", R)
+                    Print("Signature S: %bn-base-16\n", S)
+
+                    return new SignaturePair(R, S)
+                }
+                else {
+                    Print("S is zero, retrying\n")
+                    R->Release()
+                    S->Release()
+                    HadLeaks()
+                }
+            }
+            else {
+                Print("R is zero, retrying\n")
+
+                R->Release()
+                K->Release()
+            }
+        }
+
+        Print("Signature R: %bn-base-16\n", R)
+        Print("Signature S: %bn-base-16\n", S)
+
+        return new SignaturePair(R, S)
+    }
+
+    define void* SerializeSignature(SignaturePair* Signature, i32* OutSize) {
+        i32 Size := this->Curve->CoordinateByteCount * 2
+        i8* Result := Alloc(Size)
+
+        *OutSize := Size
+
+        Signature->R->ToBytesReversed(Result, this->Curve->CoordinateByteCount)
+        Signature->S->ToBytesReversed(Result + this->Curve->CoordinateByteCount, this->Curve->CoordinateByteCount)
+
+        return Result
+    }
+
+    define void* Sign(BigInteger* PrivateKey, void* MessageHashBuffer, i32 MessageHashSize, i32* OutSignatureSize) {
+        BigInteger* MessageHash := BigInteger:FromBytesReversed(MessageHashBuffer, MessageHashSize)
+
+        SignaturePair* Signature := this->Sign(PrivateKey, MessageHash)
+
+        void* Result := this->SerializeSignature(Signature, OutSignatureSize)
+
+        Signature->Release()
+
+        return Result
+    }
+
+    define void* SerializeSignatureDER(SignaturePair* Signature, i32* OutSize) {
+        ASN1::DER::Serializer* DER := new ASN1::DER::Serializer()
+
+        ASN1::DER::SequenceValue* Sequence := DER->CreateSequence()
+
+        ASN1::DER::IntegerValue* RValue := DER->CreateInteger(Signature->R->Reference())
+        Sequence->Push(RValue)
+
+        ASN1::DER::IntegerValue* SValue := DER->CreateInteger(Signature->S->Reference())
+        Sequence->Push(SValue)
+        
+        DER->WriteValue(Sequence)
+
+        *OutSize := DER->Size
+        void* Result := CloneMemory(DER->Buffer, DER->Size)
+
+        DER->Free()
+        Sequence->Free()
+
+        return Result
+    }
+
+    define void* SignDER(BigInteger* PrivateKey, void* MessageHashBuffer, i32 MessageHashSize, i32* OutSignatureSize) {
+        BigInteger* MessageHash := BigInteger:FromBytesReversed(MessageHashBuffer, MessageHashSize)
+
+        SignaturePair* Signature := this->Sign(PrivateKey, MessageHash)
+
+        void* Result := this->SerializeSignatureDER(Signature, OutSignatureSize)
+
+        Signature->Release()
+
+        return Result
+    }
+
+    ; All parameters loaded+parsed
+
+    define i8 Verify(ShortWeierstrass::AffinePoint* PublicKey, BigInteger* MessageHash, SignaturePair* Signature) {
+        BigInteger* N := this->Curve->N
+
+        if !(this->Curve->IsOnCurve(PublicKey)) {
+            Print("Public key is not on the curve\n")
+            return false
+        }
+
+        if !(this->Curve->IsInSubgroup(PublicKey)) {
+            Print("Public key is not in the subgroup\n")
+            return false
+        }
+
+        BigInteger* R := Signature->R->Reference()
+        BigInteger* S := Signature->S->Reference()
+
+        if (R->IsZero() || R->IsGreaterThanOrEqualTo(N)) {
+            Print("R is out of range\n")
+            return false
+        }
+
+        if (S->IsZero() || S->IsGreaterThanOrEqualTo(N)) {
+            Print("S is out of range\n")
+            return false
+        }
+
+        BigInteger* Z := this->TruncateHash(MessageHash)
+
+        BigInteger* SInv := S->ModularInverse(N->Reference())
+
+        ;Print("S**-1: %bn-base-16\n", SInv)
+
+        BigInteger* U1 := Z->Multiply(SInv->Reference())->Modulo(N->Reference())
+        BigInteger* U2 := R->Reference()->Multiply(SInv)->Modulo(N->Reference())
+
+        ;Print("U1: %bn-base-16\n", U1)
+        ;Print("U2: %bn-base-16\n", U2)
+
+        ShortWeierstrass::AffinePoint* U1G := this->Curve->Multiply(U1)
+        ShortWeierstrass::AffinePoint* U2Q := this->Curve->Multiply(PublicKey, U2)
+
+        ShortWeierstrass::AffinePoint* Verify := this->Curve->Add(U1G, U2Q)
+
+        if (Verify->IsPointAtInfinity()) {
+            Verify->Release()
+
+            return false
+        }
+
+        BigInteger* VerifyR := Verify->X->Reference()->Modulo(N->Reference())
+
+        i8 Result := VerifyR->Equals(R)
+
+        Verify->Release()
+        VerifyR->Release()
+        R->Release()
+
+        PublicKey->Release()
+        Signature->Release()
+
+        return Result
+    }
+
+    ; Signature needs to be converted from raw format
+
+    define i8 Verify(ShortWeierstrass::AffinePoint* PublicKey, BigInteger* MessageHash, void* SignatureBuffer, i32 SignatureSize) {
+        if (SignatureSize != 2 * this->Curve->CoordinateByteCount) {
+            return false
+        }
+
+        BigInteger* R := BigInteger:FromBytesReversed(SignatureBuffer, this->Curve->CoordinateByteCount)
+        BigInteger* S := BigInteger:FromBytesReversed(SignatureBuffer + this->Curve->CoordinateByteCount, this->Curve->CoordinateByteCount)
+
+        SignaturePair* Signature := new SignaturePair(R, S)
+
+        return this->Verify(PublicKey, MessageHash, Signature)
+    }
+
+    ; Message hash needs to be converted to integer
+    ; Signature needs to be converted from raw format
+
+    define i8 Verify(ShortWeierstrass::AffinePoint* PublicKey, void* MessageHashBuffer, i32 MessageHashSize, void* SignatureBuffer, i32 SignatureSize) {
+        BigInteger* MessageHash := BigInteger:FromBytesReversed(MessageHashBuffer, MessageHashSize)
+
+        return this->Verify(PublicKey, MessageHash, SignatureBuffer, SignatureSize)
+    }
+
+    ; Public key needs to be loaded from SEC1 format
+    ; Message hash needs to be converted to integer
+    ; Signature needs to be converted from raw format
+
+    define i8 Verify(void* PublicKeyBuffer, i32 PublicKeySize, void* MessageHashBuffer, i32 MessageHashSize, void* SignatureBuffer, i32 SignatureSize) {
+        ShortWeierstrass::AffinePoint* PublicKey := this->Curve->LoadSEC1(PublicKeyBuffer, PublicKeySize)
+
+        if !(PublicKey) {
+            return false
+        }
+
+        return this->Verify(PublicKey, MessageHashBuffer, MessageHashSize, SignatureBuffer, SignatureSize)
+    }
+
+    ; Signature needs to be parsed out of DER blob
+
+    define SignaturePair* LoadSignatureDER(void* SignatureBuffer, i32 SignatureSize) {
+        ASN1::DER::Parser* Parser := new ASN1::DER::Parser(SignatureBuffer, SignatureSize)
+        ASN1::DER::IValue* RootValue := Parser->ParseValue()
+
+        BigInteger* R := null
+        BigInteger* S := null
+
+        if (RootValue && RootValue->Is(ASN1::DER::UniversalTag::SEQUENCE)) {
+            ASN1::DER::SequenceValue* Sequence := RootValue As ASN1::DER::SequenceValue*
+
+            if (Sequence->Count() = 2) {
+                ASN1::DER::IValue* RawRValue := Sequence->At(0)
+
+                if (RawRValue && RawRValue->Is(ASN1::DER::UniversalTag::INTEGER)) {
+                    ASN1::DER::IntegerValue* RValue := RawRValue As ASN1::DER::IntegerValue*
+
+                    R := RValue->Value->Reference()
+                }
+
+                ASN1::DER::IValue* RawSValue := Sequence->At(1)
+
+                if (RawSValue && RawSValue->Is(ASN1::DER::UniversalTag::INTEGER)) {
+                    ASN1::DER::IntegerValue* SValue := RawSValue As ASN1::DER::IntegerValue*
+
+                    S := SValue->Value->Reference()
+                }
+            }
+        }
+
+        RootValue->Free()
+        Parser->Free()
+
+        if !(R && S) {
+            if (R) {
+                R->Release()
+            }
+
+            if (S) {
+                S->Release()
+            }
+
+            return null
+        }
+
+        return new SignaturePair(R, S)
+    }
+
+    define i8 VerifyDER(ShortWeierstrass::AffinePoint* PublicKey, BigInteger* MessageHash, void* SignatureBuffer, i32 SignatureSize) {
+        SignaturePair* Signature := this->LoadSignatureDER(SignatureBuffer, SignatureSize)
+
+        if !(Signature) {
+            return false
+        }
+
+        return this->Verify(PublicKey, MessageHash, Signature)
+    }
+
+    ; Signature needs to be parsed out of DER blob
+    ; Message hash needs to be converted to integer
+
+    define i8 VerifyDER(ShortWeierstrass::AffinePoint* PublicKey, void* MessageHashBuffer, i32 MessageHashSize, void* SignatureBuffer, i32 SignatureSize) {
+        BigInteger* MessageHash := BigInteger:FromBytesReversed(MessageHashBuffer, MessageHashSize)
+
+        return this->VerifyDER(PublicKey, MessageHash, SignatureBuffer, SignatureSize)
+    }
+
+    ; Signature needs to be parsed out of DER blob
+    ; Message hash needs to be converted to integer
+    ; Public key needs to be loaded from SEC1 format
+
+    define i8 VerifyDER(void* PublicKeyBuffer, i32 PublicKeySize, void* MessageHashBuffer, i32 MessageHashSize, void* SignatureBuffer, i32 SignatureSize) {
+        ShortWeierstrass::AffinePoint* PublicKey := this->Curve->LoadSEC1(PublicKeyBuffer, PublicKeySize)
+
+        if !(PublicKey) {
+            return false
+        }
+
+        return this->VerifyDER(PublicKey, MessageHashBuffer, MessageHashSize, SignatureBuffer, SignatureSize)
+    }
+}
