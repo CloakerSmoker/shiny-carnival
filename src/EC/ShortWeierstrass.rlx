@@ -1,0 +1,903 @@
+
+#Require "$/Memory.rlx"
+#Require "$/Console.rlx"
+
+declare i8 EnterMetadataHeap()
+declare void ExitMetadataHeap(i8)
+i8 ALLOCATIONS_ARE_TRACKED := false
+
+#Require "./src/Big/Big.rlx"
+#Require "./src/Big/Print.rlx"
+
+#Require "./src/DebugHeap.rlx"
+
+i64 DevURandom := FileOpen("/dev/urandom", FILE_READ)
+
+define void SecureFillRandom(void* Buffer, i32 Count) {
+    FileRead(DevURandom, Buffer, Count)
+}
+
+define void* AllocateSecureRandom(i32 Size) {
+    void* Result := Alloc(Size)
+    SecureFillRandom(Result, Size)
+    return Result
+}
+
+namespace ShortWeierstrass {
+    class JacobianPoint derives INew {
+        BigInteger* X
+        BigInteger* Y
+        BigInteger* Z
+        i32 ReferenceCount
+
+        define void New(BigInteger* X, BigInteger* Y, BigInteger* Z) {
+            this->X := X
+            this->Y := Y
+            this->Z := Z
+            this->ReferenceCount := 1
+        }
+
+        define i8 IsPointAtInfinity() {
+            return this->Z->IsZero()
+        }
+
+        define self* Reference() {
+            this->ReferenceCount += 1
+            return this
+        }
+        define void Release() {
+            this->ReferenceCount -= 1
+
+            if (this->ReferenceCount <= 0) {
+                this->X->Release()
+                this->Y->Release()
+                this->Z->Release()
+
+                Free(this)
+            }
+        }
+    }
+
+    class AffinePoint derives INew {
+        BigInteger* X
+        BigInteger* Y
+        i8 PointAtInfinity
+        i32 ReferenceCount
+
+        define void New(BigInteger* X, BigInteger* Y, i8 PointAtInfinity) {
+            this->X := X
+            this->Y := Y
+            this->PointAtInfinity := PointAtInfinity
+            this->ReferenceCount := 1
+        }
+
+        define i8 IsPointAtInfinity() {
+            return this->PointAtInfinity
+        }
+
+        define self* Reference() {
+            this->ReferenceCount += 1
+            return this
+        }
+
+        define void Release() {
+            this->ReferenceCount -= 1
+
+            if (this->ReferenceCount <= 0) {
+                this->X->Release()
+                this->Y->Release()
+
+                Free(this)
+            }
+        }
+    }
+
+    class FiniteField derives INew {
+        BigInteger* P
+
+        define void New(BigInteger* P) {
+            this->P := P
+        }
+
+        define BigInteger* Wrap(BigInteger* N) {
+            if (N->Negative) {
+                return N->Plus(this->P->Reference())
+            }
+
+            return N
+        }
+
+        define BigInteger* Add(BigInteger* Left, BigInteger* Right) {
+            return this->Wrap(Left->Add(Right)->Modulo(this->P->Reference()))
+        }
+        define BigInteger* Subtract(BigInteger* Left, BigInteger* Right) {
+            return this->Wrap(Left->Subtract(Right)->Modulo(this->P->Reference()))
+        }
+        define BigInteger* Multiply(BigInteger* Left, BigInteger* Right) {
+            return this->Wrap(Left->Multiply(Right)->Modulo(this->P->Reference()))
+        }
+        define BigInteger* Power(BigInteger* N, BigInteger* E) {
+            return this->Wrap(N->Power(E, this->P->Reference()))
+        }
+        define BigInteger* Square(BigInteger* N) {
+            return this->Wrap(N->Power(BigInteger:Constant(2), this->P->Reference()))
+        }
+    }
+
+    class Curve derives INew {
+        BigInteger* P
+        FiniteField* Field
+
+        BigInteger* A
+        BigInteger* B
+
+        AffinePoint* AffineGenerator
+        JacobianPoint* JacobianGenerator
+
+        BigInteger* N
+        BigInteger* H
+
+        i32 CoordinateByteCount
+
+        define void New(BigInteger* P, BigInteger* A, BigInteger* B, BigInteger* Gx, BigInteger* Gy, BigInteger* N, BigInteger* H) {
+            this->P := P
+            this->Field := new FiniteField(P)
+
+            this->A := A
+            this->B := B
+
+            this->AffineGenerator := new AffinePoint(Gx, Gy, false)
+            this->JacobianGenerator := new JacobianPoint(Gx->Reference(), Gy->Reference(), new BigInteger(1))
+
+            this->N := N
+            this->H := H
+
+            this->CoordinateByteCount := (P->BitCount() + 7) / 8
+        }
+
+        define JacobianPoint* Double(JacobianPoint* P) {
+            /*Print("Jacobian Double\n")
+            Print("       X1: %bn-base-16\n", P->X)
+            Print("       Y1: %bn-base-16\n", P->Y)
+            Print("       Z1: %bn-base-16\n", P->Z)*/
+
+            if (P->IsPointAtInfinity()) {
+                ;Print("P is point at infinity, returning P\n")
+                return P
+            }
+
+            FiniteField* F := this->Field
+
+            BigInteger* X1 := P->X->Reference()
+            BigInteger* Y1 := P->Y->Reference()
+            BigInteger* Z1 := P->Z->Reference()
+
+            BigInteger* a := this->A->Reference()
+
+            ; translation of dbl-2007-bl
+            BigInteger* XX    := F->Power     (X1->Reference()    , new BigInteger(2)  )
+            BigInteger* YY    := F->Power     (Y1->Reference()    , new BigInteger(2)  )
+            BigInteger* YYYY  := F->Power     (YY->Reference()    , new BigInteger(2)  )
+            BigInteger* ZZ    := F->Power     (Z1->Reference()    , new BigInteger(2)  )
+            BigInteger* t0    := F->Add       (X1                 , YY->Reference()    )  ; releases X1
+            BigInteger* t1    := F->Power     (t0                 , new BigInteger(2)  )  ; releases t0
+            BigInteger* t2    := F->Subtract  (t1                 , XX->Reference()    )  ; releases t1
+            BigInteger* t3    := F->Subtract  (t2                 , YYYY->Reference()  )  ; releases t2
+            BigInteger* S     := F->Multiply  (new BigInteger(2)  , t3                 )  ; releases t3
+            BigInteger* t4    := F->Power     (ZZ->Reference()    , new BigInteger(2)  )
+            BigInteger* t5    := F->Multiply  (a                  , t4                 )  ; releases a, t4
+            BigInteger* t6    := F->Multiply  (new BigInteger(3)  , XX                 )  ; releases XX
+            BigInteger* M     := F->Add       (t6                 , t5                 )  ; releases t6, t5
+            BigInteger* t7    := F->Power     (M->Reference()     , new BigInteger(2)  )
+            BigInteger* t8    := F->Multiply  (new BigInteger(2)  , S->Reference()     )
+            BigInteger* T     := F->Subtract  (t7                 , t8                 )  ; releases t7, t8
+            BigInteger* X3    :=              (T->Reference()                          )
+            BigInteger* t9    := F->Subtract  (S                  , T                  )  ; releases S, T
+            BigInteger* t10   := F->Multiply  (new BigInteger(8)  , YYYY               )  ; releases YYYY
+            BigInteger* t11   := F->Multiply  (M                  , t9                 )  ; releases M, t9
+            BigInteger* Y3    := F->Subtract  (t11                , t10                )  ; releases t11, t10
+            BigInteger* t12   := F->Add       (Y1                 , Z1                 )  ; releases Y1, Z1
+            BigInteger* t13   := F->Power     (t12                , new BigInteger(2)  )  ; releases t12
+            BigInteger* t14   := F->Subtract  (t13                , YY                 )  ; releases t13, YY
+            BigInteger* Z3    := F->Subtract  (t14                , ZZ                 )  ; releases t14, ZZ
+
+            /*Print("Result X3: %bn-base-16\n", X3)
+            Print("Result Y3: %bn-base-16\n", Y3)
+            Print("Result Z3: %bn-base-16\n", Z3)*/
+
+            P->Release()
+
+            return new JacobianPoint(X3, Y3, Z3)
+        }
+
+        define JacobianPoint* Add(JacobianPoint* P, JacobianPoint* Q) {
+            /*Print("Jacobian Add\n")
+            Print("       X1: %bn-base-16\n", P->X)
+            Print("       Y1: %bn-base-16\n", P->Y)
+            Print("       Z1: %bn-base-16\n", P->Z)
+            Print("       X2: %bn-base-16\n", Q->X)
+            Print("       Y2: %bn-base-16\n", Q->Y)
+            Print("       Z2: %bn-base-16\n", Q->Z)*/
+
+            if (P->IsPointAtInfinity()) {
+                ;Print("P is point at infinity, returning Q\n")
+                return Q->Reference()
+            }
+
+            if (Q->IsPointAtInfinity()) {
+                ;Print("Q is point at infinity, returning P\n")
+                return P->Reference()
+            }
+
+            FiniteField* _ := this->Field
+
+            BigInteger* X1 := P->X->Reference()
+            BigInteger* Y1 := P->Y->Reference()
+            BigInteger* Z1 := P->Z->Reference()
+            BigInteger* X2 := Q->X->Reference()
+            BigInteger* Y2 := Q->Y->Reference()
+            BigInteger* Z2 := Q->Z->Reference()
+
+            ; translation of add-2001-b
+            BigInteger* ZZ1   := _->Power     (Z1->Reference()    , new BigInteger(2)  )
+            BigInteger* ZZZ1  := _->Multiply  (Z1->Reference()    , ZZ1->Reference()   )
+            BigInteger* ZZ2   := _->Power     (Z2->Reference()    , new BigInteger(2)  )
+            BigInteger* ZZZ2  := _->Multiply  (Z2->Reference()    , ZZ2->Reference()   )
+            BigInteger* A     := _->Multiply  (X1                 , ZZ2                )  ; releases X1, ZZ2
+            BigInteger* t0    := _->Multiply  (X2                 , ZZ1                )  ; releases X2, ZZ1
+            BigInteger* B     := _->Subtract  (t0                 , A->Reference()     )  ; releases t0
+            BigInteger* c     := _->Multiply  (Y1                 , ZZZ2               )  ; releases Y1, ZZZ2
+            BigInteger* t1    := _->Multiply  (Y2                 , ZZZ1               )  ; releases Y2, ZZZ1
+            BigInteger* d     := _->Subtract  (t1                 , c->Reference()     )  ; releases t1
+
+            if (B->IsZero()) {
+                Q->Release()
+                A->Release()
+                B->Release()
+                c->Release()
+
+                JacobianPoint* Result := null
+
+                if (d->IsZero()) {
+                    ;Print("P and Q are equal, doubling P\n")
+                    Result := this->Double(P)
+                }
+                else {
+                    ;Print("P and Q are inverses, returning point at infinity\n")
+                    Result := new JacobianPoint(new BigInteger(0), new BigInteger(0), new BigInteger(0))
+                }
+
+                d->Release()
+
+                return Result
+            }
+
+            BigInteger* e     := _->Power     (B->Reference()     , new BigInteger(2)  )
+            BigInteger* f     := _->Multiply  (B->Reference()     , e->Reference()     )
+            BigInteger* g     := _->Multiply  (A                  , e                  )  ; releases A, e
+            BigInteger* h     := _->Multiply  (Z1                 , Z2                 )  ; releases Z1, Z2
+            BigInteger* t2    := _->Multiply  (new BigInteger(2)  , g->Reference()     )
+            BigInteger* f2g   := _->Add       (t2                 , f->Reference()     )  ; releases t2
+            BigInteger* t3    := _->Power     (d->Reference()     , new BigInteger(2)  )
+            BigInteger* X3    := _->Subtract  (t3                 , f2g                )  ; releases t3, f2g
+            BigInteger* Z3    := _->Multiply  (B                  , h                  )  ; releases B, h
+            BigInteger* gx    := _->Subtract  (g                  , X3->Reference()    )  ; releases g
+            BigInteger* t4    := _->Multiply  (c                  , f                  )  ; releases c, f
+            BigInteger* t5    := _->Multiply  (d                  , gx                 )  ; releases d, gx
+            BigInteger* Y3    := _->Subtract  (t5                 , t4                 )  ; releases t5, t4
+
+            P->Release()
+            Q->Release()
+
+            /*Print("Result X3: %bn-base-16\n", X3)
+            Print("Result Y3: %bn-base-16\n", Y3)
+            Print("Result Z3: %bn-base-16\n", Z3)*/
+
+            return new JacobianPoint(X3, Y3, Z3)
+        }
+
+        define JacobianPoint* Multiply(JacobianPoint* P, BigInteger* Scalar) {
+            JacobianPoint* Q := new JacobianPoint(new BigInteger(0), new BigInteger(0), new BigInteger(0))
+
+            /*Print("Jacobian Multiply\n")
+            Print("Point: X: %bn-base-16\n", P->X)
+            Print("       Y: %bn-base-16\n", P->Y)
+            Print("       Z: %bn-base-16\n", P->Z)
+            Print("Scalar: %bn-base-16\n", Scalar)*/
+
+            JacobianPoint* Addend := P
+
+            while (Scalar->IsNotZero()) {
+                if (Scalar->IsOdd()) {
+                    Q := this->Add(Q, Addend->Reference())
+                }
+
+                Addend := this->Double(Addend)
+                Scalar := Scalar->Quotient(BigInteger:Constant(2))->Label("Scalar / 2")
+            }
+
+            Addend->Release()
+            Scalar->Release()
+
+            return Q
+        }
+
+        define i8 IsOnCurve(AffinePoint* P) {
+            FiniteField* F := this->Field
+
+            BigInteger* X := P->X->Reference()
+            BigInteger* Y := P->Y->Reference()
+
+            ; Check that y^2 = x^3 + ax + b
+
+            BigInteger* LHS := F->Power(Y, new BigInteger(2))
+
+            BigInteger* XPow3 := F->Power(X->Reference(), new BigInteger(3))
+            BigInteger* AX := F->Multiply(this->A->Reference(), X)
+            BigInteger* RHS := F->Add(F->Add(XPow3, AX), this->B->Reference())
+
+            i8 Result := LHS->Equals(RHS)
+
+            LHS->Release()
+            RHS->Release()
+
+            return Result
+        }
+
+        define JacobianPoint* ToJacobian(AffinePoint* P) {
+            return new JacobianPoint(P->X->Reference(), P->Y->Reference(), new BigInteger(1))
+        }
+        define AffinePoint* ToAffine(JacobianPoint* P) {
+            FiniteField* F := this->Field
+
+            i8 IsInfinity := P->IsPointAtInfinity()
+
+            BigInteger* X := P->X->Reference()
+            BigInteger* Y := P->Y->Reference()
+            BigInteger* Z := P->Z->Reference()
+
+            ; Calculate x=X/Z^2, y=Y/Z^3 as
+            ; x = X * (1/Z)^2, y = Y * (1/Z)^3
+
+            BigInteger* ZInv := Z->ModularInverse(this->P->Reference())
+            BigInteger* ZInvPow2 := F->Power(ZInv->Reference(), new BigInteger(2))
+            BigInteger* ZInvPow3 := F->Multiply(ZInv, ZInvPow2->Reference())
+
+            BigInteger* X2 := F->Multiply(X, ZInvPow2)
+            BigInteger* Y2 := F->Multiply(Y, ZInvPow3)
+
+            P->Release()
+
+            return new AffinePoint(X2, Y2, IsInfinity)
+        }
+
+        define AffinePoint* Add(AffinePoint* P, AffinePoint* Q) {
+            JacobianPoint* JP := this->Add(this->ToJacobian(P), this->ToJacobian(Q))
+            
+            return this->ToAffine(JP)
+        }
+
+        define AffinePoint* Multiply(BigInteger* Scalar) {
+            JacobianPoint* JP := this->Multiply(this->JacobianGenerator->Reference(), Scalar)
+            
+            return this->ToAffine(JP)
+        }
+        define AffinePoint* Multiply(AffinePoint* P, BigInteger* Scalar) {
+            JacobianPoint* JP := this->Multiply(this->ToJacobian(P), Scalar)
+            
+            return this->ToAffine(JP)
+        }
+
+        define i8 IsInSubgroup(JacobianPoint* P) {
+            if (P->IsPointAtInfinity()) {
+                return false
+            }
+
+            i8 Result := true
+
+            /*if !(this->H->Equals(1)) {
+                JacobianPoint* R := this->Multiply(P->Reference(), this->N->Reference())
+                Result := R->IsPointAtInfinity()
+                R->Release()
+            }*/
+
+            return Result
+        }
+
+        define i8 IsInSubgroup(AffinePoint* P) {
+            JacobianPoint* JP := this->ToJacobian(P->Reference())
+            i8 Result := this->IsInSubgroup(JP)
+            JP->Release()
+
+            return Result
+        }
+
+        define JacobianPoint* ClearCofactor(JacobianPoint* P) {
+            if (this->H->IsZero()) {
+                return P->Reference()
+            }
+
+            return this->Multiply(P, this->H->Reference())
+        }
+
+        define void* SerializeSEC1Uncompressed(AffinePoint* P, i32* OutSize) {
+            i32 Size := #i8 + (this->CoordinateByteCount * 2)
+            i8* Result := Alloc(Size)
+
+            *OutSize := Size
+
+            ; 0x04 = uncompressed point
+            Result[0] := 0x04
+
+            P->X->ToBytesReversed(Result + 1, this->CoordinateByteCount)
+            P->Y->ToBytesReversed(Result + 1 + this->CoordinateByteCount, this->CoordinateByteCount)
+
+            return Result
+        }
+
+        define AffinePoint* LoadSEC1Uncompressed(void* RawBuffer, i32 Size) {
+            i8* Buffer := RawBuffer
+
+            if (Size != 1 + (this->CoordinateByteCount * 2)) {
+                return null
+            }
+
+            if (Buffer[0] != 0x04) {
+                return null
+            }
+
+            BigInteger* X := BigInteger:FromBytesReversed(Buffer + 1, this->CoordinateByteCount)
+            BigInteger* Y := BigInteger:FromBytesReversed(Buffer + 1 + this->CoordinateByteCount, this->CoordinateByteCount)
+
+            return new AffinePoint(X, Y, false)
+        }
+
+        define void* SerializeSEC1Compressed(AffinePoint* P, i32* OutSize) {
+            i32 Size := #i8 + this->CoordinateByteCount
+            i8* Result := Alloc(Size)
+
+            *OutSize := Size
+
+            ; 0x02 = compressed point with even y
+            ; 0x03 = compressed point with odd y
+            Result[0] := 0x02
+
+            if (P->Y->IsOdd()) {
+                Result[0] := 0x03
+            }
+
+            P->X->ToBytesReversed(Result + 1, this->CoordinateByteCount)
+
+            return Result
+        }
+
+        define AffinePoint* LoadSEC1Compressed(void* RawBuffer, i32 Size) {
+            i8* Buffer := RawBuffer
+
+            if (Size != 1 + this->CoordinateByteCount) {
+                return null
+            }
+
+            i8 IsOdd := Buffer[0] = 0x03
+            i8 IsEven := Buffer[0] = 0x02
+
+            if !(IsOdd || IsEven) {
+                return null
+            }
+
+            BigInteger* X := BigInteger:FromBytesReversed(Buffer + 1, this->CoordinateByteCount)
+
+            ; Calculate y from x using the curve equation
+            ; y^2 = x^3 + ax + b
+
+            FiniteField* F := this->Field
+
+            BigInteger* XPow3 := F->Power(X->Reference(), new BigInteger(3))
+            BigInteger* AX := F->Multiply(this->A->Reference(), X->Reference())
+            BigInteger* RHS := F->Add(F->Add(XPow3, AX), this->B->Reference())
+
+            BigInteger* Y := RHS->ModularSquareRoot(this->P->Reference())
+
+            if (Y = null) {
+                X->Release()
+
+                return null
+            }
+
+            if ((IsEven && Y->IsOdd()) || (IsOdd && !Y->IsOdd())) {
+                ; Wrong parity, swap to other root
+
+                Y := this->P->Reference()->Subtract(Y)
+            }
+
+            return new AffinePoint(X, Y, false)
+        }
+
+        define AffinePoint* LoadSEC1(void* RawBuffer, i32 Size) {
+            i8* Buffer := RawBuffer
+            i8 Prefix := Buffer[0]
+
+            AffinePoint* Result := null
+
+            if (Prefix = 0x04) {
+                Result := this->LoadSEC1Uncompressed(Buffer, Size)
+            }
+            else if (Prefix = 0x02 || Prefix = 0x03) {
+                Result := this->LoadSEC1Compressed(Buffer, Size)
+            }
+            else {
+                return null
+            }
+
+            if (Result) {
+                if (this->IsOnCurve(Result)) {
+                    return Result
+                }
+                else {
+                    Result->Release()
+                }
+            }
+
+            return null
+        }
+
+        define BigInteger* GenerateScalar() {
+            BigInteger* N := this->N
+
+            i32 ByteLength := (N->BitCount() + 7) / 8 + 8
+
+            i8* Buffer := AllocateSecureRandom(ByteLength)
+            BigInteger* Random := BigInteger:FromBytes(Buffer, ByteLength)
+            BigInteger* NMinus1 := N->Reference()->Subtract(BigInteger:One())
+            BigInteger* C := Random->Modulo(NMinus1)
+            BigInteger* Scalar := C->Add(BigInteger:One())  ; Now in [1, n-1]
+            
+            return Scalar
+        }
+
+        define AffinePoint* GeneratePublicKey(BigInteger* PrivateKey) {
+            return this->Multiply(PrivateKey->Reference())
+        }
+
+        define void GenerateKeyPair(BigInteger** pPrivateKey, AffinePoint** pPublicKey) {
+            BigInteger* PrivateKey := this->GenerateScalar()
+            AffinePoint* PublicKey := this->GeneratePublicKey(PrivateKey)
+
+            *pPrivateKey := PrivateKey
+            *pPublicKey := PublicKey
+        }
+
+        define void* SerializePrivateKey(BigInteger* PrivateKey, i32* OutSize) {
+            i32 Size := (this->N->BitCount() + 7) / 8
+            i8* Result := Alloc(Size)
+
+            *OutSize := Size
+
+            PrivateKey->ToBytesReversed(Result, Size)
+
+            return Result
+        }
+
+        define void* SerializePublicKey(ShortWeierstrass::AffinePoint* PublicKey, i32* OutSize) {
+            return this->SerializeSEC1Uncompressed(PublicKey, OutSize)
+        }
+    }
+}
+
+define ShortWeierstrass::Curve* P256() {
+    BigInteger* P  := new BigInteger("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff", 16)
+    BigInteger* A  := new BigInteger("ffffffff00000001000000000000000000000000fffffffffffffffffffffffc", 16)
+    BigInteger* B  := new BigInteger("5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b", 16)
+    BigInteger* Gx := new BigInteger("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", 16)
+    BigInteger* Gy := new BigInteger("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5", 16)
+    BigInteger* N  := new BigInteger("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551", 16)
+    BigInteger* H  := new BigInteger(1)
+    
+    return new ShortWeierstrass::Curve(P, A, B, Gx, Gy, N, H)
+}
+
+ShortWeierstrass::Curve* CURVE_P256 := P256()
+
+define ShortWeierstrass::Curve* P521() {
+    BigInteger* P  := new BigInteger("01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 16)
+    BigInteger* A  := new BigInteger("01fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc", 16)
+    BigInteger* B  := new BigInteger("0051953eb9618e1c9a1f929a21a0b68540eea2da725b99b315f3b8b489918ef109e156193951ec7e937b1652c0bd3bb1bf073573df883d2c34f1ef451fd46b503f00", 16)
+    BigInteger* Gx := new BigInteger("00c6858e06b70404e9cd9e3ecb662395b4429c648139053fb521f828af606b4d3dbaa14b5e77efe75928fe1dc127a2ffa8de3348b3c1856a429bf97e7e31c2e5bd66", 16)
+    BigInteger* Gy := new BigInteger("011839296a789a3bc0045c8a5fb42c7d1bd998f54449579b446817afbd17273e662c97ee72995ef42640c550b9013fad0761353c7086a272c24088be94769fd16650", 16)
+    BigInteger* N  := new BigInteger("01fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa51868783bf2f966b7fcc0148f709a5d03bb5c9b8899c47aebb6fb71e91386409", 16)
+    BigInteger* H  := new BigInteger(1)
+    
+    return new ShortWeierstrass::Curve(P, A, B, Gx, Gy, N, H)
+}
+
+ShortWeierstrass::Curve* CURVE_P521 := P521()
+
+class SignaturePair derives INew {
+    BigInteger* R
+    BigInteger* S
+    i32 ReferenceCount
+
+    define void New(BigInteger* R, BigInteger* S) {
+        this->R := R
+        this->S := S
+        this->ReferenceCount := 1
+    }
+
+    define self* Reference() {
+        this->ReferenceCount += 1
+        return this
+    }
+    define void Release() {
+        this->ReferenceCount -= 1
+
+        if (this->ReferenceCount <= 0) {
+            this->R->Release()
+            this->S->Release()
+
+            Free(this)
+        }
+    }
+}
+
+#Require "./src/EC/EcDSA.rlx"
+#Require "./src/EC/ECDH.rlx"
+
+#Require "./src/SHA2.rlx"
+
+define void Main() {
+    ShortWeierstrass::Curve* Curve := CURVE_P521
+
+    /*
+
+    ECDH* DH := new ECDH(Curve)
+
+    BigInteger* PrivateKeyA := null
+    ShortWeierstrass::AffinePoint* PublicKeyA := null
+    Curve->GenerateKeyPair(&PrivateKeyA, &PublicKeyA)
+
+    BigInteger* PrivateKeyB := null
+    ShortWeierstrass::AffinePoint* PublicKeyB := null
+    Curve->GenerateKeyPair(&PrivateKeyB, &PublicKeyB)
+    
+    i32 SharedSecretASize := 0
+    void* SharedSecretA := DH->ComputeSharedSecret(PrivateKeyA->Reference(), PublicKeyB->Reference(), &SharedSecretASize)
+
+    i32 SharedSecretBSize := 0
+    void* SharedSecretB := DH->ComputeSharedSecret(PrivateKeyB->Reference(), PublicKeyA->Reference(), &SharedSecretBSize)
+
+    Print("Private Key A: %bn-base-16\n", PrivateKeyA)
+    Print("Public Key A X: %bn-base-16\n", PublicKeyA->X)
+    Print("Public Key A Y: %bn-base-16\n", PublicKeyA->Y)
+
+    Print("Private Key B: %bn-base-16\n", PrivateKeyB)
+    Print("Public Key B X: %bn-base-16\n", PublicKeyB->X)
+    Print("Public Key B Y: %bn-base-16\n", PublicKeyB->Y)
+
+    Print("Shared Secret A:\n%hexdump\n", SharedSecretA, SharedSecretASize)
+    Print("Shared Secret B:\n%hexdump\n", SharedSecretB, SharedSecretBSize)
+    */
+
+
+    ;/*
+
+    EcDSA* DSA := new EcDSA(Curve)
+
+    ;BigInteger* PrivateKey := new BigInteger("ff4c0d1e533d6707a36f8cd69705d9f77a9eb9b0ea3137dbc688faddfd9ab68c", 16)
+    ;ShortWeierstrass::AffinePoint* PublicKey := DSA->GeneratePublicKey(PrivateKey->Reference())
+
+    BigInteger* PrivateKey := null
+    ShortWeierstrass::AffinePoint* PublicKey := null
+
+    Curve->GenerateKeyPair(&PrivateKey, &PublicKey)
+
+    Print("Private Key: %bn-base-16\n", PrivateKey)
+    Print("Public Key X: %bn-base-16\n", PublicKey->X)
+    Print("Public Key Y: %bn-base-16\n", PublicKey->Y)
+
+    i32 PublicKeySize := 0
+    void* PublicKeyBytes := Curve->SerializePublicKey(PublicKey, &PublicKeySize)
+
+    Print("Public Key (SEC1 Uncompressed):\n")
+    for (i32 Index := 0, Index < PublicKeySize, Index++) {
+        Print("%B", (PublicKeyBytes As i8*)[Index])
+    }
+    Print("\n")
+
+    SHA2_256* SHA := new SHA2_256()
+
+    i8[32] Hash
+    SHA->Prepare()
+    SHA->Update("nuts 9000", 9)
+    SHA->Finalize(Hash)
+
+    Print("Message Hash:\n%hexdump\n", Hash, 32)
+
+    BigInteger* MessageHashInteger := BigInteger:FromBytesReversed(Hash, 32)
+    SignaturePair* Signature := DSA->Sign(PrivateKey->Reference(), MessageHashInteger->Reference())
+
+    Print("Signature {\n")
+    Print("\tR: %bn-base-16\n", Signature->R)
+    Print("\tS: %bn-base-16\n", Signature->S)
+    Print("}\n")
+
+    i32 DERSize := 0
+    void* DER := DSA->SerializeSignatureDER(Signature, &DERSize)
+
+    Print("DER Signature Size: %i\n", DERSize)
+
+    for (i32 Index := 0, Index < DERSize, Index++) {
+        Print("%B", (DER As i8*)[Index])
+    }
+
+    Print("\n\n")
+
+    SignaturePair* RoundTripSignature := DSA->LoadSignatureDER(DER, DERSize)
+
+    Print("\nRound Trip Signature {\n")
+    Print("\tR: %bn-base-16\n", RoundTripSignature->R)
+    Print("\tS: %bn-base-16\n", RoundTripSignature->S)
+    Print("}\n")
+
+    i8 IsValid := DSA->Verify(PublicKey->Reference(), MessageHashInteger, RoundTripSignature)
+
+    Print("IsValid? %i\n", IsValid)
+
+    /*
+
+    i32 SignatureSize := 0
+    void* Signature := DSA->SignDER(PrivateKey->Reference(), Hash, 32, &SignatureSize)
+
+    Print("Private Key: %bn-base-16\n", PrivateKey)
+    Print("Public Key X: %bn-base-16\n", PublicKey->X)
+    Print("Public Key Y: %bn-base-16\n", PublicKey->Y)
+
+    i32 UncompressedPublicKeySize := 0
+    void* UncompressedPublicKey := DSA->Curve->SerializeSEC1Uncompressed(PublicKey->Reference(), &UncompressedPublicKeySize)
+
+    Print("Uncompressed Public Key (SEC1): ")
+
+    i8* UncompressedPublicKeyBytes := UncompressedPublicKey
+
+    for (i32 Index := 0, Index < UncompressedPublicKeySize, Index++) {
+        Print("%B", UncompressedPublicKeyBytes[Index])
+    }
+
+    Print("\n")
+
+    Print("DER Signature Size: %i\n", SignatureSize)
+    Print("DER Signature:\n%hexdump\n", Signature, SignatureSize)
+
+    i8* SignatureBytes := Signature
+
+    Print("DER Signature (hex): ")
+    for (i32 Index := 0, Index < SignatureSize, Index++) {
+        Print("%B", SignatureBytes[Index])
+    }
+
+    Print("\n")
+    
+    i8 IsValid := DSA->VerifyDER(UncompressedPublicKey, UncompressedPublicKeySize, Hash, 32, Signature, SignatureSize)
+    Print("Internal Verification Result: %i (1=valid, 0=invalid)\n", IsValid)
+
+    ; NOTE: DER signatures need DER parsing for verification
+    ; External tools should accept the DER signature format above
+    ;*/
+    ;*/
+
+    /*
+    ShortWeierstrass::JacobianPoint* JP := Curve->Multiply(new BigInteger("100"))
+    ShortWeierstrass::AffinePoint* AP := Curve->ToAffine(JP)
+
+    Print("Original Affine Point:\n")
+    Print("\tX: %bn-base-16\n", AP->X)
+    Print("\tY: %bn-base-16\n", AP->Y)
+
+    i32 UncompressedSize := 0
+    void* Uncompressed := Curve->SerializeSEC1Uncompressed(AP, &UncompressedSize)
+
+    i32 CompressedSize := 0
+    void* Compressed := Curve->SerializeSEC1Compressed(AP, &CompressedSize)
+
+    Print("Uncompressed Size: %i\n", UncompressedSize)
+    Print("%hexdump\n", Uncompressed, UncompressedSize)
+
+    ShortWeierstrass::AffinePoint* RoundTripUncompressed := Curve->LoadSEC1Uncompressed(Uncompressed, UncompressedSize)
+
+    Print("Round Trip Uncompressed Affine Point:\n")
+    Print("\tX: %bn-base-16\n", RoundTripUncompressed->X)
+    Print("\tY: %bn-base-16\n", RoundTripUncompressed->Y)
+
+    Print("Compressed Size: %i\n", CompressedSize)
+    Print("%hexdump\n", Compressed, CompressedSize)
+
+    ShortWeierstrass::AffinePoint* RoundTripCompressed := Curve->LoadSEC1Compressed(Compressed, CompressedSize)
+
+    Print("Round Trip Compressed Affine Point:\n")
+    Print("\tX: %bn-base-16\n", RoundTripCompressed->X)
+    Print("\tY: %bn-base-16\n", RoundTripCompressed->Y)
+
+    ShortWeierstrass::AffinePoint* RoundTripUncompressedGuess := Curve->LoadSEC1(Uncompressed, UncompressedSize)
+
+    Print("Round Trip Uncompressed Guess Affine Point:\n")
+    Print("\tX: %bn-base-16\n", RoundTripUncompressedGuess->X)
+    Print("\tY: %bn-base-16\n", RoundTripUncompressedGuess->Y)
+
+    ShortWeierstrass::AffinePoint* RoundTripCompressedGuess := Curve->LoadSEC1(Compressed, CompressedSize)
+
+    Print("Round Trip Compressed Guess Affine Point:\n")
+    Print("\tX: %bn-base-16\n", RoundTripCompressedGuess->X)
+    Print("\tY: %bn-base-16\n", RoundTripCompressedGuess->Y)
+    */
+
+
+    /*
+    EcDSA* test := new EcDSA(CURVE_P256)
+
+    BigInteger* N := new BigInteger("41660815127637347468140745042827704103445750172002")
+    BigInteger* P := new BigInteger(10)
+
+    P := P->Power(new BigInteger(50))
+    P := P->Add(new BigInteger(577))
+
+    BigInteger* Sqrt := N->Reference()->ModularSquareRoot(P->Reference())
+
+    if !(Sqrt) {
+        Print("No square root exists for %bn-base-10 mod %bn-base-10\n", N, P)
+        return
+    }
+
+    BigInteger* Check := Sqrt->Reference()->Square()->Subtract(N->Reference())->Modulo(P->Reference())
+
+    Print("modsqrt(%bn-base-10, %bn-base-10) = %bn-base-10\n", N, P, Sqrt)
+    Print("Check: %bn-base-10\n", Check)
+
+    BigInteger* OtherRoot := P->Reference()->Subtract(Sqrt->Reference())->Modulo(P->Reference())
+
+    Print("Other Root: %bn-base-10\n", OtherRoot)
+    */
+ 
+    /*
+    ShortWeierstrass::JacobianPoint* Q := Curve->JacobianGenerator->Reference()
+
+    for (i32 Index := 2, Index < 10, Index++) {
+        Q := Curve->Add(Q, Curve->JacobianGenerator->Reference())
+        ShortWeierstrass::AffinePoint* AQ := Curve->ToAffine(Q->Reference())
+
+        ShortWeierstrass::JacobianPoint* J := Curve->Multiply(Curve->JacobianGenerator->Reference(), new BigInteger(Index))
+        ShortWeierstrass::AffinePoint* AJ := Curve->ToAffine(J->Reference())
+
+        if !(AQ->X->Equals(AJ->X) || AQ->Y->Equals(AJ->Y)) {
+            Print("Mismatch at %i\n", Index)
+
+            Print("Add Result X: %bn-base-16\n", AQ->X)
+            Print("Mul Result X: %bn-base-16\n", AJ->X)
+
+            Print("Add Result Y: %bn-base-16\n", AQ->Y)
+            Print("Mul Result Y: %bn-base-16\n", AJ->Y)
+
+
+            return 1
+        }
+    }
+
+    Print("Curve P: %bn-base-16\n", Curve->P)
+    Print("Curve A: %bn-base-16\n", Curve->A)
+    Print("Curve B: %bn-base-16\n", Curve->B)
+
+    Print("Generator X: %bn-base-16\n", Curve->AffineGenerator->X)
+    Print("Generator Y: %bn-base-16\n", Curve->AffineGenerator->Y)
+
+    BigInteger* PrivateKey := new BigInteger("100", 10)
+
+    ShortWeierstrass::JacobianPoint* JacobianPublicKey := Curve->Multiply(Curve->JacobianGenerator, PrivateKey)
+
+    Print("Public Key Jacobian X: %bn-base-16\n", JacobianPublicKey->X)
+    Print("Public Key Jacobian Y: %bn-base-16\n", JacobianPublicKey->Y)
+    Print("Public Key Jacobian Z: %bn-base-16\n", JacobianPublicKey->Z)
+
+    ShortWeierstrass::AffinePoint* PublicKey := Curve->ToAffine(JacobianPublicKey)
+
+    Print("Public Key X: %bn-base-16\n", PublicKey->X)
+    Print("Public Key Y: %bn-base-16\n", PublicKey->Y)
+    */
+}
