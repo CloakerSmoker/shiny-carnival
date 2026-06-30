@@ -66,6 +66,10 @@ namespace TLS::Security {
             this->Hash := new SHA2_256()
         }
 
+        define BigInteger* GetSerialNumber() {
+            return this->Certificate->SerialNumber
+        }
+
         define void* GetCertificateData(i32* OutSize) {
             *OutSize := this->CertificateDataSize
             return this->CertificateData
@@ -126,6 +130,8 @@ namespace TLS::Security {
 
             BigInteger* MessageInteger := BigInteger:FromBytes(MessageBytes, this->PublicKeySize)
 
+            Free(Message)
+
             ;Print("Message to sign:\n%hexdump\n", Message, this->PublicKeySize)
             ;Print("Message Integer: %bn-base-16\n", MessageInteger)
 
@@ -140,6 +146,8 @@ namespace TLS::Security {
 
             Print("Decrypted Integer: %bn-base-16\n", Decrypted)
 
+            Decrypted->Release()
+
             *OutSignatureSize := this->PublicKeySize
 
             void* SignatureBytes := Alloc(*OutSignatureSize)
@@ -147,6 +155,8 @@ namespace TLS::Security {
             for (i32 Index := 0, Index < *OutSignatureSize, Index++) {
                 (SignatureBytes As i8*)[Index] := Signature->GetByte(*OutSignatureSize - Index - 1) As i8
             }
+
+            Signature->Release()
 
             return SignatureBytes
         }
@@ -161,6 +171,28 @@ namespace TLS::Security {
         void* MACKey
         void* EncryptionKey
         void* IV
+
+        define void Free() {
+            if (this->Random) {
+                Free(this->Random)
+            }
+
+            if (this->PublicKey) {
+                Free(this->PublicKey)
+            }
+
+            if (this->MACKey) {
+                Free(this->MACKey)
+            }
+
+            if (this->EncryptionKey) {
+                Free(this->EncryptionKey)
+            }
+
+            if (this->IV) {
+                Free(this->IV)
+            }
+        }
     }
 
     enum ConnectionRole {
@@ -208,6 +240,33 @@ namespace TLS::Security {
         define i8 IsServer() {
             return this->Role = ConnectionRole::Server
         }
+
+        define void Free() {
+            this->Local->Free()
+            this->Remote->Free()
+
+            if (this->LocalPrivateKey) {
+                Free(this->LocalPrivateKey)
+            }
+
+            if (this->PreMasterSecret) {
+                Free(this->PreMasterSecret)
+            }
+
+            if (this->MasterSecret) {
+                Free(this->MasterSecret)
+            }
+
+            if (this->KeyBlock) {
+                Free(this->KeyBlock)
+            }
+
+            if (this->HandshakeHash) {
+                Free(this->HandshakeHash)
+            }
+
+            Free(this)
+        }
     }
 
     class TLS_1_2_PRF implements IPseudoRandomFunction, derives INew {
@@ -217,6 +276,10 @@ namespace TLS::Security {
         define void New(SecurityParameters* Parameters, HMACWrapper* HMAC) {
             this->Parameters := Parameters
             this->HMAC := HMAC
+        }
+        define void Free() {
+            this->HMAC->Free()
+            Free(this)
         }
 
         define void UpdateSeed(i8* Label, void* Seed, i32 SeedSize) {
@@ -576,4 +639,59 @@ namespace TLS::Security {
             
         }
     } */
+}
+
+#Require "./src/PEM.rlx"
+
+define void* TLSReadFile(i8* Path, i32* OutSize) {
+    i64 F := FileOpen(Path, FILE_READ)
+
+    if (F < 0) {
+        Print("Failed to open file %s\n", Path)
+        Exit(1)
+    }
+
+    i64 Size := FileGetSize(F)
+
+    void* Buffer := Alloc(Size)
+    FileRead(F, Buffer, Size As i32)
+
+    FileClose(F)
+
+    if (OutSize != null) {
+        *OutSize := Size As i32
+    }
+
+    return Buffer
+}
+
+define TLS::Security::ICertificate* TLSLoadCertificate(i8* PrivateKeyPath, i8* CertificatePath) {
+    i32 PrivateKeyPEMSize := 0
+    i8* PrivateKeyPEM := TLSReadFile(PrivateKeyPath, &PrivateKeyPEMSize)
+
+    i32 CertificatePEMSize := 0
+    i8* CertificatePEM := TLSReadFile(CertificatePath, &CertificatePEMSize)
+
+    i32 CertificateDataSize := 0
+    void* CertificateData := ParsePEM(
+        "-----BEGIN CERTIFICATE-----\r",
+        "\r-----END CERTIFICATE-----\r",
+        &CertificateDataSize,
+        CertificatePEM,
+        CertificatePEMSize
+    )
+
+    ASN1::PKCS8::Parser* PrivateKeyParser := new ASN1::PKCS8::Parser()
+    ASN1::PKCS8::PrivateKeyInfo* PrivateKeyInfo := PrivateKeyParser->ParsePEM(PrivateKeyPEM, PrivateKeyPEMSize)
+
+    if (PrivateKeyInfo->Algorithm != ASN1::X509::AlgorithmIdentifier::RSA_ENCRYPTION) {
+        Print("Unsupported private key algorithm %s\n", nameof:(PrivateKeyInfo->Algorithm))
+        Exit(1)
+    }
+
+    ASN1::PKCS8::RSAPrivateKey* PrivateKey := PrivateKeyInfo->PrivateKey
+
+    TLS::Security::RSACertificate* Result := new TLS::Security::RSACertificate(PrivateKey, null, CertificateData, CertificateDataSize)
+
+    return Result
 }
