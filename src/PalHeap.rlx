@@ -1,0 +1,430 @@
+/*
+
+"Pal" heap (I'm not your buddy, pal)
+
+Partitions free space as a buddy heap, splitting larger chunks to meet smaller
+ memory needs.
+Tracks free space as a freelist heap, holding lists of free chunks at given sizes.
+
+Tracks allocated space as a bitmap, storing the size of each allocated chunk.
+
+Allocations are slower due to the overhead of splitting larger chunks.
+Allocations are faster due to using free lists.
+
+Freeing is slower due to not storing chunk size inside the chunk.
+Freeing is more reliable due to ^, instead storing chunk sizes inside of a bitmap.
+Freeing is faster due to it being a linear lookup.
+
+Entire heap is contained in a single buffer by allocating the "allocation bitmap"
+ inside of the heap itself (at the very start). This "wastes" 1/16 of total space.
+
+TODO:
+* Optimize removing random entries from free lists to speed up merging free buddies
+* In `Extend()`: Attempt to extend into the *left* buddy if extend is called on the *right* buddy
+* Rename helper methods
+
+
+
+*/
+
+define i32 GetUsagePercent(AllocatorUsage* Usage) {
+    i64 Used := Usage->AllocatedBytes * 100
+    i64 Total := Usage->ReservedBytes
+
+    i64 Percent := Used / Total
+
+    return (Percent % 100) As i32
+}
+
+
+struct PalFreeListEntry {
+    PalFreeListEntry* Next
+    i32 Rank
+
+    static self* Claim(void* Where, i32 Rank) {
+        self* this := Where
+
+        this->Rank := Rank
+
+        return this
+    }
+
+    define void Zero() {
+        
+    }
+}
+
+struct PalAllocationMapEntry {
+    bits As i8 {
+        [0:4] Rank,
+        [7] Allocated
+    }
+}
+
+i32 PAL_RANK_SHIFT := 4
+i32 PAL_RANK_MINIMUM := 16
+
+i32 PAL_RANK_16 := 0
+i32 PAL_RANK_32 := 1
+i32 PAL_RANK_64 := 2
+i32 PAL_RANK_128 := 3
+
+i32 PAL_RANK_256 := 4
+i32 PAL_RANK_512 := 5
+i32 PAL_RANK_1K := 6
+i32 PAL_RANK_2K := 7
+
+i32 PAL_RANK_4K := 8
+i32 PAL_RANK_8K := 9
+i32 PAL_RANK_16K := 10
+i32 PAL_RANK_32K := 11
+
+i32 PAL_RANK_64K := 12
+i32 PAL_RANK_128K := 13
+i32 PAL_RANK_256K := 14
+i32 PAL_RANK_512K := 15
+
+i32 PAL_RANK_1M := 16
+i32 PAL_RANK_2M := 17
+i32 PAL_RANK_4M := 18
+i32 PAL_RANK_8M := 19
+
+i32 PAL_RANK_MAX := PAL_RANK_8M
+
+struct PalHeap {
+    void* Buffer
+
+    PalFreeListEntry*[19] Ranks
+    PalFreeListEntry* LargestFree
+
+    PalFreeListEntry** _Ranks
+
+    PalAllocationMapEntry* AllocationMap
+
+    i32 Size
+    i32 MaxRank
+    
+    define PalAllocationMapEntry* GetAllocationMapEntry(void* Chunk) {
+        i64 Offset := (Chunk As i64) - (this->Buffer As i64)
+        i64 Index := Offset / PAL_RANK_MINIMUM
+
+        return this->AllocationMap[Index]
+    }
+
+    define void Initialize(void* Buffer, i32 Size) {
+        this->Buffer := Buffer
+        this->Size := Size
+
+        this->_Ranks := this->Ranks
+
+        for (i32 Rank := PAL_RANK_16, Rank <= PAL_RANK_MAX, Rank++) {
+            i32 RankSize := 16 << Rank
+
+            if (RankSize <= Size) {
+                this->MaxRank := Rank
+            }
+            else {
+                break
+            }
+        }
+
+        this->Ranks[this->MaxRank] := PalFreeListEntry:Claim(this->Buffer, this->MaxRank)
+
+        ;this->Ranks[PAL_RANK_8M] := PalFreeListEntry:Claim(this->Buffer, PAL_RANK_8M)
+
+    }
+
+    define i8 IsPowerOfTwo(i64 Number) {
+		return Number && !(Number & (Number - 1))
+	}
+	define i8 FindFirstBitSet(i64 Number) asm {
+		bsr, rax, rsi
+		ret
+	}
+
+    define i32 PowerForSize(i32 Size) {
+        if (Size < PAL_RANK_MINIMUM) {
+            return 0
+        }
+
+        if !(this->IsPowerOfTwo(Size)) {
+            return this->FindFirstBitSet(Size) + 1 - PAL_RANK_SHIFT
+        }
+        else {
+            return this->FindFirstBitSet(Size) - PAL_RANK_SHIFT
+        }
+    }
+
+    define i32 RankSize(i32 Rank) {
+        Rank += PAL_RANK_SHIFT
+
+        return 1 << (Rank As i8)
+    }
+
+    define void* GetBuddy(void* Location, i32 Size) {
+        return ((Location As i64) ^ Size) As void*
+    }
+
+    define void RemoveFromRankFreeList(PalFreeListEntry* Target) {
+        PalFreeListEntry** pCurrent := &this->Ranks[Target->Rank]
+
+        while (*pCurrent) {
+            PalFreeListEntry* Entry := *pCurrent
+
+            if (Entry = Target) {
+                *pCurrent := Entry->Next
+                break
+            }
+
+            pCurrent := Entry~>Next
+        }
+    }
+
+    ; !!! Compiler DWARF info bug: void*[N] is emitted as a void[N]
+
+    define PalFreeListEntry** InsertToRankFreeList(PalFreeListEntry* Entry) {
+        PalFreeListEntry** pCurrent := &this->Ranks[Entry->Rank]
+
+        while (*pCurrent) {
+            PalFreeListEntry* Current := *pCurrent
+
+            if (Current > Entry) {
+                *pCurrent := Entry
+                Entry->Next := Current
+
+                return pCurrent
+            }
+
+            pCurrent := Current~>Next
+        }
+
+        *pCurrent := Entry
+        Entry->Next := null
+
+        return pCurrent
+    }
+
+    define PalFreeListEntry** Split(PalFreeListEntry** pEntry) {
+        PalFreeListEntry* Entry := *pEntry
+        *pEntry := Entry->Next
+
+        Entry->Rank -= 1
+
+        i32 HalfSize := this->RankSize(Entry->Rank)
+        PalFreeListEntry* Buddy := this->GetBuddy(Entry, HalfSize)
+
+        Buddy->Rank := Entry->Rank
+
+        PalFreeListEntry** pNewEntry := this->InsertToRankFreeList(Entry)
+        this->InsertToRankFreeList(Buddy)
+
+        return pNewEntry
+    }
+
+    define i32 FindLowestFreeRank(i32 Start) {
+        for (i32 HigherRank := Start + 1, HigherRank <= this->MaxRank, HigherRank++) {
+            if (this->Ranks[HigherRank] != null) {
+                return HigherRank
+            }
+        }
+
+        return -1
+    }
+
+    define PalFreeListEntry* PreAllocate(i32 Size) {
+        i32 Rank := this->PowerForSize(Size)
+
+        ;Print("PreAllocate %x %i (rank %i)\n", Size, Size, Rank)
+
+        ;Print("\nAllocating %x bytes (rank %i)\n", Size, Rank)
+
+        if (this->Ranks[Rank] != null) {
+            ;Print("Rank %i free list is not empty: claiming head\n", Rank)
+
+            PalFreeListEntry* Result := this->Ranks[Rank]
+
+            this->Ranks[Rank] := Result->Next
+
+            return Result
+        }
+
+        i32 LowestFreeRank := this->FindLowestFreeRank(Rank)
+
+        ;Print("Smallest free rank is %i (%x bytes)\n", LowestFreeRank, this->RankSize(LowestFreeRank))
+
+        PalFreeListEntry** pCurrent := &this->Ranks[LowestFreeRank]
+
+        for (i32 Index := LowestFreeRank, Index > Rank, Index--) {
+            ;Print("Splitting a %i (%x byte) chunk into 2 rank %i (%x byte) chunks\n", Index, this->RankSize(Index), Index - 1, this->RankSize(Index - 1))
+
+            pCurrent := this->Split(pCurrent)
+        }
+
+        return *pCurrent
+    }
+
+    define void AllocateEntry(PalFreeListEntry* Entry) {
+        i32 Rank := Entry->Rank
+        i32 RankSize := this->RankSize(Rank)
+
+        this->Ranks[Rank] := Entry->Next
+
+        FastSetMemory8(Entry As void*, 0, RankSize)
+
+        PalAllocationMapEntry* MapEntry := this->GetAllocationMapEntry(Entry As void*)
+
+        MapEntry->Allocated := true
+        MapEntry->Rank := Rank As i8
+    }
+
+    define void* Allocate(i32 Size) {
+        PalFreeListEntry* Result := this->PreAllocate(Size)
+
+        this->AllocateEntry(Result)
+
+        return Result
+    }
+
+    define PalFreeListEntry* JoinFreeBuddies(PalFreeListEntry* Root) {
+        for (i32 Rank := Root->Rank, Rank <= this->MaxRank, Rank++) {
+            i32 Size := this->RankSize(Rank)
+
+            void* Buddy := this->GetBuddy(Root, Size)
+            PalAllocationMapEntry* BuddyMapEntry := this->GetAllocationMapEntry(Buddy)
+
+            if (BuddyMapEntry->Allocated || BuddyMapEntry->Rank != Rank) {
+                break
+            }
+
+            PalFreeListEntry* Left := Root
+            PalFreeListEntry* Right := Buddy
+
+            if (Buddy < Root) {
+                Left := Buddy
+                Right := Root
+            }
+
+            this->RemoveFromRankFreeList(Left)
+            this->RemoveFromRankFreeList(Right)
+
+            Left->Rank += 1
+
+            Right->Rank := 0
+            Right->Next := null
+
+            Root := Left
+        }
+
+        return Root
+    }
+
+    define void Free(void* Where) {
+        PalAllocationMapEntry* MapEntry := this->GetAllocationMapEntry(Where)
+        PalFreeListEntry* Entry := Where As PalFreeListEntry*
+
+        MapEntry->Allocated := false
+        Entry->Rank := MapEntry->Rank
+
+        this->InsertToRankFreeList(this->JoinFreeBuddies(Entry))
+    }
+
+    define void* Extend(void* Where, i32 NewSize) {
+        i32 DesiredRank := this->PowerForSize(NewSize)
+        ;Print("Extend desired rank: %i\n", DesiredRank)
+
+        PalAllocationMapEntry* MapEntry := this->GetAllocationMapEntry(Where)
+        i32 OldSize := this->RankSize(MapEntry->Rank)
+
+        if (MapEntry->Rank = DesiredRank) {
+            return Where
+        }
+
+        for (i32 Rank := MapEntry->Rank, Rank < DesiredRank, Rank++) {
+            i32 Size := this->RankSize(Rank)
+
+            void* Buddy := this->GetBuddy(Where, Size)
+            PalAllocationMapEntry* BuddyMapEntry := this->GetAllocationMapEntry(Buddy)
+
+            if (BuddyMapEntry->Allocated || Buddy < Where) {
+                void* NewBuffer := this->Allocate(NewSize)
+                MoveMemory(NewBuffer, Where, OldSize)
+                this->Free(Where)
+
+                return NewBuffer
+            }
+
+            PalFreeListEntry* BuddyEntry := Buddy
+
+            this->RemoveFromRankFreeList(BuddyEntry)
+
+            FastSetMemory8(Buddy, 0, Size)
+
+            MapEntry->Rank += 1
+        }
+
+        return Where
+    }
+
+    define void Bootstrap() {
+        i32 MaximumChunks := this->Size / PAL_RANK_MINIMUM
+
+        ;Print("MaximumChunks: %x\n", MaximumChunks)
+
+        PalFreeListEntry* MetadataEntry := this->PreAllocate(MaximumChunks)
+
+        ;Print("MetadataEntry: %x\n", MetadataEntry)
+
+        this->AllocationMap := MetadataEntry As void*
+
+        this->AllocateEntry(MetadataEntry)
+    }
+
+    define void DumpRanks() {
+        for (i32 Rank := this->MaxRank, Rank >= 0, Rank--) {
+            i32 Sum := 0
+
+            PalFreeListEntry* Current := this->Ranks[Rank]
+
+            while (Current) {
+                Sum += 1
+                Current := Current->Next
+            }
+
+            Print("Rank %i: %i free chunks of %x bytes (%x total bytes)\n", Rank, Sum, this->RankSize(Rank), this->RankSize(Rank) * Sum)
+        }
+    }
+
+    define void DumpAllocations() {
+        i32 MaxChunkIndex := this->Size / PAL_RANK_MINIMUM
+
+        for (i32 Index := 0, Index < MaxChunkIndex, Index++) {
+            PalAllocationMapEntry* Entry := this->AllocationMap[Index]
+
+            if (Entry->Allocated) {
+                void* Address := this->Buffer + (Index * PAL_RANK_MINIMUM)
+
+                Print("%x: rank %i (%x bytes)\n", Address, Entry->Rank, this->RankSize(Entry->Rank))
+            }
+
+        }
+    }
+
+    define void GetUsage(AllocatorUsage* Usage) {
+        Usage->ReservedBytes := this->RankSize(PAL_RANK_8M)
+
+        i32 MaxChunkIndex := this->Size / PAL_RANK_MINIMUM
+        Usage->MetaBytes := MaxChunkIndex
+
+        Usage->AllocatedBytes := 0
+
+        for (i32 Index := 0, Index < MaxChunkIndex, Index++) {
+            PalAllocationMapEntry* Entry := this->AllocationMap[Index]
+
+            if (Entry->Allocated) {
+                Usage->AllocatedBytes += this->RankSize(Entry->Rank)
+            }
+        }
+
+        Usage->FreeBytes := Usage->ReservedBytes - Usage->AllocatedBytes
+    }
+}
