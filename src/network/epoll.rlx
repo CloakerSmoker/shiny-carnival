@@ -19,7 +19,11 @@ i32 EPOLL_EVENT_HUP := 0x010
 
 struct epoll_event unaligned {
     i32 Events
-    i64 Data
+
+    union {
+        i64 Data
+        i64 fd
+    }
 }
 
 define i64 epoll_ctl(i64 Handle, i32 Operation, i64 FileDescriptor, i32 Events) {
