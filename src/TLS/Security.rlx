@@ -166,8 +166,10 @@ namespace TLS::Security {
 
     struct DirectionalKeySet {
         void* Random
+
         void* PublicKey
-        i32 PublicKeyLength
+        i32 PublicKeySize
+
         void* MACKey
         void* EncryptionKey
         void* IV
@@ -212,9 +214,13 @@ namespace TLS::Security {
         DirectionalKeySet* Remote
 
         void* LocalPrivateKey
+        i32 LocalPrivateKeySize
+
         ICertificate* Certificate
 
         void* PreMasterSecret ; MasterSecret derived from this
+        i32 PreMasterSecretSize
+
         void* MasterSecret ; KeyBlock derived from this
         void* KeyBlock ; KeySets point into this
 
@@ -408,6 +414,9 @@ namespace TLS::Security {
     }
 
     enum NamedCurve As i16 {
+        P256 := 0x17
+        P384 := 0x18
+        P521 := 0x19
         x25519 := 0x1d
         x448 := 0x1e
     }

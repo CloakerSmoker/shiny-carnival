@@ -255,6 +255,9 @@ namespace RFC7748 {
     }
 }
 
+RFC7748::ICurve* CURVE_25519 := new RFC7748::Curve25519()
+RFC7748::ICurve* CURVE_448 := new RFC7748::Curve448()
+
 /*
 define void Test25519() {
     RFC7748::Curve25519* Curve := new RFC7748::Curve25519()

@@ -1,27 +1,7 @@
 
 #Require "$/Memory.rlx"
-#Require "$/Console.rlx"
-
-declare i8 EnterMetadataHeap()
-declare void ExitMetadataHeap(i8)
-i8 ALLOCATIONS_ARE_TRACKED := false
-
 #Require "./src/Big/Big.rlx"
 #Require "./src/Big/Print.rlx"
-
-#Require "./src/DebugHeap.rlx"
-
-i64 DevURandom := FileOpen("/dev/urandom", FILE_READ)
-
-define void SecureFillRandom(void* Buffer, i32 Count) {
-    FileRead(DevURandom, Buffer, Count)
-}
-
-define void* AllocateSecureRandom(i32 Size) {
-    void* Result := Alloc(Size)
-    SecureFillRandom(Result, Size)
-    return Result
-}
 
 namespace ShortWeierstrass {
     class JacobianPoint derives INew {
@@ -596,7 +576,17 @@ define ShortWeierstrass::Curve* P256() {
     return new ShortWeierstrass::Curve(P, A, B, Gx, Gy, N, H)
 }
 
-ShortWeierstrass::Curve* CURVE_P256 := P256()
+define ShortWeierstrass::Curve* P384() {
+    BigInteger* P  := new BigInteger("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff", 16)
+    BigInteger* A  := new BigInteger("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000fffffffc", 16)
+    BigInteger* B  := new BigInteger("b3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef", 16)
+    BigInteger* Gx := new BigInteger("aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7", 16)
+    BigInteger* Gy := new BigInteger("3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f", 16)
+    BigInteger* N  := new BigInteger("ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973", 16)
+    BigInteger* H  := new BigInteger(1)
+    
+    return new ShortWeierstrass::Curve(P, A, B, Gx, Gy, N, H)
+}
 
 define ShortWeierstrass::Curve* P521() {
     BigInteger* P  := new BigInteger("01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 16)
@@ -610,43 +600,12 @@ define ShortWeierstrass::Curve* P521() {
     return new ShortWeierstrass::Curve(P, A, B, Gx, Gy, N, H)
 }
 
+ShortWeierstrass::Curve* CURVE_P256 := P256()
+ShortWeierstrass::Curve* CURVE_P384 := P384()
 ShortWeierstrass::Curve* CURVE_P521 := P521()
 
-class SignaturePair derives INew {
-    BigInteger* R
-    BigInteger* S
-    i32 ReferenceCount
-
-    define void New(BigInteger* R, BigInteger* S) {
-        this->R := R
-        this->S := S
-        this->ReferenceCount := 1
-    }
-
-    define self* Reference() {
-        this->ReferenceCount += 1
-        return this
-    }
-    define void Release() {
-        this->ReferenceCount -= 1
-
-        if (this->ReferenceCount <= 0) {
-            this->R->Release()
-            this->S->Release()
-
-            Free(this)
-        }
-    }
-}
-
-#Require "./src/EC/EcDSA.rlx"
-#Require "./src/EC/ECDH.rlx"
-
-#Require "./src/SHA2.rlx"
-
+/*
 define void Main() {
-    ShortWeierstrass::Curve* Curve := CURVE_P521
-
     /*
 
     ECDH* DH := new ECDH(Curve)
@@ -678,9 +637,9 @@ define void Main() {
     */
 
 
-    ;/*
+    /*
 
-    EcDSA* DSA := new EcDSA(Curve)
+    EcDSA* DSA := ECSDA_P384
 
     ;BigInteger* PrivateKey := new BigInteger("ff4c0d1e533d6707a36f8cd69705d9f77a9eb9b0ea3137dbc688faddfd9ab68c", 16)
     ;ShortWeierstrass::AffinePoint* PublicKey := DSA->GeneratePublicKey(PrivateKey->Reference())
@@ -688,14 +647,14 @@ define void Main() {
     BigInteger* PrivateKey := null
     ShortWeierstrass::AffinePoint* PublicKey := null
 
-    Curve->GenerateKeyPair(&PrivateKey, &PublicKey)
+    DSA->Curve->GenerateKeyPair(&PrivateKey, &PublicKey)
 
     Print("Private Key: %bn-base-16\n", PrivateKey)
     Print("Public Key X: %bn-base-16\n", PublicKey->X)
     Print("Public Key Y: %bn-base-16\n", PublicKey->Y)
 
     i32 PublicKeySize := 0
-    void* PublicKeyBytes := Curve->SerializePublicKey(PublicKey, &PublicKeySize)
+    void* PublicKeyBytes := DSA->Curve->SerializePublicKey(PublicKey, &PublicKeySize)
 
     Print("Public Key (SEC1 Uncompressed):\n")
     for (i32 Index := 0, Index < PublicKeySize, Index++) {
@@ -713,7 +672,7 @@ define void Main() {
     Print("Message Hash:\n%hexdump\n", Hash, 32)
 
     BigInteger* MessageHashInteger := BigInteger:FromBytesReversed(Hash, 32)
-    SignaturePair* Signature := DSA->Sign(PrivateKey->Reference(), MessageHashInteger->Reference())
+    EcDSASignaturePair* Signature := DSA->Sign(PrivateKey->Reference(), MessageHashInteger->Reference())
 
     Print("Signature {\n")
     Print("\tR: %bn-base-16\n", Signature->R)
@@ -731,7 +690,7 @@ define void Main() {
 
     Print("\n\n")
 
-    SignaturePair* RoundTripSignature := DSA->LoadSignatureDER(DER, DERSize)
+    EcDSASignaturePair* RoundTripSignature := DSA->LoadSignatureDER(DER, DERSize)
 
     Print("\nRound Trip Signature {\n")
     Print("\tR: %bn-base-16\n", RoundTripSignature->R)
@@ -901,3 +860,5 @@ define void Main() {
     Print("Public Key Y: %bn-base-16\n", PublicKey->Y)
     */
 }
+
+*/

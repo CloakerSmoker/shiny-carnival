@@ -1,12 +1,52 @@
 
-class ECDH derives INew {
+interface IDiffieHellmanCurve {
+    virtual void* GeneratePrivateKey(i32*)
+    virtual void* GeneratePublicKey(void*, i32, i32*)
+    virtual void* ComputeSharedSecret(void*, i32, void*, i32, i32*)
+}
+
+#Require "./src/EC/ShortWeierstrass.rlx"
+
+class ShortWeierstrassECDH implements IDiffieHellmanCurve, derives INew {
     ShortWeierstrass::Curve* Curve
 
     define void New(ShortWeierstrass::Curve* Curve) {
         this->Curve := Curve
     }
 
-    define void* ComputeSharedSecret(BigInteger* PrivateKey, ShortWeierstrass::AffinePoint* PublicKey, i32* OutSize) {
+    define void* GeneratePrivateKey(i32* OutSize) {
+        BigInteger* PrivateKey := this->Curve->GenerateScalar()
+
+        i32 Size := this->Curve->CoordinateByteCount
+
+        i8* Result := Alloc(Size)
+        PrivateKey->ToBytes(Result, Size)
+        PrivateKey->Release()
+
+        *OutSize := Size
+
+        return Result
+    }
+
+    define void* GeneratePublicKey(void* PrivateKeyBuffer, i32 PrivateKeySize, i32* OutSize) {
+        BigInteger* PrivateKey := BigInteger:FromBytes(PrivateKeyBuffer, PrivateKeySize)
+        ShortWeierstrass::AffinePoint* PublicKey := this->Curve->GeneratePublicKey(PrivateKey)
+
+        void* Result := this->Curve->SerializeSEC1Uncompressed(PublicKey, OutSize)
+        PublicKey->Release()
+
+        return Result
+    }
+
+    define void* ComputeSharedSecret(void* PrivateKeyBuffer, i32 PrivateKeySize, void* PublicKeyBuffer, i32 PublicKeySize, i32* OutSize) {
+        BigInteger* PrivateKey := BigInteger:FromBytes(PrivateKeyBuffer, PrivateKeySize)
+        ShortWeierstrass::AffinePoint* PublicKey := this->Curve->LoadSEC1(PublicKeyBuffer, PublicKeySize)
+
+        if !(PublicKey) {
+            Print("Failed to load public key\n")
+            return null
+        }
+
         if !(this->Curve->IsOnCurve(PublicKey)) {
             Print("Public key is not on the curve\n")
             return null
@@ -37,3 +77,67 @@ class ECDH derives INew {
         return Result
     }
 }
+
+#Require "./src/EC/RFC7748.rlx"
+
+class RFC7748ECDH implements IDiffieHellmanCurve, derives INew {
+    RFC7748::ICurve* Curve
+
+    define void New(RFC7748::ICurve* Curve) {
+        this->Curve := Curve
+    }
+
+    define void* GeneratePrivateKey(i32* OutSize) {
+        i32 ScalarSize := this->Curve->GetScalarSize()
+
+        void* RandomBytes := AllocateSecureRandom(ScalarSize)
+        BigInteger* RawPrivateKey := BigInteger:FromBytes(RandomBytes, ScalarSize)
+        BigInteger* PrivateKey := this->Curve->PrepareScalar(RawPrivateKey)
+
+        i8* Result := Alloc(ScalarSize)
+        PrivateKey->ToBytes(Result, ScalarSize)
+        PrivateKey->Release()
+
+        *OutSize := ScalarSize
+
+        return Result
+    }
+
+    define void* GeneratePublicKey(void* PrivateKeyBuffer, i32 PrivateKeySize, i32* OutSize) {
+        BigInteger* PrivateKey := BigInteger:FromBytes(PrivateKeyBuffer, PrivateKeySize)
+        BigInteger* PublicKey := this->Curve->Multiply(new BigInteger(9), PrivateKey->Reference())
+
+        i32 Size := this->Curve->GetScalarSize()
+        i8* Result := Alloc(Size)
+
+        *OutSize := Size
+
+        PublicKey->ToBytes(Result, Size)
+        PublicKey->Release()
+
+        return Result
+    }
+
+    define void* ComputeSharedSecret(void* PrivateKeyBuffer, i32 PrivateKeySize, void* PublicKeyBuffer, i32 PublicKeySize, i32* OutSize) {
+        BigInteger* PrivateKey := BigInteger:FromBytes(PrivateKeyBuffer, PrivateKeySize)
+        BigInteger* PublicKey := BigInteger:FromBytes(PublicKeyBuffer, PublicKeySize)
+
+        BigInteger* SharedSecret := this->Curve->Multiply(PublicKey, PrivateKey->Reference())
+
+        i32 Size := this->Curve->GetScalarSize()
+        i8* Result := Alloc(Size)
+        SharedSecret->ToBytes(Result, Size)
+        SharedSecret->Release()
+
+        *OutSize := Size
+
+        return Result
+    }
+}
+
+IDiffieHellmanCurve* ECDH_P256 := new ShortWeierstrassECDH(CURVE_P256)
+IDiffieHellmanCurve* ECDH_P384 := new ShortWeierstrassECDH(CURVE_P384)
+IDiffieHellmanCurve* ECDH_P521 := new ShortWeierstrassECDH(CURVE_P521)
+
+IDiffieHellmanCurve* ECDH_X25519 := new RFC7748ECDH(CURVE_25519)
+IDiffieHellmanCurve* ECDH_X448 := new RFC7748ECDH(CURVE_448)

@@ -1,6 +1,33 @@
 
 #Require "./src/ASN1/Core.rlx"
 
+class EcDSASignaturePair derives INew {
+    BigInteger* R
+    BigInteger* S
+    i32 ReferenceCount
+
+    define void New(BigInteger* R, BigInteger* S) {
+        this->R := R
+        this->S := S
+        this->ReferenceCount := 1
+    }
+
+    define self* Reference() {
+        this->ReferenceCount += 1
+        return this
+    }
+    define void Release() {
+        this->ReferenceCount -= 1
+
+        if (this->ReferenceCount <= 0) {
+            this->R->Release()
+            this->S->Release()
+
+            Free(this)
+        }
+    }
+}
+
 class EcDSA derives INew {
     ShortWeierstrass::Curve* Curve
 
@@ -29,7 +56,7 @@ class EcDSA derives INew {
         return Truncated
     }
 
-    define SignaturePair* Sign(BigInteger* PrivateKey, BigInteger* MessageHash) {
+    define EcDSASignaturePair* Sign(BigInteger* PrivateKey, BigInteger* MessageHash) {
         BigInteger* N := this->Curve->N
 
         BigInteger* Z := this->TruncateHash(MessageHash)
@@ -55,7 +82,7 @@ class EcDSA derives INew {
                     Print("Signature R: %bn-base-16\n", R)
                     Print("Signature S: %bn-base-16\n", S)
 
-                    return new SignaturePair(R, S)
+                    return new EcDSASignaturePair(R, S)
                 }
                 else {
                     Print("S is zero, retrying\n")
@@ -75,10 +102,10 @@ class EcDSA derives INew {
         Print("Signature R: %bn-base-16\n", R)
         Print("Signature S: %bn-base-16\n", S)
 
-        return new SignaturePair(R, S)
+        return new EcDSASignaturePair(R, S)
     }
 
-    define void* SerializeSignature(SignaturePair* Signature, i32* OutSize) {
+    define void* SerializeSignature(EcDSASignaturePair* Signature, i32* OutSize) {
         i32 Size := this->Curve->CoordinateByteCount * 2
         i8* Result := Alloc(Size)
 
@@ -93,7 +120,7 @@ class EcDSA derives INew {
     define void* Sign(BigInteger* PrivateKey, void* MessageHashBuffer, i32 MessageHashSize, i32* OutSignatureSize) {
         BigInteger* MessageHash := BigInteger:FromBytesReversed(MessageHashBuffer, MessageHashSize)
 
-        SignaturePair* Signature := this->Sign(PrivateKey, MessageHash)
+        EcDSASignaturePair* Signature := this->Sign(PrivateKey, MessageHash)
 
         void* Result := this->SerializeSignature(Signature, OutSignatureSize)
 
@@ -102,7 +129,7 @@ class EcDSA derives INew {
         return Result
     }
 
-    define void* SerializeSignatureDER(SignaturePair* Signature, i32* OutSize) {
+    define void* SerializeSignatureDER(EcDSASignaturePair* Signature, i32* OutSize) {
         ASN1::DER::Serializer* DER := new ASN1::DER::Serializer()
 
         ASN1::DER::SequenceValue* Sequence := DER->CreateSequence()
@@ -127,7 +154,7 @@ class EcDSA derives INew {
     define void* SignDER(BigInteger* PrivateKey, void* MessageHashBuffer, i32 MessageHashSize, i32* OutSignatureSize) {
         BigInteger* MessageHash := BigInteger:FromBytesReversed(MessageHashBuffer, MessageHashSize)
 
-        SignaturePair* Signature := this->Sign(PrivateKey, MessageHash)
+        EcDSASignaturePair* Signature := this->Sign(PrivateKey, MessageHash)
 
         void* Result := this->SerializeSignatureDER(Signature, OutSignatureSize)
 
@@ -138,7 +165,7 @@ class EcDSA derives INew {
 
     ; All parameters loaded+parsed
 
-    define i8 Verify(ShortWeierstrass::AffinePoint* PublicKey, BigInteger* MessageHash, SignaturePair* Signature) {
+    define i8 Verify(ShortWeierstrass::AffinePoint* PublicKey, BigInteger* MessageHash, EcDSASignaturePair* Signature) {
         BigInteger* N := this->Curve->N
 
         if !(this->Curve->IsOnCurve(PublicKey)) {
@@ -211,7 +238,7 @@ class EcDSA derives INew {
         BigInteger* R := BigInteger:FromBytesReversed(SignatureBuffer, this->Curve->CoordinateByteCount)
         BigInteger* S := BigInteger:FromBytesReversed(SignatureBuffer + this->Curve->CoordinateByteCount, this->Curve->CoordinateByteCount)
 
-        SignaturePair* Signature := new SignaturePair(R, S)
+        EcDSASignaturePair* Signature := new EcDSASignaturePair(R, S)
 
         return this->Verify(PublicKey, MessageHash, Signature)
     }
@@ -241,7 +268,7 @@ class EcDSA derives INew {
 
     ; Signature needs to be parsed out of DER blob
 
-    define SignaturePair* LoadSignatureDER(void* SignatureBuffer, i32 SignatureSize) {
+    define EcDSASignaturePair* LoadSignatureDER(void* SignatureBuffer, i32 SignatureSize) {
         ASN1::DER::Parser* Parser := new ASN1::DER::Parser(SignatureBuffer, SignatureSize)
         ASN1::DER::IValue* RootValue := Parser->ParseValue()
 
@@ -285,11 +312,11 @@ class EcDSA derives INew {
             return null
         }
 
-        return new SignaturePair(R, S)
+        return new EcDSASignaturePair(R, S)
     }
 
     define i8 VerifyDER(ShortWeierstrass::AffinePoint* PublicKey, BigInteger* MessageHash, void* SignatureBuffer, i32 SignatureSize) {
-        SignaturePair* Signature := this->LoadSignatureDER(SignatureBuffer, SignatureSize)
+        EcDSASignaturePair* Signature := this->LoadSignatureDER(SignatureBuffer, SignatureSize)
 
         if !(Signature) {
             return false
@@ -321,3 +348,7 @@ class EcDSA derives INew {
         return this->VerifyDER(PublicKey, MessageHashBuffer, MessageHashSize, SignatureBuffer, SignatureSize)
     }
 }
+
+EcDSA* ECSDA_P256 := new EcDSA(CURVE_P256)
+EcDSA* ECSDA_P384 := new EcDSA(CURVE_P384)
+EcDSA* ECSDA_P521 := new EcDSA(CURVE_P521)

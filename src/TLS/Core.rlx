@@ -66,6 +66,12 @@ namespace TLS {
             virtual void* GenerateKeyMaterial(void* Key, i32 Size, i8* Label, i32 NeededBytes)
         }
 
+        interface IDiffieHellmanCurve {
+            virtual BigInteger* GeneratePrivateKey()
+            virtual void* GeneratePublicKey(BigInteger* PrivateKey, i32* OutSize)
+            virtual void* ComputeSharedSecret(BigInteger* PrivateKey, void* PublicKey, i32 PublicKeySize, i32* OutSize)
+        }
+
         namespace ::TLS::HandshakeProtocol {
             struct Dummy {
                 i8 Dummy
