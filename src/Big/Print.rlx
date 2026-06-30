@@ -111,6 +111,8 @@ define void DoPrintBigIntegerBase(PrintOutputAdapterPrototype* this, i8* Format,
 
     MemoryReverse(Buffer, Index)
     this->DoPrintCharacters(Buffer, Index)
+
+    Free(Buffer)
 }
 
 PrintFormatPrototype BigIntegerBasePrintPrototype {

@@ -51,6 +51,9 @@ class SHA2_256 implements IHashFunction, derives INew {
     define void New() {
         this->Prepare()
     }
+    define void Free() {
+        Free(this)
+    }
 
     static i32 RotateRight(i32 Value, i32 Distance) asm {
         mov, rcx, p2
@@ -267,6 +270,9 @@ class SHA2_512 implements IHashFunction, derives INew {
 
     define void New() {
         this->Prepare()
+    }
+    define void Free() {
+        Free(this)
     }
 
     static i64 RotateRight(i64 Value, i32 Distance) asm {

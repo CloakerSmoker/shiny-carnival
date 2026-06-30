@@ -14,6 +14,11 @@ class SocketStream derives INew {
         this->Size := 0
     }
 
+    define void Free() {
+        Free(this->Buffer)
+        Free(this)
+    }
+
     static i8 FindFirstBitSet(i64 Number) asm {
         bsr, rax, rdi
         ret

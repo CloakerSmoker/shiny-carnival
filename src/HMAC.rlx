@@ -39,6 +39,14 @@ class HMACWrapper derives INew {
         this->OPad := Alloc(this->BlockSize)
         this->IPad := Alloc(this->BlockSize)
     }
+    define void Free() {
+        Free(this->KeyBlock)
+        Free(this->OPad)
+        Free(this->IPad)
+
+        this->Base->Free()
+        Free(this)
+    }
 
     define void SetKey(void* Key, i32 Size) {
         ZeroMemory(this->KeyBlock, 64)

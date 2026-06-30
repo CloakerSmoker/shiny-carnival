@@ -94,6 +94,9 @@ struct AESBlockCipher {
 
         return this
     }
+    define void Free() {
+        Free(this)
+    }
 
     define i32 RotWord(i32 In) {
         i32 A := In & 0xFF
