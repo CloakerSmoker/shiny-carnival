@@ -1,0 +1,39 @@
+
+class ECDH derives INew {
+    ShortWeierstrass::Curve* Curve
+
+    define void New(ShortWeierstrass::Curve* Curve) {
+        this->Curve := Curve
+    }
+
+    define void* ComputeSharedSecret(BigInteger* PrivateKey, ShortWeierstrass::AffinePoint* PublicKey, i32* OutSize) {
+        if !(this->Curve->IsOnCurve(PublicKey)) {
+            Print("Public key is not on the curve\n")
+            return null
+        }
+
+        if !(this->Curve->IsInSubgroup(PublicKey)) {
+            Print("Public key is not in the subgroup\n")
+            return null
+        }
+
+        ShortWeierstrass::AffinePoint* SharedPoint := this->Curve->Multiply(PublicKey, PrivateKey->Reference())
+
+        if (SharedPoint->IsPointAtInfinity()) {
+            Print("Shared point is at infinity\n")
+            SharedPoint->Release()
+            return null
+        }
+
+        i32 Size := this->Curve->CoordinateByteCount
+        i8* Result := Alloc(Size)
+
+        *OutSize := Size
+
+        SharedPoint->X->ToBytesReversed(Result, Size)
+
+        SharedPoint->Release()
+
+        return Result
+    }
+}
