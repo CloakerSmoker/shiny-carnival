@@ -1,5 +1,11 @@
     #Include "./src/ASN1/ValueBase.rlx"
 
+    define void Setup() {}
+
+    define void Free() {
+        Free(this)
+    }
+
     i32 Offset
     void* Value
 

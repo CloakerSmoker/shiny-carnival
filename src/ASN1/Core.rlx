@@ -4,7 +4,7 @@
 #Require "./src/Big/Big.rlx"
 
 namespace ASN1::DER {
-    enum UniversalTag As i8 {
+    enum UniversalTag As i32 {
         BOOLEAN := 1
         INTEGER := 2
         BIT_STRING := 3
@@ -52,10 +52,6 @@ namespace ASN1::DER {
         virtual IdentifierClass GetClass()
         virtual i8 GetConstructed()
 
-        virtual void Setup() {
-            ; pass
-        }
-
         virtual void Print(i32 Depth) {
             Print("whoopsies")
         }
@@ -67,6 +63,12 @@ namespace ASN1::DER {
         virtual i8 Is(IdentifierClass Class, i32 Tag) {
             return this->GetClass() = Class && this->GetTag() = Tag
         }
+
+        virtual i8 IsString() {
+            return this->Is(UniversalTag::OCTET_STRING) || this->Is(UniversalTag::UTF8_STRING) || this->Is(UniversalTag::UTC_TIME) || this->Is(UniversalTag::PRINTABLE_STRING) || this->Is(UniversalTag::IA5_STRING)
+        }
+
+        virtual void Free()
     }
 
     define void Indent(i32 Depth) {
@@ -78,7 +80,14 @@ namespace ASN1::DER {
     class IntegerValue implements IValue, derives INew {
         #Include "./src/ASN1/ValueBase.rlx"
 
+        define void Setup() {}
+
         BigInteger* Value
+
+        define void Free() {
+            this->Value->Release()
+            Free(this)
+        }
 
         define void SetValue(BigInteger* Value) {
             this->Value := Value
@@ -96,6 +105,20 @@ namespace ASN1::DER {
 
         define void Setup() {
             this->Values := new PointerArray()
+        }
+
+        define void Free() {
+            i32 Count := this->Values->Count()
+
+            for (i32 Index := 0, Index < Count, Index++) {
+                IValue* Value := this->Values->At(Index)
+
+                Value->Free()
+            }
+
+            this->Values->Free()
+            Free(this->Values)
+            Free(this)
         }
 
         define i32 Count() {
@@ -135,6 +158,11 @@ namespace ASN1::DER {
 
         define void Setup() {
             this->Components := Alloc(#i32)
+        }
+
+        define void Free() {
+            Free(this->Components)
+            Free(this)
         }
 
         define i32 Count() {
@@ -181,10 +209,16 @@ namespace ASN1::DER {
     class UnknownValue implements IValue, derives INew {
         #Include "./src/ASN1/ValueBase.rlx"
 
+        define void Setup() {}
+
         i32 Offset
 
         i8* Data
         i32 Size
+
+        define void Free() {
+            Free(this)
+        }
 
         define void SetData(i32 Offset, i8* Data, i32 Size) {
             this->Offset := Offset
@@ -200,6 +234,12 @@ namespace ASN1::DER {
 
     class NullValue implements IValue, derives INew {
         #Include "./src/ASN1/ValueBase.rlx"
+
+        define void Setup() {}
+
+        define void Free() {
+            Free(this)
+        }
 
         define void Print(i32 Depth) {
             Indent(Depth) Print("NULL\n")
@@ -217,8 +257,20 @@ namespace ASN1::DER {
         virtual IValue* AsValue()
     }
 
+    ; TODO: Parsed string values (and unk) borrow references into the original
+    ;  DER blob they were parsed out of
+    ;  Meanwhile, constructed ones *do* own their buffer
+    ;   so we're just screwed and can't free them
+
+
     class OctetStringValue implements IValue, IStringValue, derives INew {
         #Include "./src/ASN1/ValueBase.rlx"
+
+        define void Setup() {}
+
+        define void Free() {
+            Free(this)
+        }
 
         i32 Offset
 
@@ -274,6 +326,12 @@ namespace ASN1::DER {
 
     class BitStringValue implements IValue, derives INew {
         #Include "./src/ASN1/ValueBase.rlx"
+
+        define void Setup() {}
+
+        define void Free() {
+            Free(this)
+        }
 
         i32 Offset
         void* Data
@@ -333,6 +391,12 @@ namespace ASN1::DER {
     class BooleanValue implements IValue, derives INew {
         #Include "./src/ASN1/ValueBase.rlx"
 
+        define void Setup() {}
+
+        define void Free() {
+            Free(this)
+        }
+
         i8 Value
 
         define void SetValue(i8 Value) {
@@ -361,6 +425,9 @@ namespace ASN1::DER {
         define void New(void* Buffer, i32 Size) {
             this->Buffer := Buffer
             this->Size := Size
+        }
+        define void Free() {
+            Free(this)
         }
 
         define void Reset(void* Buffer, i32 Size) {
@@ -450,7 +517,7 @@ namespace ASN1::DER {
         define SequenceValue* ParseSequence(SequenceValue* Result, i32 Size) {
             i32 Old := this->PushSize(Size)
 
-            Print("ENTER SEQUENCE @ %i\n", this->Offset)
+            ;Print("ENTER SEQUENCE @ %i\n", this->Offset)
 
             while (this->Offset < this->Size) {
                 IValue* Value := this->ParseValue()
@@ -458,7 +525,7 @@ namespace ASN1::DER {
                 Result->Push(Value)
             }
 
-            Print("EXIT SEQUENCE @ %i\n", this->Offset)
+            ;Print("EXIT SEQUENCE @ %i\n", this->Offset)
 
             this->PopSize(Old)
 
@@ -490,7 +557,7 @@ namespace ASN1::DER {
             Result->Set(0, Pair / 40)
             Result->Set(1, Pair % 40)
 
-            Result->Print(0)
+            ;Result->Print(0)
 
             this->PopSize(Old)
 
@@ -516,7 +583,7 @@ namespace ASN1::DER {
                 Value->MultiplySelfBySingleDigit(256)
 
                 if (Negative) {
-                    Value := ~Value
+                    Byte := ~Byte
                 }
 
                 Value->_Increment(Byte & 0xFF)
@@ -528,7 +595,7 @@ namespace ASN1::DER {
 
             Result->SetValue(Value)
 
-            Result->Print(0)
+            ;Result->Print(0)
 
             return Result
         }
@@ -544,14 +611,14 @@ namespace ASN1::DER {
 
             this->Offset += Length
 
-            Print("ParseString = ") Result->AsValue()->Print(0)
+            ;Print("ParseString = ") Result->AsValue()->Print(0)
 
             return Result->AsValue()
         }
 
         define IValue* ParseBitString(BitStringValue* Result, i32 Length) {
-            i32 UnusedBites := this->ReadByte()
-            i32 BitLength := ((Length - 1) * 8) - UnusedBites
+            i32 UnusedBits := this->ReadByte()
+            i32 BitLength := ((Length - 1) * 8) - UnusedBits
             i32 ByteLength := BitLength / 8
 
             if (BitLength % 8) {
@@ -562,7 +629,7 @@ namespace ASN1::DER {
 
             this->Offset += Length - 1
 
-            Result->Print(0)
+            ;Result->Print(0)
 
             return Result
         }
@@ -578,9 +645,9 @@ namespace ASN1::DER {
         }
 
         define IValue* ParseValue() {
-            Print("\n")
+            ;Print("\n")
 
-            Print("Offset: %i: ", this->Offset)
+            ;Print("Offset: %i: ", this->Offset)
 
             IdentifierClass Class := IdentifierClass::UNIVERSAL
             i8 Constructed := false
@@ -592,7 +659,7 @@ namespace ASN1::DER {
             
             i32 Length := this->ReadDefiniteLength()
 
-            Print("tag %x, len %i, constructed? %i\n", Tag, Length, Constructed)
+            ;Print("tag %x, len %i, constructed? %i\n", Tag, Length, Constructed)
 
             if (Length < 0) {
                 breakpoint:()
@@ -602,7 +669,7 @@ namespace ASN1::DER {
                 ;Throw('OOB')
             }
 
-            Print("Class: %s, Tag: %s\n", nameof:(Class), nameof:(Tag As UniversalTag))
+            ;Print("Class: %s, Tag: %s\n", nameof:(Class), nameof:(Tag As UniversalTag))
 
             if (Class = IdentifierClass::UNIVERSAL) {
                 UniversalTag Universal := Tag As UniversalTag
@@ -660,7 +727,345 @@ namespace ASN1::DER {
         }
     }
 
+    class Serializer derives INew {
+        i8* Buffer
+        i32 Size
+        i32 Capacity
+
+        define void New() {
+            this->Capacity := 32
+            this->Buffer := Alloc(this->Capacity)
+            this->Size := 0
+        }
+
+        define void Free() {
+            Free(this->Buffer)
+            Free(this)
+        }
+
+        define void EnsureCapacity(i32 Extra) {
+            i32 NewSize := this->Size + Extra
+
+            while (NewSize >= this->Capacity) {
+                this->Capacity *= 2
+                this->Buffer := ReAlloc(this->Buffer, this->Capacity)
+            }
+        }
+
+        define void WriteByte(i8 Byte) {
+            this->EnsureCapacity(1)
+
+            this->Buffer[this->Size++] := Byte
+        }
+
+        define i32 MeasureValueSize(IValue* Value, i32* OutChildrenSize) {
+            i32 Result := 0
+
+            i8 IsConstructed := Value->GetConstructed()
+            i8 IsSequenceOrSet := Value->Is(UniversalTag::SEQUENCE) || Value->Is(UniversalTag::SET)
+
+            if (IsConstructed || IsSequenceOrSet) {
+                SequenceValue* Sequence := Value As SequenceValue*
+
+                i32 Count := Sequence->Count()
+
+                for (i32 Index := 0, Index < Count, Index++) {
+                    IValue* Child := Sequence->At(Index)
+
+                    i32 ChildChildrenSize := 0
+                    Result += this->MeasureValueSize(Child, &ChildChildrenSize)
+                }
+            }
+            else if (Value->Is(UniversalTag::OBJECT_IDENTIFIER)) {
+                ObjectIdentifierValue* OID := Value As ObjectIdentifierValue*
+
+                i32 Count := OID->Count()
+
+                for (i32 Index := 0, Index < Count, Index++) {
+                    i32 Component := OID->At(Index)
+
+                    if (Component > 127) {
+                        while (Component > 0) {
+                            Result += 1
+                            Component := Component >> 7
+                        }
+                    }
+                    else {
+                        Result += 1
+                    }
+                }
+            }
+            else if (Value->Is(UniversalTag::INTEGER)) {
+                IntegerValue* Integer := Value As IntegerValue*
+
+                i32 BitCount := Integer->Value->BitCount()
+                i32 ByteCount := (BitCount + 7) / 8
+
+                if (Integer->Value->GetByte(ByteCount - 1) & 0x80) {
+                    ; high bit is set, we need to add a leading 0 byte to indicate positive
+                    ByteCount += 1
+                }
+
+                Result += ByteCount
+            }
+            else if (Value->IsString()) {
+                OctetStringValue* String := Value As OctetStringValue*
+
+                Result += String->GetLength()
+            }
+            else if (Value->Is(UniversalTag::BIT_STRING)) {
+                BitStringValue* BitString := Value As BitStringValue*
+
+                Result += 1 ; unused bits
+                Result += BitString->Length
+            }
+            else if (Value->Is(UniversalTag::BOOLEAN)) {
+                Result += 1
+            }
+            else if (Value->Is(UniversalTag::NULL)) {
+                ; no additional bytes
+            }
+            else {
+                Print("Unknown value type %x\n", Value->GetTag())
+                Print("Class: %s, Tag: %s\n", nameof:(Value->GetClass()), nameof:(Value->GetTag() As UniversalTag))
+                Exit(1)
+            }
+            
+            *OutChildrenSize := Result
+
+            ;Print("Measuring %s %s\n", nameof:(Value->GetClass()), nameof:(Value->GetTag() As UniversalTag))
+            ;Print("Children are %x bytes\n", Result)
+
+            i32 IdentifierSize := 1
+
+            ; Tag (with extensions if needed)
+            i32 Tag := Value->GetTag()
+
+            if (Tag > 30) {
+                while (Tag > 0) {
+                    IdentifierSize += 1
+                    Tag := Tag >> 7
+                }
+            }
+
+            ;Print("Identifier is %x bytes\n", IdentifierSize)
+
+            Result += IdentifierSize
+
+            i32 LengthSize := 1
+            i32 Length := Result
+            ; we need to figure out how long the length field is lol
+
+            while (Length > 127) {
+                LengthSize += 1
+                Length := Length >> 8
+            }
+
+            ;Print("Length field is %x bytes\n\n", LengthSize)
+
+            Result += LengthSize
+
+            return Result
+        }
+
+        define void WriteIdentifier(IdentifierClass Class, i32 Tag, i8 Constructed) {
+            Identifier Id := 0 As Identifier
+            Id.Class := Class
+
+            if (Tag > 30) {
+                Id.Tag := 31
+            }
+            else {
+                Id.Tag := Tag As i8
+            }
+
+            Id.Constructed := Constructed
+
+            this->WriteByte(Id As i8)
+
+            if (Tag > 30) {
+                while (Tag > 0) {
+                    IdentifierContinuation Continuation := 0 As IdentifierContinuation
+                    Continuation.Value := (Tag & 0x7F) As i8
+                    Continuation.More := Tag > 127
+
+                    this->WriteByte(Continuation As i8)
+
+                    Tag := Tag >> 7
+                }
+            }
+        }
+
+        define void WriteDefiniteLength(i32 Length) {
+            if (Length <= 127) {
+                this->WriteByte(Length As i8)
+            }
+            else {
+                i32 Count := 0
+                i32 Temp := Length
+
+                while (Temp > 0) {
+                    Count += 1
+                    Temp := Temp >> 8
+                }
+
+                this->WriteByte((Count | 0x80) As i8)
+
+                for (i32 Index := Count - 1, Index >= 0, Index--) {
+                    i32 Byte := (Length >> (Index * 8)) & 0xFF
+
+                    this->WriteByte(Byte As i8)
+                }
+            }
+        }
+
+        define void WriteValue(IValue* Value) {
+            i8 IsConstructed := Value->GetConstructed()
+            i8 IsSequenceOrSet := Value->Is(UniversalTag::SEQUENCE) || Value->Is(UniversalTag::SET)
+
+            i32 ChildrenSize := 0
+            i32 SelfSize := this->MeasureValueSize(Value, &ChildrenSize)
+
+            ;Print("\nAt offset %i\n", this->Size)
+            ;Print("Writing value %s %s (%x bytes)\n", nameof:(Value->GetClass()), nameof:(Value->GetTag() As UniversalTag), SelfSize)
+            ;Print("Children are %x bytes\n", ChildrenSize)
+
+            i32 Offset := this->Size
+
+            this->WriteIdentifier(Value->GetClass(), Value->GetTag(), IsConstructed)
+
+            ;Print("Identifier is %x bytes\n", this->Size - Offset)
+
+            Offset := this->Size
+
+            this->WriteDefiniteLength(ChildrenSize)
+
+            ;Print("Length field is %x bytes\n", this->Size - Offset)
+
+            if (IsConstructed || IsSequenceOrSet) {
+                SequenceValue* Sequence := Value As SequenceValue*
+
+                i32 Count := Sequence->Count()
+
+                for (i32 Index := 0, Index < Count, Index++) {
+                    IValue* Child := Sequence->At(Index)
+
+                    this->WriteValue(Child)
+                }
+            }
+            else if (Value->Is(UniversalTag::OBJECT_IDENTIFIER)) {
+                ObjectIdentifierValue* OID := Value As ObjectIdentifierValue*
+
+                i32 Count := OID->Count()
+
+                for (i32 Index := 0, Index < Count, Index++) {
+                    i32 Component := OID->At(Index)
+
+                    while (Component > 0) {
+                        ObjectIdentifierComponent Info := 0 As ObjectIdentifierComponent
+                        Info.Value := (Component & 0x7F) As i8
+                        Info.More := Component > 127
+
+                        this->WriteByte(Info As i8)
+
+                        Component := Component >> 7
+                    }
+                }
+            }
+            else if (Value->Is(UniversalTag::INTEGER)) {
+                IntegerValue* Integer := Value As IntegerValue*
+
+                ;Print("@ %i: Writing INTEGER %bn-base-16\n", this->Size, Integer->Value)
+
+                i32 BitCount := Integer->Value->BitCount()
+                i32 ByteCount := (BitCount + 7) / 8
+
+                if (Integer->Value->GetByte(ByteCount - 1) & 0x80) {
+                    ; high bit is set, we need to add a leading 0 byte to indicate positive
+                    this->WriteByte(0)
+                }
+
+                for (i32 Index := ByteCount - 1, Index >= 0, Index--) {
+                    i8 Byte := Integer->Value->GetByte(Index) As i8
+
+                    this->WriteByte(Byte)
+                }
+            }
+            else if (Value->IsString()) {
+                OctetStringValue* String := Value As OctetStringValue*
+
+                i8* Bytes := String->GetValue()
+                i32 Count := String->GetLength()
+
+                for (i32 Index := 0, Index < Count, Index++) {
+                    i8 Byte := Bytes[Index]
+                    this->WriteByte(Byte)
+                }
+            }
+            else if (Value->Is(UniversalTag::BIT_STRING)) {
+                BitStringValue* BitString := Value As BitStringValue*
+
+                i32 TotalBits := BitString->Length * 8
+                i32 UnusedBits := TotalBits - BitString->BitLength
+
+                this->WriteByte(UnusedBits As i8)
+
+                i8* Bytes := BitString->Data
+                i32 Count := BitString->Length
+
+                for (i32 Index := 0, Index < Count, Index++) {
+                    i8 Byte := Bytes[Index]
+                    this->WriteByte(Byte)
+                }
+            }
+            else if (Value->Is(UniversalTag::BOOLEAN)) {
+                BooleanValue* Boolean := Value As BooleanValue*
+
+                this->WriteByte(Boolean->Value)
+            }
+            else if (Value->Is(UniversalTag::NULL)) {
+                ; no additional bytes
+            }
+            else {
+                Print("Unknown value type %x\n", Value->GetTag())
+                Print("Class: %s, Tag: %s\n", nameof:(Value->GetClass()), nameof:(Value->GetTag() As UniversalTag))
+                Exit(1)
+            }
+        }
+
+        define SequenceValue* CreateSequence(i32 Tag, IdentifierClass Class) {
+            return new SequenceValue(Tag, Class, true)
+        }
+        define SequenceValue* CreateSequence() {
+            return this->CreateSequence(UniversalTag::SEQUENCE As i32, IdentifierClass::UNIVERSAL)
+        }
+
+        define IntegerValue* CreateInteger(BigInteger* Value) {
+            IntegerValue* Result := new IntegerValue(UniversalTag::INTEGER As i32, IdentifierClass::UNIVERSAL, false)
+
+            Result->SetValue(Value->Reference())
+
+            return Result
+        }
+
+        define ObjectIdentifierValue* CreateObjectIdentifier() {
+            return new ObjectIdentifierValue(UniversalTag::OBJECT_IDENTIFIER As i32, IdentifierClass::UNIVERSAL, false)
+        }
+
+        define OctetStringValue* CreateOctetString(i8* Value, i32 Length) {
+            OctetStringValue* Result := new OctetStringValue(UniversalTag::OCTET_STRING As i32, IdentifierClass::UNIVERSAL, false)
+
+            Result->SetValue(0, Value, Length)
+
+            return Result
+        }
+    }
+
     class Verifier derives INew {
+        define void Free() {
+            Free(this)
+        }
+
         define void Raise(i8* Message) {
             Throw(Message As i64)
         }
