@@ -226,7 +226,14 @@ namespace TLS::RecordProtocol {
 
                         this->ReceiveSequenceNumber += 1
 
-                        Packet->Seek(Packet->GetOffset("TLS::RecordProtocol::Record") + #RecordHeader + Prepend)
+                        i32 RecordOffset := Packet->GetOffset("TLS::RecordProtocol::Record")
+                        i32 BodyOffset := RecordOffset + #RecordHeader + Prepend
+
+                        Packet->Seek(BodyOffset)
+                        Packet->Mark("TLS::RecordProtocol::DecryptedBody", Header->Length - Prepend - Append)
+                        Packet->Seek(BodyOffset)
+
+
 
                         ;Print("Decrypted Message:\n%hexdump\n", Body + Prepend, Header->Length - Prepend - Append)
                     }
@@ -297,6 +304,14 @@ namespace TLS::RecordProtocol {
             this->OutgoingPacket := new NetworkPacket(PAGE_SIZE * 2)
 
             this->ContentTypeHandlers := new AVLTree(#void*)
+        }
+
+        define void Free() {
+            this->Stream->Free()
+            this->OutgoingPacket->Free()
+            this->ContentTypeHandlers->Free()
+            Free(this->ContentTypeHandlers)
+            Free(this)
         }
     }
 }
