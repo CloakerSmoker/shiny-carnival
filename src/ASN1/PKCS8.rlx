@@ -6,7 +6,7 @@
 #Require "./src/ASN1/Core.rlx"
 #Require "./src/ASN1/X509.rlx"
 
-#Require "./src/Decode.rlx"
+#Require "./src/PEM.rlx"
 
 namespace ASN1::PKCS8 {
 
@@ -161,36 +161,14 @@ namespace ASN1::PKCS8 {
         }
 
         define PrivateKeyInfo* ParsePEM(i8* PEM, i32 Length) {
-            i8* Header := "-----BEGIN PRIVATE KEY-----\r"
-            i8* Footer := "\r-----END PRIVATE KEY-----\r"
+            i32 DecodedLength := 0
 
-            if (Length < StringLength(Header) + StringLength(Footer)) {
-                this->Verifier->Raise("PEM data is too short to be valid")
-            }
-
-            if (CompareMemory(PEM, Header, StringLength(Header)) != 0) {
-                this->Verifier->Raise("PEM data does not start with expected header")
-            }
-
-            if (CompareMemory(PEM + Length - StringLength(Footer), Footer, StringLength(Footer)) != 0) {
-                this->Verifier->Raise("PEM data does not end with expected footer")
-            }
-
-            void* Body := PEM + StringLength(Header)
-            i32 BodyLength := Length - StringLength(Header) - StringLength(Footer)
-
-            i32 DecodedLength := (BodyLength / 4) * 3 + 3
-            void* Decoded := Alloc(DecodedLength)
-
-            Print("PEM body:\n")
-            for (i32 Index := 0, Index < BodyLength, Index++) {
-                Print("%c", (Body As i8*)[Index])
-            }
-            Print("\n")
-
-            DecodedLength := DecodeBase64(Body, BodyLength, Decoded)
-
-            Print("Decoded PEM data:\n%hexdump\n", Decoded, DecodedLength)
+            void* Decoded := ParsePEM(
+                "-----BEGIN PRIVATE KEY-----\r", 
+                "-----END PRIVATE KEY-----\r",
+                &DecodedLength,
+                PEM, Length
+            )
 
             this->DERParser->Reset(Decoded, DecodedLength)
             DER::IValue* Root := this->DERParser->ParseValue()
@@ -198,27 +176,4 @@ namespace ASN1::PKCS8 {
             return this->Parse(Root)
         }
     }
-}
-
-#Require "$/File.rlx"
-#Require "$/Debug.rlx"
-
-define i32 Main() {
-    i64 F := FileOpen("key.pem", FILE_READ)
-    i32 Size := FileGetSize(F)
-    void* Data := FileReadAll(F)
-    FileClose(F)
-
-    ASN1::PKCS8::Parser* PKCS8Parser := new ASN1::PKCS8::Parser()
-    
-    try {
-        auto Info := PKCS8Parser->ParsePEM(Data, Size)
-    }
-    catch (i64 RawMessage) {
-        Print("Error parsing PKCS#8: %s\n", RawMessage)
-        return 1
-    }
-
-    Info->Print()
-    return 0
 }
