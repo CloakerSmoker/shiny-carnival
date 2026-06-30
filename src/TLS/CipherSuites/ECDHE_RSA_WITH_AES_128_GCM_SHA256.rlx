@@ -60,6 +60,26 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
         define void New(SecurityParameters* Parameters) {
             this->Parameters := Parameters
         }
+        define void Free() {
+            this->Parameters->Free()
+
+            if (this->PRF) {
+                ; this->HMAC is owned by PRF and freed by it
+                ; this->Hash is owned by HMAC and freed by it
+
+                this->PRF->Free()
+            }
+
+            if (this->BulkCipher) {
+                this->BulkCipher->Free()
+            }
+
+            if (this->Curve) {
+                this->Curve->Release()
+            }
+
+            Free(this)
+        }
 
         define void SetCurve(NamedCurve Curve) {
             Print("Using curve %s\n", nameof:(Curve))
@@ -82,13 +102,15 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             BigInteger* PrivateKey := BigInteger:FromBytes(this->Parameters->LocalPrivateKey, this->PublicKeyLength)
             BigInteger* PrivateKeyScalar := this->Curve->PrepareScalar(PrivateKey)
 
-            BigInteger* LocalPublicKey := this->Curve->Multiply(new BigInteger(9), PrivateKeyScalar->Reference())
+            BigInteger* LocalPublicKey := this->Curve->Multiply(new BigInteger(9), PrivateKeyScalar)
 
             i8* LocalPublicKeyBytes := Alloc(this->PublicKeyLength)
 
             for (i32 Index := 0, Index < this->PublicKeyLength, Index++) {
                 LocalPublicKeyBytes[Index] := LocalPublicKey->GetByte(Index) As i8
             }
+
+            LocalPublicKey->Release()
 
             this->Parameters->Local->PublicKey := LocalPublicKeyBytes
         }
@@ -199,10 +221,14 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
                 &SignatureLength
             )
 
+            Free(SignatureData)
+
             Packet->Mark("TLS::HandshakeProtocol::KeyExchange::Signature", SignatureLength)
 
             Tail->SignatureLength := Swap16(SignatureLength As i16) As i16
             MoveMemory(Tail->Signature, Signature, SignatureLength)
+
+            Free(Signature)
         }
 
         define void ReceiveServerKeyExchange(NetworkPacket* Packet) {
@@ -297,6 +323,8 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
                 PreMasterSecretBytes[Index] := PreMasterSecret->GetByte(Index) As i8
             }
 
+            PreMasterSecret->Release()
+
             this->Parameters->PreMasterSecret := PreMasterSecretBytes
 
             this->Hash := new SHA2_256()
@@ -317,11 +345,14 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             DirectionalKeySet* ClientKeys := this->Parameters~>Client
             DirectionalKeySet* ServerKeys := this->Parameters~>Server
 
-            ClientKeys->EncryptionKey := Keys->ClientEncryptionKey
-            ClientKeys->IV := Keys->ClientIV
+            ; All of these are cloned because it'd be too annoying to
+            ;  not free every member of the security parameters at once
 
-            ServerKeys->EncryptionKey := Keys->ServerEncryptionKey
-            ServerKeys->IV := Keys->ServerIV
+            ClientKeys->EncryptionKey := CloneMemory(Keys->ClientEncryptionKey, 16)
+            ClientKeys->IV := CloneMemory(Keys->ClientIV, 4)
+
+            ServerKeys->EncryptionKey := CloneMemory(Keys->ServerEncryptionKey, 16)
+            ServerKeys->IV := CloneMemory(Keys->ServerIV, 4)
 
             Print("Client Encryption Key:\n%hexdump\n", ClientKeys->EncryptionKey, 16)
             Print("Client IV:\n%hexdump\n", ClientKeys->IV, 4)
