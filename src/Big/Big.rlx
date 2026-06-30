@@ -45,6 +45,7 @@ declare void Walk()
 declare i8 HadLeaks()
 
 struct BigInteger {
+    i32 ReferenceCount
     i32* Digits
 
     i32 ID
@@ -54,7 +55,6 @@ struct BigInteger {
     i32 DigitCount
     i32 DigitCapacity
 
-    i32 ReferenceCount
     i8 Negative
     i8 Constant
 
@@ -106,7 +106,7 @@ struct BigInteger {
 
         if (this->ReferenceCount < 0) {
             Print("REFERENCE COUNT BELOW ZERO %x '%s'\n", this, this->Name)
-
+            this->AllocationTrace->Print()
             Print("Released from\n")
             CaptureStackTrace()->Print()
             *null := 0
@@ -125,7 +125,7 @@ struct BigInteger {
             ;*/
 
             Free(this->Digits)
-            Free(this)
+            ;Free(this)
         }
 
         return this
@@ -1353,7 +1353,6 @@ struct BigInteger {
 
         return Result->Shrink()
     }
-
     define BigInteger* Square() {
         return self:Square(this)
     }
@@ -1797,11 +1796,169 @@ struct BigInteger {
 
         M->Release()
 
-        if (N->Negative) {
+        i8 Negative := N->Negative
+        N->Release()
+
+        if (Negative) {
             return T->Negate()
         }
 
         return T
+    }
+    define BigInteger* ModularInverse(BigInteger* M) {
+        return self:ModularInverse(this, M)
+    }
+
+    static BigInteger* RightShift(BigInteger* N, i32 Shift) {
+        BigInteger* Result := new BigInteger(N)
+
+        for (i32 Index := 0, Index < Shift, Index++) {
+            Result := Result->Quotient(self:Constant(2))
+        }
+
+        N->Release()
+
+        return Result
+    }
+    define BigInteger* RightShift(i32 Shift) {
+        return self:RightShift(this, Shift)
+    }
+
+    static BigInteger* LeftShift(BigInteger* In, i32 Shift) {
+        BigInteger* Result := new BigInteger(In)
+
+        for (i32 Index := 0, Index < Shift, Index++) {
+            Result->MultiplySelfBySingleDigit(2)
+        }
+
+        In->Release()
+
+        return Result
+    }
+    define BigInteger* LeftShift(i32 Shift) {
+        return self:LeftShift(this, Shift)
+    }
+
+    static BigInteger* Legendre(BigInteger* A, BigInteger* P) {
+        BigInteger* Exponent := P->Reference()->Subtract(self:Constant(1))->Quotient(self:Constant(2))
+
+        ;Print("(%bn-base-10 - 1) // 2 = %bn-base-10\n", P, Exponent)
+
+        ;Print("Legendre(%bn-base-10, %bn-base-10) ", A, P)
+        BigInteger* Result := self:PowerModulo(A, Exponent, P)
+
+        ;Print("= %bn-base-10\n", Result)
+
+        return Result
+    }
+
+    ; Tonelli-Shanks
+    static BigInteger* ModularSquareRoot(BigInteger* N, BigInteger* P) {
+        BigInteger* Check := self:Legendre(N->Reference(), P->Reference())
+        i8 IsQuadraticResidue := Check->Equals(1)
+        Check->Release()
+
+        if !(IsQuadraticResidue) {
+            N->Release()
+            P->Release()
+
+            return null
+        }
+
+        BigInteger* Q := P->Reference()->Subtract(self:Constant(1))
+
+        ;Print("P - 1 = %bn-base-10\n", Q)
+
+        i32 S := 0
+
+        while (Q->IsEven()) {
+            Q := Q->Quotient(self:Constant(2))
+            S++
+        }
+
+        ;Print("Q = %bn-base-10, S = %i\n", Q, S)
+
+        if (S = 1) {
+            return self:PowerModulo(N, P->Add(self:Constant(1))->Quotient(self:Constant(4)), P->Reference())
+        }
+
+        BigInteger* Z := new BigInteger(self:Constant(2))
+        BigInteger* PM1 := P->Reference()->Subtract(self:Constant(1))
+
+        loop {
+            BigInteger* LegendreZ := self:Legendre(Z->Reference(), P->Reference())
+            i8 Equals := LegendreZ->Equals(PM1)
+            LegendreZ->Release()
+
+            if (Equals) {
+                break
+            }
+
+            Z->_Increment(1)
+
+            if (Z->Equals(P)) {
+                Print("PANIC!!! CANNOT FIND QUADRATIC NON-RESIDUE\n")
+                *null := 0
+            }
+        }
+
+        ;Print("Found quadratic non-residue: %bn-base-10\n", Z)
+
+        PM1->Release()
+
+        BigInteger* C := self:PowerModulo(Z, Q->Reference(), P->Reference())
+        BigInteger* R := self:PowerModulo(N->Reference(), Q->Reference()->Add(self:Constant(1))->Quotient(self:Constant(2)), P->Reference())
+        BigInteger* T := self:PowerModulo(N, Q, P->Reference())
+
+        ;Print("C = %bn-base-10, R = %bn-base-10, T = %bn-base-10\n", C, R, T)
+
+        i32 M := S
+        BigInteger* T2 := new BigInteger(0)
+
+        loop {
+            ;Print("M = %i, T = %bn-base-10\n", M, T)
+
+            BigInteger* TM1ModP := T->Reference()->Subtract(self:Constant(1))->Modulo(P->Reference())
+            ;Print("T - 1 mod P = %bn-base-10\n", TM1ModP)
+            i8 IsTM1ModPZero := TM1ModP->IsZero()
+            TM1ModP->Release()
+
+            if (IsTM1ModPZero) {
+                break
+            }
+
+            T2 := T->Reference()->Square()->Modulo(P->Reference())
+
+            for (i32 Index := 1, Index < M, Index++) {
+                BigInteger* T2M1ModP := T2->Reference()->Subtract(self:Constant(1))->Modulo(P->Reference())
+                i8 IsT2M1ModPZero := T2M1ModP->IsZero()
+                T2M1ModP->Release()
+
+                if (IsT2M1ModPZero) {
+                    break
+                }
+
+                T2 := T2->Square()->Modulo(P->Reference())
+            }
+
+            BigInteger* Exponent := self:Constant(1)->LeftShift(M - Index - 1)
+            BigInteger* B := self:PowerModulo(C, Exponent, P->Reference())
+            R := R->Multiply(B->Reference())->Modulo(P->Reference())
+            C := B->Square()->Modulo(P->Reference())
+            T := T->Multiply(C->Reference())->Modulo(P->Reference())
+
+            M := Index
+        }
+
+        C->Release()
+        T->Release()
+        T2->Release()
+        P->Release()
+
+        return R
+    }
+    define BigInteger* ModularSquareRoot(BigInteger* P) {
+        return self:ModularSquareRoot(this, P)
     }
 
     static i32 DigitAND(i32 A, i32 B) {
@@ -1890,6 +2047,28 @@ struct BigInteger {
         }
 
         return Result->Shrink()
+    }
+    static BigInteger* FromBytesReversed(i8* Bytes, i32 Length) {
+        i32 Digits := (Length / 3) + 1
+
+        BigInteger* Result := BigInteger:WithDigits(Digits)
+
+        for (i32 Index := 0, Index < Length, Index++) {
+            Result->_SetByte(Length - Index - 1, (Bytes[Index] As i32) & 0xFF)
+        }
+
+        return Result->Shrink()
+    }
+    
+    define void ToBytes(i8* Out, i32 Length) {
+        for (i32 Index := 0, Index < Length, Index++) {
+            Out[Index] := this->GetByte(Index) As i8
+        }
+    }
+    define void ToBytesReversed(i8* Out, i32 Length) {
+        for (i32 Index := 0, Index < Length, Index++) {
+            Out[Length - Index - 1] := this->GetByte(Index) As i8
+        }
     }
 
     define BigInteger* BitAt(i32 Index) {
