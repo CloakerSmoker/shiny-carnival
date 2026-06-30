@@ -1,7 +1,14 @@
 
 #Require "$/PointerArray.rlx"
 
-PointerArray* StackFrameCache := new PointerArray()
+define PointerArray* AllocateStackFrameCache() {
+    i8 State := EnterMetadataHeap()
+    PointerArray* Result := new PointerArray()
+    ExitMetadataHeap(State)
+    return Result
+}
+
+PointerArray* StackFrameCache := AllocateStackFrameCache()
 
 struct CompressedStackFrame {
     i64 RIP
@@ -26,6 +33,8 @@ define i16 CompressStackTraceFrame(i64 RIP, i8* Name) {
     i16 Result := FindCompressedStackFrame(RIP, Name)
 
     if (Result = -1) {
+        i8 State := EnterMetadataHeap()
+
         CompressedStackFrame* Frame := Alloc(#CompressedStackFrame)
         Frame->RIP := RIP
         Frame->Name := Name
@@ -33,6 +42,8 @@ define i16 CompressStackTraceFrame(i64 RIP, i8* Name) {
         StackFrameCache->Push(Frame)
 
         Result := (StackFrameCache->Count() - 1) As i16
+
+        ExitMetadataHeap(State)
     }
 
     return Result

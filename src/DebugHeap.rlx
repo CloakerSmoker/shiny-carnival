@@ -1,0 +1,251 @@
+
+#Require "./src/PalHeap.rlx"
+#Require "$/AVLTree.rlx"
+
+PalHeap MetadataHeap
+MemoryAllocator MetadataAllocator
+MemoryAllocator DebugAllocator
+
+i32 BYTES_IN_8MB := 0x80_0000
+
+struct AllocationRecord {
+    void* Address
+    i64 Size
+    i64 Generation
+    CompressedStackTrace* AllocateTrace
+    CompressedStackTrace* ExtendTrace
+}
+
+AVLTree* Allocations
+
+i64 CurrentAllocationGeneration := 0
+
+i64 TotalBytesAllocated := 0
+
+define void* DebugHeapAllocate(void* State, i64 Size) {
+    RestoreAllocator(&MetadataAllocator)
+
+    void* Result := DefaultAllocator.Allocate(Size)
+
+    CompressedStackTrace* Trace := null
+
+    if (CurrentAllocationGeneration > 0) {
+        i32 TraceHeight := CaptureCompressedStackTraceHeight(2)
+        Trace := Alloc(#CompressedStackTrace + (TraceHeight * #i16))
+        Trace->Count := TraceHeight
+        CaptureCompressedStackTrace(2, Trace)
+
+        ;Print("Trace = %x\n", Trace)
+        ;Trace->Print()
+    }
+
+    AllocationRecord Record {
+        Address: Result,
+        Size: Size,
+        Generation: CurrentAllocationGeneration,
+        AllocateTrace: Trace,
+        ExtendTrace: null
+    }
+
+    Allocations->Insert(Result As i64, &Record)
+
+    TotalBytesAllocated += Size
+
+    ;Print("Total bytes allocated: %x\n", TotalBytesAllocated)
+
+    /*AllocatorUsage Usage
+    MetadataHeap.GetUsage(&Usage)
+
+    ;Print("DebugHeap usage: %x bytes allocated, %x bytes free\n", Usage.AllocatedBytes, Usage.FreeBytes)
+
+    if (Usage.FreeBytes < 0x1000) {
+        Print("DebugHeap is running out of memory!\n")
+        Print("%x actual bytes allocated, %x bytes of metadata allocated, %x bytes free\n", TotalBytesAllocated, Usage.AllocatedBytes, Usage.FreeBytes)
+
+        MetadataHeap.DumpRanks()
+        MetadataHeap.DumpAllocations()
+        breakpoint:()
+    }*/
+
+    RestoreAllocator(&DebugAllocator)
+
+    ;Print("Alloc(%x) = %x\n", Size, Result)
+
+    return Result
+}
+
+define void* DebugHeapExtend(void* State, void* Address, i64 NewSize) {
+    RestoreAllocator(&MetadataAllocator)
+
+    AllocationRecord* ExistingRecord := Allocations->Get(Address As i64) As AllocationRecord*
+
+    if !(ExistingRecord) {
+        Print("DebugHeapExtend: Attempted to extend untracked allocation at %x\n", Address)
+        Exit(1)
+    }
+
+    if (ExistingRecord->ExtendTrace) {
+        Free(ExistingRecord->ExtendTrace)
+    }
+
+    void* Result := DefaultAllocator.Extend(Address, NewSize)
+
+    CompressedStackTrace* Trace := null
+
+    if (CurrentAllocationGeneration > 0) {
+        i32 TraceHeight := CaptureCompressedStackTraceHeight(2)
+        Trace := Alloc(#CompressedStackTrace + (TraceHeight * #i16))
+        Trace->Count := TraceHeight
+        CaptureCompressedStackTrace(2, Trace)
+    }
+
+    AllocationRecord Record {
+        Address: Result,
+        Size: NewSize,
+        Generation: ExistingRecord->Generation,
+        AllocateTrace: ExistingRecord->AllocateTrace,
+        ExtendTrace: Trace
+    }
+
+    TotalBytesAllocated -= ExistingRecord->Size
+    TotalBytesAllocated += NewSize
+
+    Allocations->Remove(Address As i64)
+    Allocations->Insert(Result As i64, &Record)
+
+    RestoreAllocator(&DebugAllocator)
+
+    ;Print("Extend(%x, %x) = %x\n", Address, NewSize, Result)
+
+    return Result
+}
+
+define void DebugHeapFree(void* State, void* Address) {
+    RestoreAllocator(&MetadataAllocator)
+
+    AllocationRecord* ExistingRecord := Allocations->Get(Address As i64) As AllocationRecord*
+
+    if !(ExistingRecord) {
+        Print("DebugHeapFree: Attempted to free untracked allocation at %x\n", Address)
+
+        if (ExistingRecord->AllocateTrace) {
+            ExistingRecord->AllocateTrace->Print()
+        }
+        
+        if (ExistingRecord->ExtendTrace) {
+            ExistingRecord->ExtendTrace->Print()
+        }
+
+        Exit(1)
+    }
+
+    TotalBytesAllocated -= ExistingRecord->Size
+
+    if (ExistingRecord->AllocateTrace) {
+        MetadataHeap.Free(ExistingRecord->AllocateTrace)
+    }
+
+    if (ExistingRecord->ExtendTrace) {
+        MetadataHeap.Free(ExistingRecord->ExtendTrace)
+    }
+
+    Allocations->Remove(Address As i64)
+
+    DefaultAllocator.Free(Address)
+
+    RestoreAllocator(&DebugAllocator)
+}
+
+define void DebugHeapMark() {
+    CurrentAllocationGeneration += 1
+}
+
+define void DebugHeapSweep() {
+    if !(ALLOCATIONS_ARE_TRACKED) {
+        return
+    }
+
+    RestoreAllocator(&DebugAllocator)
+
+    i8 HadLeaks := false
+
+    i32 Count := Allocations->Count()
+
+    for (i32 Index := 0, Index < Count, Index++) {
+        AllocationRecord* Record := Allocations->At(Index) As AllocationRecord*
+
+        if (Record->Generation = CurrentAllocationGeneration) {
+            Print("=== Leaked %x bytes at %x ===\n", Record->Size, Record->Address)
+            Print("=== Allocation stack trace ===\n")
+            Record->AllocateTrace->Print()
+            Print("=== End of allocation stack trace ===\n")
+
+            if (Record->ExtendTrace) {
+                Print("=== Extend stack trace ===\n")
+                Record->ExtendTrace->Print()
+                Print("=== End of extend stack trace ===\n")
+            }
+
+            Print("=== End of leak report ===\n")
+
+            HadLeaks := true
+        }
+    }
+
+    if (HadLeaks) {
+        Print("DebugHeapSweep: Detected memory leaks!\n")
+        Exit(1)
+    }
+
+    RestoreAllocator(&DebugAllocator)
+}
+
+define i8 TrackAllocations(i8 Enable) {
+    if (Enable) {
+        void* Buffer := MapMemory(0x45_0000_0000 As void*, BYTES_IN_8MB, MMAP_PROTECTION_READ | MMAP_PROTECTION_WRITE,  MMAP_FLAG_SHARED | MMAP_FLAG_ANONYMOUS)
+        FastZeroMemory(Buffer, BYTES_IN_8MB)
+
+        MetadataHeap.Initialize(Buffer, BYTES_IN_8MB)
+        MetadataHeap.Bootstrap()
+
+        MetadataAllocator.State := &MetadataHeap
+        MetadataAllocator.DoAllocate := &PalHeap.Allocate
+        MetadataAllocator.DoExtend := &PalHeap.Extend
+        MetadataAllocator.DoFree := &PalHeap.Free
+
+        RestoreAllocator(&MetadataAllocator)
+
+        Print("Tracking allocations...\n")
+
+        Allocations := new AVLTree(#AllocationRecord)
+
+        DebugAllocator.DoAllocate := &DebugHeapAllocate
+        DebugAllocator.DoExtend := &DebugHeapExtend
+        DebugAllocator.DoFree := &DebugHeapFree
+
+        RestoreAllocator(&DebugAllocator)
+        
+        return true
+    }
+    else {
+        return false
+    }
+}
+
+define i8 EnterMetadataHeap() {
+    if (ALLOCATIONS_ARE_TRACKED) {
+        if (CurrentAllocator != &MetadataAllocator) {
+            RestoreAllocator(&MetadataAllocator)
+            return false
+        }
+    }
+
+    return true
+}
+define void ExitMetadataHeap(i8 WasInMetadataHeap) {
+    if (ALLOCATIONS_ARE_TRACKED) {
+        if !(WasInMetadataHeap) {
+            RestoreAllocator(&DebugAllocator)
+        }
+    }
+}
