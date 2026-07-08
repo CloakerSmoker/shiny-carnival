@@ -57,7 +57,7 @@ class ShortWeierstrassECDH implements IDiffieHellmanCurve, derives INew {
             return null
         }
 
-        ShortWeierstrass::AffinePoint* SharedPoint := this->Curve->Multiply(PublicKey, PrivateKey->Reference())
+        ShortWeierstrass::AffinePoint* SharedPoint := this->Curve->Multiply(PublicKey, PrivateKey)
 
         if (SharedPoint->IsPointAtInfinity()) {
             Print("Shared point is at infinity\n")
@@ -93,6 +93,7 @@ class RFC7748ECDH implements IDiffieHellmanCurve, derives INew {
         void* RandomBytes := AllocateSecureRandom(ScalarSize)
         BigInteger* RawPrivateKey := BigInteger:FromBytes(RandomBytes, ScalarSize)
         BigInteger* PrivateKey := this->Curve->PrepareScalar(RawPrivateKey)
+        Free(RandomBytes)
 
         i8* Result := Alloc(ScalarSize)
         PrivateKey->ToBytes(Result, ScalarSize)
@@ -105,7 +106,7 @@ class RFC7748ECDH implements IDiffieHellmanCurve, derives INew {
 
     define void* GeneratePublicKey(void* PrivateKeyBuffer, i32 PrivateKeySize, i32* OutSize) {
         BigInteger* PrivateKey := BigInteger:FromBytes(PrivateKeyBuffer, PrivateKeySize)
-        BigInteger* PublicKey := this->Curve->Multiply(new BigInteger(9), PrivateKey->Reference())
+        BigInteger* PublicKey := this->Curve->Multiply(new BigInteger(9), PrivateKey)
 
         i32 Size := this->Curve->GetScalarSize()
         i8* Result := Alloc(Size)
@@ -122,7 +123,7 @@ class RFC7748ECDH implements IDiffieHellmanCurve, derives INew {
         BigInteger* PrivateKey := BigInteger:FromBytes(PrivateKeyBuffer, PrivateKeySize)
         BigInteger* PublicKey := BigInteger:FromBytes(PublicKeyBuffer, PublicKeySize)
 
-        BigInteger* SharedSecret := this->Curve->Multiply(PublicKey, PrivateKey->Reference())
+        BigInteger* SharedSecret := this->Curve->Multiply(PublicKey, PrivateKey)
 
         i32 Size := this->Curve->GetScalarSize()
         i8* Result := Alloc(Size)

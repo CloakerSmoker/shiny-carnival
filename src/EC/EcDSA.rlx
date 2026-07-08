@@ -1,6 +1,9 @@
 
 #Require "./src/ASN1/Core.rlx"
 
+#Require "./src/EC/ShortWeierstrass.rlx"
+#Require "./src/EC/RFC7748.rlx"
+
 class EcDSASignaturePair derives INew {
     BigInteger* R
     BigInteger* S
@@ -61,19 +64,19 @@ class EcDSA derives INew {
 
         BigInteger* Z := this->TruncateHash(MessageHash)
 
-        Mark()
+        ;Mark()
 
         loop {
-            BigInteger* K := this->Curve->GenerateScalar()
+            BigInteger* K := this->Curve->GenerateScalar()->Label("K")
             ShortWeierstrass::AffinePoint* AP := this->Curve->Multiply(K->Reference())
-            BigInteger* R := AP->X->Reference()->Modulo(N->Reference())
+            BigInteger* R := AP->X->Reference()->Modulo(N->Reference())->Label("R")
 
             AP->Release()
 
             if (R->IsNotZero()) {
-                BigInteger* KInv := K->ModularInverse(N->Reference())
-                BigInteger* ZPlusRD := Z->Reference()->Add(R->Reference()->Multiply(PrivateKey->Reference()))
-                BigInteger* S := KInv->Multiply(ZPlusRD)->Modulo(N->Reference())
+                BigInteger* KInv := K->ModularInverse(N->Reference())->Label("KInv")
+                BigInteger* ZPlusRD := Z->Reference()->Add(R->Reference()->Multiply(PrivateKey->Reference()))->Label("ZPlusRD")
+                BigInteger* S := KInv->Multiply(ZPlusRD)->Modulo(N->Reference())->Label("S")
 
                 if (S->IsNotZero()) {
                     Z->Release()
@@ -134,10 +137,10 @@ class EcDSA derives INew {
 
         ASN1::DER::SequenceValue* Sequence := DER->CreateSequence()
 
-        ASN1::DER::IntegerValue* RValue := DER->CreateInteger(Signature->R->Reference())
+        ASN1::DER::IntegerValue* RValue := DER->CreateInteger(Signature->R)
         Sequence->Push(RValue)
 
-        ASN1::DER::IntegerValue* SValue := DER->CreateInteger(Signature->S->Reference())
+        ASN1::DER::IntegerValue* SValue := DER->CreateInteger(Signature->S)
         Sequence->Push(SValue)
         
         DER->WriteValue(Sequence)
@@ -349,6 +352,6 @@ class EcDSA derives INew {
     }
 }
 
-EcDSA* ECSDA_P256 := new EcDSA(CURVE_P256)
-EcDSA* ECSDA_P384 := new EcDSA(CURVE_P384)
-EcDSA* ECSDA_P521 := new EcDSA(CURVE_P521)
+EcDSA* ECDSA_P256 := new EcDSA(CURVE_P256)
+EcDSA* ECDSA_P384 := new EcDSA(CURVE_P384)
+EcDSA* ECDSA_P521 := new EcDSA(CURVE_P521)

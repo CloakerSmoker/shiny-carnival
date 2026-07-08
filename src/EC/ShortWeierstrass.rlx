@@ -201,12 +201,14 @@ namespace ShortWeierstrass {
 
             if (P->IsPointAtInfinity()) {
                 ;Print("P is point at infinity, returning Q\n")
-                return Q->Reference()
+                P->Release()
+                return Q
             }
 
             if (Q->IsPointAtInfinity()) {
                 ;Print("Q is point at infinity, returning P\n")
-                return P->Reference()
+                Q->Release()
+                return P
             }
 
             FiniteField* _ := this->Field
@@ -236,6 +238,9 @@ namespace ShortWeierstrass {
                 B->Release()
                 c->Release()
 
+                Z1->Release()
+                Z2->Release()
+
                 JacobianPoint* Result := null
 
                 if (d->IsZero()) {
@@ -243,6 +248,7 @@ namespace ShortWeierstrass {
                     Result := this->Double(P)
                 }
                 else {
+                    P->Release()
                     ;Print("P and Q are inverses, returning point at infinity\n")
                     Result := new JacobianPoint(new BigInteger(0), new BigInteger(0), new BigInteger(0))
                 }
@@ -359,6 +365,10 @@ namespace ShortWeierstrass {
 
         define AffinePoint* Multiply(BigInteger* Scalar) {
             JacobianPoint* JP := this->Multiply(this->JacobianGenerator->Reference(), Scalar)
+
+            JP->X->Label("JP->X")
+            JP->Y->Label("JP->Y")
+            JP->Z->Label("JP->Z")
             
             return this->ToAffine(JP)
         }
@@ -528,6 +538,8 @@ namespace ShortWeierstrass {
 
             i8* Buffer := AllocateSecureRandom(ByteLength)
             BigInteger* Random := BigInteger:FromBytes(Buffer, ByteLength)
+            Free(Buffer)
+
             BigInteger* NMinus1 := N->Reference()->Subtract(BigInteger:One())
             BigInteger* C := Random->Modulo(NMinus1)
             BigInteger* Scalar := C->Add(BigInteger:One())  ; Now in [1, n-1]
