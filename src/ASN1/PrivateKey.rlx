@@ -1,0 +1,272 @@
+
+
+#Require "$/Memory.rlx"
+#Require "$/Console.rlx"
+
+#Require "./src/ASN1/Core.rlx"
+#Require "./src/ASN1/X509.rlx"
+
+#Require "./src/PEM.rlx"
+
+namespace ASN1::PrivateKey {
+
+    interface IPrivateKey {
+        virtual void Print()
+    }
+
+    enum RSAPrivateKeyVersion {
+        V0 := 0
+    }
+
+    class RSAPrivateKey implements IPrivateKey, derives INew {
+        RSAPrivateKeyVersion Version
+        BigInteger* Modulus
+        BigInteger* PublicExponent
+        BigInteger* PrivateExponent
+        BigInteger* Prime1
+        BigInteger* Prime2
+        BigInteger* Exponent1
+        BigInteger* Exponent2
+        BigInteger* Coefficient
+
+        define i32 BitSize() {
+            return this->Modulus->BitCount()
+        }
+
+        define void Print() {
+            Print("RSAPrivateKey:\n")
+            Print("  Version: %s\n", nameof:(this->Version))
+            Print("  Modulus: %bn-base-16\n", this->Modulus)
+            Print("%i\n", this->Modulus->BitCount())
+            Print("  PublicExponent: %bn-base-16\n", this->PublicExponent)
+            Print("  PrivateExponent: %bn-base-16\n", this->PrivateExponent)
+            Print("  Prime1: %bn-base-16\n", this->Prime1)
+            Print("  Prime2: %bn-base-16\n", this->Prime2)
+            Print("  Exponent1: %bn-base-16\n", this->Exponent1)
+            Print("  Exponent2: %bn-base-16\n", this->Exponent2)
+            Print("  Coefficient: %bn-base-16\n", this->Coefficient)
+        }
+
+        define BigInteger* Encrypt(BigInteger* Message) {
+            return Message->Power(this->PrivateExponent->Reference(), this->Modulus->Reference())
+        }
+
+        define BigInteger* Sign(BigInteger* Message) {
+            return null
+        }
+    }
+
+    class EllipticCurvePrivateKey implements IPrivateKey, derives INew {
+        X509::AlgorithmIdentifier Algorithm
+        DER::OctetStringValue* PrivateKey
+        DER::BitStringValue* PublicKey
+
+        define void Print() {
+            Print("EllipticCurvePrivateKey:\n")
+            Print("  Algorithm: %s\n", nameof:(this->Algorithm))
+            Print("  PrivateKey: %bytes\n", this->PrivateKey->Value, this->PrivateKey->Length)
+            Print("  PublicKey: %bytes\n", this->PublicKey->Data, this->PublicKey->Length)
+        }
+
+        define void* GetPrivateKey(i32* OutSize) {
+            *OutSize := this->PrivateKey->Length
+            return this->PrivateKey->Value
+        }
+        define void* GetPublicKey(i32* OutSize) {
+            *OutSize := this->PublicKey->Length
+            return this->PublicKey->Data
+        }
+    }
+
+    class Parser derives INew {
+        DER::Parser* DERParser
+        DER::Verifier* Verifier
+
+        X509::Parser* X509Parser
+
+        define void New() {
+            this->DERParser := new DER::Parser(null, 0)
+            this->Verifier := new DER::Verifier()
+            this->X509Parser := new X509::Parser()
+        }
+
+        define RSAPrivateKey* ParseRSA(DER::IValue* Root) {
+            DER::SequenceValue* RootSequence := this->Verifier->ExpectSequence(Root, "Expected RSA private key root value to be a sequence")
+
+            RSAPrivateKey* Result := new RSAPrivateKey()
+
+            Result->Version := this->Verifier->ExpectSmallPositiveInteger(0, RootSequence->At(0), "Expected RSA private key version to be 0") As RSAPrivateKeyVersion
+
+            DER::IValue* RawModulus := this->Verifier->ExpectIndex(1, RootSequence, "Expected RSA private key to have a modulus")
+            DER::IntegerValue* Modulus := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawModulus, "Expected modulus to be an integer") As DER::IntegerValue*
+            Result->Modulus := Modulus->Value
+            
+            DER::IValue* RawPublicExponent := this->Verifier->ExpectIndex(2, RootSequence, "Expected RSA private key to have a public exponent")
+            DER::IntegerValue* PublicExponent := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawPublicExponent, "Expected public exponent to be an integer") As DER::IntegerValue*
+            Result->PublicExponent := PublicExponent->Value
+
+            DER::IValue* RawPrivateExponent := this->Verifier->ExpectIndex(3, RootSequence, "Expected RSA private key to have a private exponent")
+            DER::IntegerValue* PrivateExponent := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawPrivateExponent, "Expected private exponent to be an integer") As DER::IntegerValue*
+            Result->PrivateExponent := PrivateExponent->Value
+
+            DER::IValue* RawPrime1 := this->Verifier->ExpectIndex(4, RootSequence, "Expected RSA private key to have prime1")
+            DER::IntegerValue* Prime1 := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawPrime1, "Expected prime1 to be an integer") As DER::IntegerValue*
+            Result->Prime1 := Prime1->Value
+
+            DER::IValue* RawPrime2 := this->Verifier->ExpectIndex(5, RootSequence, "Expected RSA private key to have prime2")
+            DER::IntegerValue* Prime2 := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawPrime2, "Expected prime2 to be an integer") As DER::IntegerValue*
+            Result->Prime2 := Prime2->Value
+
+            DER::IValue* RawExponent1 := this->Verifier->ExpectIndex(6, RootSequence, "Expected RSA private key to have exponent1")
+            DER::IntegerValue* Exponent1 := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawExponent1, "Expected exponent1 to be an integer") As DER::IntegerValue*
+            Result->Exponent1 := Exponent1->Value
+            
+            DER::IValue* RawExponent2 := this->Verifier->ExpectIndex(7, RootSequence, "Expected RSA private key to have exponent2")
+            DER::IntegerValue* Exponent2 := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawExponent2, "Expected exponent2 to be an integer") As DER::IntegerValue*
+            Result->Exponent2 := Exponent2->Value
+
+            DER::IValue* RawCoefficient := this->Verifier->ExpectIndex(8, RootSequence, "Expected RSA private key to have coefficient")
+            DER::IntegerValue* Coefficient := this->Verifier->Expect(DER::UniversalTag::INTEGER, RawCoefficient, "Expected coefficient to be an integer") As DER::IntegerValue*
+            Result->Coefficient := Coefficient->Value
+
+            return Result
+        }
+
+        ; RFC 5915: Elliptic Curve Private Key Structure
+
+        define IPrivateKey* ParseRFC5915(DER::IValue* Root, X509::AlgorithmIdentifier Algorithm) {
+            DER::SequenceValue* RootSequence := this->Verifier->ExpectSequence(Root, "Expected elliptic curve private key root value to be a sequence")
+
+            EllipticCurvePrivateKey* Result := new EllipticCurvePrivateKey()
+
+            DER::IValue* RawVersion := this->Verifier->ExpectIndex(0, RootSequence, "Expected elliptic curve private key sequence to have a version number")
+            i32 Version := this->Verifier->ExpectSmallPositiveInteger(1, RawVersion, "Expected elliptic curve private key version to be 1")
+
+            DER::IValue* RawPrivateKey := this->Verifier->ExpectIndex(1, RootSequence, "Expected elliptic curve private key sequence to have a private key")
+            Result->PrivateKey := this->Verifier->Expect(DER::UniversalTag::OCTET_STRING, RawPrivateKey, "Expected private key to be an octet string") As DER::OctetStringValue*
+
+            i32 Index := 2
+
+            if (Algorithm = X509::AlgorithmIdentifier::None) {
+                DER::IValue* RawParameters := this->Verifier->ExpectIndex(Index++, RootSequence, "Expected elliptic curve private key sequence to have parameters")
+                DER::SequenceValue* ParametersSequence := this->Verifier->ExpectConstructed(RawParameters, "Expected elliptic curve private key parameters to be a sequence")
+
+                DER::IValue* RawCurveOID := this->Verifier->ExpectIndex(0, ParametersSequence, "Expected elliptic curve private key parameters to have a curve OID") As DER::IValue*
+                DER::ObjectIdentifierValue* CurveOID := this->Verifier->Expect(DER::UniversalTag::OBJECT_IDENTIFIER, RawCurveOID, "Expected curve OID to be an OID") As DER::ObjectIdentifierValue*
+
+                i8[100] OIDString
+                i32 Length := FormatString(OIDString, 100, "%asn1-der-oid", CurveOID)
+                OIDString[Length] := 0
+
+                if (StringEquals(OIDString, "1.2.840.10045.3.1.7")) {
+                    Result->Algorithm := X509::AlgorithmIdentifier::Prime256v1
+                }
+                else if (StringEquals(OIDString, "1.3.132.0.34")) {
+                    Result->Algorithm := X509::AlgorithmIdentifier::Prime384v1
+                }
+                else if (StringEquals(OIDString, "1.3.132.0.35")) {
+                    Result->Algorithm := X509::AlgorithmIdentifier::Prime521v1
+                }
+                else {
+                    Print("Unknown or unsupported elliptic curve OID: %s\n", OIDString)
+                    this->Verifier->Raise("Unknown or unsupported elliptic curve OID")
+                }
+            }
+            else {
+                Result->Algorithm := Algorithm
+            }
+
+            DER::IValue* RawPublicKeyContainer := this->Verifier->ExpectIndex(Index++, RootSequence, "Expected elliptic curve private key sequence to have a public key container")
+            DER::SequenceValue* PublicKeyContainer := this->Verifier->ExpectConstructed(RawPublicKeyContainer, "Expected elliptic curve private key public key container to be constructed")
+
+            DER::IValue* RawPublicKey := this->Verifier->ExpectIndex(0, PublicKeyContainer, "Expected elliptic curve private key public key container to have a public key")
+            Result->PublicKey := this->Verifier->Expect(DER::UniversalTag::BIT_STRING, RawPublicKey, "Expected public key to be a bit string") As DER::BitStringValue*
+
+            return Result
+        }
+        define IPrivateKey* ParseRFC5915(DER::IValue* Root) {
+            return this->ParseRFC5915(Root, X509::AlgorithmIdentifier::None)
+        }
+
+        define IPrivateKey* ParsePKCS8(DER::IValue* Root) {
+            DER::SequenceValue* RootSequence := this->Verifier->ExpectSequence(Root, "Expected PKCS#8 root value to be a sequence")
+
+            DER::IValue* RawVersion := this->Verifier->ExpectIndex(0, RootSequence, "Expected PKCS#8 sequence to have at least a version number")
+            this->Verifier->ExpectSmallPositiveInteger(0, RawVersion, "Expected version number 0")
+
+            DER::IValue* RawAlgorithm := this->Verifier->ExpectIndex(1, RootSequence, "Expected PKCS#8 sequence to have an algorithm identifier")
+            X509::AlgorithmIdentifier Algorithm := this->X509Parser->ParseAlgorithmIdentifier(RawAlgorithm)
+
+            DER::IValue* RawPrivateKey := this->Verifier->ExpectIndex(2, RootSequence, "Expected PKCS#8 sequence to have a private key")
+            DER::OctetStringValue* PrivateKey := this->Verifier->Expect(DER::UniversalTag::OCTET_STRING, RawPrivateKey, "Expected private key to be an octet string") As DER::OctetStringValue*
+
+            DER::Parser* PrivateKeyParser := new DER::Parser(PrivateKey->Value, PrivateKey->Length)
+            DER::IValue* PrivateKeyRoot := PrivateKeyParser->ParseValue()
+
+            if (Algorithm = X509::AlgorithmIdentifier::RSA_ENCRYPTION) {
+                return this->ParseRSA(PrivateKeyRoot)
+            }
+            else if (Algorithm = X509::AlgorithmIdentifier::Prime256v1 || Algorithm = X509::AlgorithmIdentifier::Prime384v1 || Algorithm = X509::AlgorithmIdentifier::Prime521v1) {
+                return this->ParseRFC5915(PrivateKeyRoot, Algorithm)
+            }
+            else {
+                this->Verifier->Raise("Unsupported or unknown PKCS#8 private key algorithm")
+            }
+
+            return null
+        }
+
+        define IPrivateKey* ParsePEM(i8* PEM, i32 Length) {
+            i32 DecodedLength := 0
+
+            void* DecodedPKCS8 := ParsePEM(
+                "PRIVATE KEY",
+                &DecodedLength,
+                PEM, Length
+            )
+
+            if (DecodedPKCS8) {
+                Print("Decoded PKCS#8 PEM data: %bytes\n", DecodedPKCS8, DecodedLength)
+
+                this->DERParser->Reset(DecodedPKCS8, DecodedLength)
+                DER::IValue* Root := this->DERParser->ParseValue()
+
+                try {
+                    return this->ParsePKCS8(Root)
+                }
+                catch (i8* Message) {
+                    Print("Failed to parse PKCS#8 private key: %s\n", Message)
+                }
+            }
+            else {
+                Print("Not a PKCS#8 private key\n")
+            }
+
+
+            void* DecodedRFC5915 := ParsePEM(
+                "EC PRIVATE KEY",
+                &DecodedLength,
+                PEM, Length
+            )
+
+            if (DecodedRFC5915) {
+                Print("Decoded RFC 5915 PEM data: %bytes\n", DecodedRFC5915, DecodedLength)
+
+                this->DERParser->Reset(DecodedRFC5915, DecodedLength)
+                DER::IValue* Root := this->DERParser->ParseValue()
+
+                try {
+                    return this->ParseRFC5915(Root)
+                }
+                catch (i8* Message) {
+                    Print("Failed to parse RFC 5915 private key: %s\n", Message)
+                }
+            }
+            else {
+                Print("Not an RFC 5915 private key\n")
+            }
+
+            return null
+        }
+    }
+}
