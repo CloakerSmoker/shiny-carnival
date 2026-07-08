@@ -132,7 +132,9 @@ namespace TLS::RecordProtocol {
                     Packet->Bump(FollowingSize)
                 }
 
-                Packet->Find("TLS::EncryptedRecordProtocol::Body")->Size := LeadingSize + Size + FollowingSize
+                i32 PayloadSize := LeadingSize + Size + FollowingSize
+
+                Packet->Find("TLS::EncryptedRecordProtocol::Body")->Size := PayloadSize
 
                 ;Print("    %i bytes of total ciphertext\n", Packet->GetSize("TLS::EncryptedRecordProtocol::Body"))
             }            
@@ -160,7 +162,8 @@ namespace TLS::RecordProtocol {
                 ;Print("AAD:\n%hexdump\n", &Authenticate, #AuthenticatedData)
 
                 this->Suite->Encrypt(
-                    Data, Size,
+                    this->SendSequenceNumber,
+                    Data, PayloadSize,
                     &Authenticate, #AuthenticatedData
                 )
 
@@ -220,6 +223,7 @@ namespace TLS::RecordProtocol {
                         }
 
                         this->Suite->Decrypt(
+                            this->ReceiveSequenceNumber,
                             Body, Header->Length,
                             &Authenticate, #AuthenticatedData
                         )
@@ -261,6 +265,10 @@ namespace TLS::RecordProtocol {
         }
 
         SocketStream* Stream
+
+        define i8 AtEOF() {
+            return this->Stream->AtEOF()
+        }
 
         define i8 TryReceive() {
             if !(this->Stream->TryReceive(#RecordHeader)) {

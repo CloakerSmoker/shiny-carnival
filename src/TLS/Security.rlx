@@ -4,35 +4,14 @@
 #Require "./src/PKCS5.rlx"
 #Require "./src/EC/RFC7748.rlx"
 
-#Require "./src/ASN1/PKCS8.rlx"
+#Require "./src/ASN1/PrivateKey.rlx"
+
+#Require "./src/EC/EcDSA.rlx"
+
+#Require "./src/SHA2.rlx"
 
 namespace TLS::Security {
-    enum PseudoRandomFunctionName {
-        TLS_1_2_SHA2_256_HMAC
-    }
 
-    enum BulkCipherName {
-        Null,
-        RC4,
-        TRIPLE_DES,
-        AES_128_GCM,
-        AES_128_CBC
-    }
-
-    enum CipherType {
-        Stream,
-        Block,
-        AEAD
-    }
-
-    enum MACAlgorithmName {
-        Null,
-        MD5,
-        SHA1,
-        SHA2_256,
-        SHA2_384,
-        SHA2_512
-    }
 
     namespace PKCS1_5 {
         enum MessageType As i8 {
@@ -46,28 +25,25 @@ namespace TLS::Security {
     }
 
     class RSACertificate implements ICertificate, derives INew {
-        ASN1::PKCS8::RSAPrivateKey* PrivateKey
+        ASN1::PrivateKey::RSAPrivateKey* PrivateKey
         ASN1::X509::Certificate* Certificate
-        SHA2_256* Hash
 
         i32 PublicKeySize
 
         void* CertificateData
         i32 CertificateDataSize
 
-        define void New(ASN1::PKCS8::RSAPrivateKey* PrivateKey, ASN1::X509::Certificate* Certificate, void* CertificateData, i32 CertificateDataSize) {
+        define void New(ASN1::PrivateKey::RSAPrivateKey* PrivateKey, ASN1::X509::Certificate* Certificate, void* CertificateData, i32 CertificateDataSize) {
             this->PrivateKey := PrivateKey
             this->Certificate := Certificate
             this->CertificateData := CertificateData
             this->CertificateDataSize := CertificateDataSize
 
             this->PublicKeySize := this->PrivateKey->Modulus->BitCount() / 8
-
-            this->Hash := new SHA2_256()
         }
 
-        define BigInteger* GetSerialNumber() {
-            return this->Certificate->SerialNumber
+        define SignatureAlgorithmName GetSignatureAlgorithm() {
+            return SignatureAlgorithmName::RSA
         }
 
         define void* GetCertificateData(i32* OutSize) {
@@ -87,7 +63,7 @@ namespace TLS::Security {
             return Key
         }
 
-        define void* Sign(void* Data, i32 DataSize, i32* OutSignatureSize) {
+        define void* Sign(void* Hash, i32 HashSize, i32* OutSignatureSize) {
             void* Message := Alloc(this->PublicKeySize)
             i8* MessageBytes := Message As i8*
 
@@ -116,19 +92,11 @@ namespace TLS::Security {
             MoveMemory(Tail, DigestInfoDER, 19)
             Tail += 19
 
-            this->Hash->Prepare()
-            this->Hash->Update(Data, DataSize)
-            this->Hash->Finalize(Tail)
+            MoveMemory(Tail, Hash, HashSize)
 
             ;Print("Data Hash:\n%hexdump\n", Tail, 32)
 
-            for (i32 Index := 0, Index < this->PublicKeySize / 2, Index++) {
-                i8 Temp := MessageBytes[Index]
-                MessageBytes[Index] := MessageBytes[this->PublicKeySize - Index - 1]
-                MessageBytes[this->PublicKeySize - Index - 1] := Temp
-            }
-
-            BigInteger* MessageInteger := BigInteger:FromBytes(MessageBytes, this->PublicKeySize)
+            BigInteger* MessageInteger := BigInteger:FromBytesReversed(MessageBytes, this->PublicKeySize)
 
             Free(Message)
 
@@ -150,18 +118,79 @@ namespace TLS::Security {
 
             *OutSignatureSize := this->PublicKeySize
 
-            void* SignatureBytes := Alloc(*OutSignatureSize)
-
-            for (i32 Index := 0, Index < *OutSignatureSize, Index++) {
-                (SignatureBytes As i8*)[Index] := Signature->GetByte(*OutSignatureSize - Index - 1) As i8
-            }
-
+            void* SignatureBytes := Alloc(this->PublicKeySize)
+            Signature->ToBytesReversed(SignatureBytes, this->PublicKeySize)
             Signature->Release()
 
             return SignatureBytes
         }
+    }
 
+    class EcDSACertificate implements ICertificate, derives INew {
+        ASN1::PrivateKey::EllipticCurvePrivateKey* PrivateKey
+        ASN1::X509::Certificate* Certificate
+        void* CertificateData
+        i32 CertificateDataSize
 
+        EcDSA* DSA
+
+        define void New(ASN1::PrivateKey::EllipticCurvePrivateKey* PrivateKey, ASN1::X509::Certificate* Certificate, void* CertificateData, i32 CertificateDataSize) {
+            this->PrivateKey := PrivateKey
+            this->Certificate := Certificate
+            this->CertificateData := CertificateData
+            this->CertificateDataSize := CertificateDataSize
+
+            if (PrivateKey->Algorithm = ASN1::X509::AlgorithmIdentifier::Prime256v1) {
+                this->DSA := ECDSA_P256
+            }
+            else if (PrivateKey->Algorithm = ASN1::X509::AlgorithmIdentifier::Prime384v1) {
+                this->DSA := ECDSA_P384
+            }
+            else if (PrivateKey->Algorithm = ASN1::X509::AlgorithmIdentifier::Prime521v1) {
+                this->DSA := ECDSA_P521
+            }
+            else {
+                Print("Unsupported ECDSA curve: %s\n", nameof:(PrivateKey->Algorithm))
+                Exit(1)
+            }
+        }
+
+        define SignatureAlgorithmName GetSignatureAlgorithm() {
+            return SignatureAlgorithmName::ECDSA
+        }
+
+        define void* GetCertificateData(i32* OutSize) {
+            *OutSize := this->CertificateDataSize
+            return this->CertificateData
+        }
+
+        define void* GetPublicKey(i32* OutSize) {
+            return this->PrivateKey->GetPublicKey(OutSize)
+        }
+
+        define void* Sign(void* Hash, i32 HashSize, i32* OutSignatureSize) {
+            i32 PrivateKeySize
+            void* PrivateKey := this->PrivateKey->GetPrivateKey(&PrivateKeySize)
+
+            BigInteger* PrivateKeyInteger := BigInteger:FromBytesReversed(PrivateKey, PrivateKeySize)
+
+            return this->DSA->SignDER(PrivateKeyInteger, Hash, HashSize, OutSignatureSize)
+        }
+    }
+
+    interface IAuthenticatedCipher {
+        virtual i32 GetMACKeySize()
+        virtual i32 GetEncryptionKeySize()
+        virtual i32 GetIVSize()
+
+        virtual i32 CalculateLeadingCipherTextSize()
+        virtual i32 CalculateFollowingCipherTextSize(void* Data, i32 Size)
+
+        ; Sequence Number, Key, IV, Data, Size, AuthenticateData, AuthenticateSize
+        virtual i8 Encrypt(i64, void*, void*, void*, i32, void*, i32)
+        virtual i8 Decrypt(i64, void*, void*, void*, i32, void*, i32)
+
+        virtual void Free()
     }
 
     struct DirectionalKeySet {
@@ -206,6 +235,59 @@ namespace TLS::Security {
         ConnectionRole Role
         HandshakeProtocol::ServerHelloHelper* ServerHello
         ;HandshakeProtocol::ServerKeyExchangeHelper* ServerKeyExchange
+
+        CipherSuite SuiteName
+
+        ; KEX_SIG_WITH_BULK_PRF
+        KeyExchangeAlgorithmName KeyExchangeAlgorithm
+        SignatureAlgorithmName SignatureAlgorithm
+        BulkCipherName BulkCipher
+        PseudoRandomFunctionName PseudoRandomFunction
+
+        define void PopulateAlgorithmsFromCipherSuite(CipherSuite Suite) {
+            this->SuiteName := Suite
+
+            if (Suite = CipherSuite::ECDHE_ECDSA_WITH_AES_128_GCM_SHA256) {
+                this->KeyExchangeAlgorithm := KeyExchangeAlgorithmName::ECDHE
+                this->SignatureAlgorithm := SignatureAlgorithmName::ECDSA
+                this->BulkCipher := BulkCipherName::AES_128_GCM
+                this->PseudoRandomFunction := PseudoRandomFunctionName::TLS_1_2_SHA2_256_HMAC
+            }
+            else if (Suite = CipherSuite::ECDHE_ECDSA_WITH_AES_256_GCM_SHA384) {
+                this->KeyExchangeAlgorithm := KeyExchangeAlgorithmName::ECDHE
+                this->SignatureAlgorithm := SignatureAlgorithmName::ECDSA
+                this->BulkCipher := BulkCipherName::AES_256_GCM
+                this->PseudoRandomFunction := PseudoRandomFunctionName::TLS_1_2_SHA2_384_HMAC
+            }
+            else if (Suite = CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256) {
+                this->KeyExchangeAlgorithm := KeyExchangeAlgorithmName::ECDHE
+                this->SignatureAlgorithm := SignatureAlgorithmName::RSA
+                this->BulkCipher := BulkCipherName::AES_128_GCM
+                this->PseudoRandomFunction := PseudoRandomFunctionName::TLS_1_2_SHA2_256_HMAC
+            }
+            else if (Suite = CipherSuite::ECDHE_RSA_WITH_AES_256_GCM_SHA384) {
+                this->KeyExchangeAlgorithm := KeyExchangeAlgorithmName::ECDHE
+                this->SignatureAlgorithm := SignatureAlgorithmName::RSA
+                this->BulkCipher := BulkCipherName::AES_256_GCM
+                this->PseudoRandomFunction := PseudoRandomFunctionName::TLS_1_2_SHA2_384_HMAC
+            }
+            else if (Suite = CipherSuite::ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256) {
+                this->KeyExchangeAlgorithm := KeyExchangeAlgorithmName::ECDHE
+                this->SignatureAlgorithm := SignatureAlgorithmName::RSA
+                this->BulkCipher := BulkCipherName::CHACHA20_POLY1305
+                this->PseudoRandomFunction := PseudoRandomFunctionName::TLS_1_2_SHA2_256_HMAC
+            }
+            else if (Suite = CipherSuite::ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256) {
+                this->KeyExchangeAlgorithm := KeyExchangeAlgorithmName::ECDHE
+                this->SignatureAlgorithm := SignatureAlgorithmName::ECDSA
+                this->BulkCipher := BulkCipherName::CHACHA20_POLY1305
+                this->PseudoRandomFunction := PseudoRandomFunctionName::TLS_1_2_SHA2_256_HMAC
+            }
+        }
+
+        ; From signature_algorithms
+        HashAlgorithmName Hash
+        HandshakeProtocol::SignatureAndHashAlgorithm SignatureAndHash
 
         DirectionalKeySet Client
         DirectionalKeySet Server
@@ -277,11 +359,27 @@ namespace TLS::Security {
 
     class TLS_1_2_PRF implements IPseudoRandomFunction, derives INew {
         SecurityParameters* Parameters
+        PseudoRandomFunctionName Name
+
+        IHashFunction* Hash
         HMACWrapper* HMAC
 
-        define void New(SecurityParameters* Parameters, HMACWrapper* HMAC) {
+        define void New(SecurityParameters* Parameters, PseudoRandomFunctionName Name) {
             this->Parameters := Parameters
-            this->HMAC := HMAC
+            this->Name := Name
+
+            if (Name = PseudoRandomFunctionName::TLS_1_2_SHA2_256_HMAC) {
+                this->Hash := new SHA2_256()
+            }
+            else if (Name = PseudoRandomFunctionName::TLS_1_2_SHA2_384_HMAC) {
+                this->Hash := new SHA2_384()
+            }
+            else {
+                Print("Unsupported PRF: %s\n", nameof:(Name))
+                Exit(1)
+            }
+
+            this->HMAC := new HMACWrapper(this->Hash)
         }
         define void Free() {
             this->HMAC->Free()
@@ -414,6 +512,7 @@ namespace TLS::Security {
     }
 
     enum NamedCurve As i16 {
+        Invalid := 0x0000
         P256 := 0x17
         P384 := 0x18
         P521 := 0x19
@@ -423,14 +522,6 @@ namespace TLS::Security {
 
     enum ECPointFormat As i8 {
         Uncompressed := 0
-    }
-
-    enum SignatureAlgorithm As i16 {
-        Invalid := 0x0000
-        Ed25519 := 0x0807
-        Ed448 := 0x0808
-        RSA_PKCS1_SHA256 := 0x0401
-        RSA_PKCS1_SHA512 := 0x0601
     }
 
     
@@ -683,24 +774,29 @@ define TLS::Security::ICertificate* TLSLoadCertificate(i8* PrivateKeyPath, i8* C
 
     i32 CertificateDataSize := 0
     void* CertificateData := ParsePEM(
-        "-----BEGIN CERTIFICATE-----\r",
-        "\r-----END CERTIFICATE-----\r",
+        "CERTIFICATE",
         &CertificateDataSize,
         CertificatePEM,
         CertificatePEMSize
     )
 
-    ASN1::PKCS8::Parser* PrivateKeyParser := new ASN1::PKCS8::Parser()
-    ASN1::PKCS8::PrivateKeyInfo* PrivateKeyInfo := PrivateKeyParser->ParsePEM(PrivateKeyPEM, PrivateKeyPEMSize)
+    ASN1::PrivateKey::Parser* PrivateKeyParser := new ASN1::PrivateKey::Parser()
+    ASN1::PrivateKey::IPrivateKey* PrivateKey := PrivateKeyParser->ParsePEM(PrivateKeyPEM, PrivateKeyPEMSize)
 
-    if (PrivateKeyInfo->Algorithm != ASN1::X509::AlgorithmIdentifier::RSA_ENCRYPTION) {
-        Print("Unsupported private key algorithm %s\n", nameof:(PrivateKeyInfo->Algorithm))
+    if (PrivateKey->TypeID() = ASN1::PrivateKey::RSAPrivateKey::TypeID) {
+        ASN1::PrivateKey::RSAPrivateKey* RSA := PrivateKey As ASN1::PrivateKey::RSAPrivateKey*
+
+        return new TLS::Security::RSACertificate(RSA, null, CertificateData, CertificateDataSize)
+    }
+    else if (PrivateKey->TypeID() = ASN1::PrivateKey::EllipticCurvePrivateKey::TypeID) {
+        ASN1::PrivateKey::EllipticCurvePrivateKey* EC := PrivateKey As ASN1::PrivateKey::EllipticCurvePrivateKey*
+
+        return new TLS::Security::EcDSACertificate(EC, null, CertificateData, CertificateDataSize)
+    }
+    else {
+        Print("Unsupported private key type\n")
         Exit(1)
     }
 
-    ASN1::PKCS8::RSAPrivateKey* PrivateKey := PrivateKeyInfo->PrivateKey
-
-    TLS::Security::RSACertificate* Result := new TLS::Security::RSACertificate(PrivateKey, null, CertificateData, CertificateDataSize)
-
-    return Result
+    return null
 }

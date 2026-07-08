@@ -144,7 +144,7 @@ namespace TLS::HandshakeProtocol {
         i16 Length
 
         union {
-            CipherSuite[0] Suites
+            i16[0] Suites
             i8[0] Data
         }
 
@@ -415,6 +415,18 @@ namespace TLS::HandshakeProtocol {
         }
     }
 
+    enum SignatureAndHashAlgorithm As i16 {
+        Invalid := 0,
+        ECDSA_SECP256R1_WITH_SHA256 := 0x0403,
+        ECDSA_SECP384R1_WITH_SHA384 := 0x0503,
+        ECDSA_SECP521R1_WITH_SHA512 := 0x0603,
+        ED25519 := 0x0807,
+        ED448 := 0x0808,
+        RSA_PKCS1_SHA256 := 0x0401,
+        RSA_PKCS1_SHA384 := 0x0501,
+        RSA_PKCS1_SHA512 := 0x0601
+    }
+
     #Require "./src/TLS/HandshakeProtocol/ServerName.rlx"
 
     class ClientHelloHelper derives INew {
@@ -455,7 +467,7 @@ namespace TLS::HandshakeProtocol {
 
             this->CipherSuites := ReAlloc(this->CipherSuites, (this->CipherSuites->Length * 2) + #CipherSuiteList)
 
-            this->CipherSuites->Suites[Index] := Suite
+            this->CipherSuites->Suites[Index] := Swap16(Suite As i16)
         }
         define void AddCompressionMethod(CompressionMethod Method) {
             i32 Index := this->CompressionMethods->Length
@@ -607,7 +619,7 @@ namespace TLS::HandshakeProtocol {
     }
 
     struct ServerHelloRecordTail {
-        CipherSuite Cipher
+        i16 Cipher
         CompressionMethod Compression
 
         ExtensionListRecord Extensions
@@ -628,7 +640,7 @@ namespace TLS::HandshakeProtocol {
         }
 
         define CipherSuite GetCipherSuite() {
-            return this->GetTail()->Cipher
+            return this->GetTail()->Cipher As CipherSuite
         }
         define CompressionMethod GetCompressionMethod() {
             return this->GetTail()->Compression
@@ -698,7 +710,7 @@ namespace TLS::HandshakeProtocol {
 
             ServerHelloRecordTail* Tail := Record->GetTail()
 
-            Tail->Cipher := this->Cipher
+            Tail->Cipher := this->Cipher As i16
             Tail->Compression := this->Compression
 
             ExtensionListRecord* Extensions := Tail~>Extensions
@@ -729,7 +741,7 @@ namespace TLS::HandshakeProtocol {
             Packet->Extend("TLS::HandshakeProtocol::ServerHelloRecord", Size)
 
             MoveMemory(this->Random, Record->Random, 32)
-            this->Cipher := Tail->Cipher
+            this->Cipher := Tail->Cipher As CipherSuite
             this->Compression := Tail->Compression
 
             ExtensionListRecord* Extensions := Tail~>Extensions
