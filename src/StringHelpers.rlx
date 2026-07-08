@@ -56,12 +56,14 @@ define i8* FindMatchBounds(i8* String, i32 Length, i8* Characters, i8** End) {
 }
 
 define i8* FindSubString(i8* String, i32 Length, i8* SubString) {
-    Length -= StringLength(SubString)
+    i32 SubStringLength := StringLength(SubString)
+
+    Length -= SubStringLength
 
     for (i32 Index := 0, Index < Length, Index++) {
         i8* Where := String + Index
 
-        if (StringEquals(Where, SubString)) {
+        if (CompareMemory(Where, SubString, SubStringLength)) {
             return Where
         }
     }
@@ -90,3 +92,5 @@ define i8* GetNextLine(i8* LineEnding, i8* Base, i32 Length, i8* Last, i32* OutL
 define i8* GetNextLine(i8* Base, i32 Length, i8* Last, i32* OutLineLength) {
     return GetNextLine("\n", Base, Length, Last, OutLineLength)
 }
+
+
