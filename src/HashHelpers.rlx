@@ -18,6 +18,16 @@ interface IHashFunction {
     virtual void Finalize(void*)
 
     virtual void GetInfo(HashFunctionInfo*)
+    virtual i32 GetBlockSize() {
+        HashFunctionInfo Info
+        this->GetInfo(&Info)
+        return Info.BlockSize
+    }
+    virtual i32 GetOutputSize() {
+        HashFunctionInfo Info
+        this->GetInfo(&Info)
+        return Info.OutputSize
+    }
 
     virtual void Hash(void* Data, i32 Size, void* Output) {
         this->Prepare()
