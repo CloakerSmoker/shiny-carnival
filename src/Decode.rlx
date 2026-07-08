@@ -118,3 +118,21 @@ define void* Hex(i8* String, i32* OutSize) {
 define void* Hex(i8* String) {
     return Hex(String, null)
 }
+
+define void DoPrintBytes(PrintOutputAdapterPrototype* this, i8* Format, i32* FormatIndex, void* Parameters, i32 ParameterCount, i32* ParameterIndex) {
+	i8* Bytes := Parameters[*ParameterIndex] As void*
+    i32 Length := Parameters[*ParameterIndex + 1] As i32
+
+    for (i32 Index := 0, Index < Length, Index++) {
+        this->Print("%B", Bytes[Index])
+    }
+	
+	*ParameterIndex += 2
+}
+
+PrintFormatPrototype BytesPrintPrototype {
+	Name: "bytes",
+	Format: &DoPrintBytes
+}
+
+i32 BYTES_PRINT_PROTOTYPE_ID := AddPrintFormat(&BytesPrintPrototype)
