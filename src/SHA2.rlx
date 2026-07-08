@@ -227,6 +227,8 @@ class SHA2_512 implements IHashFunction, derives INew {
     i32 ChunkCursor
     i32 Length
 
+    i8 Is384
+
     union {
         i8[128] ChunkBytes
         i64[16] ChunkWords
@@ -237,16 +239,30 @@ class SHA2_512 implements IHashFunction, derives INew {
         this->ChunkCursor := 0
         this->Length := 0
 
-        MoveMemory(this->H, i64[
-            0x6a09e667f3bcc908,
-            0xbb67ae8584caa73b,
-            0x3c6ef372fe94f82b,
-            0xa54ff53a5f1d36f1, 
-            0x510e527fade682d1,
-            0x9b05688c2b3e6c1f,
-            0x1f83d9abfb41bd6b,
-            0x5be0cd19137e2179
-        ], 8 * 8)
+        if (this->Is384) {
+            MoveMemory(this->H, i64[
+                0xcbbb9d5dc1059ed8,
+                0x629a292a367cd507,
+                0x9159015a3070dd17,
+                0x152fecd8f70e5939, 
+                0x67332667ffc00b31,
+                0x8eb44a8768581511,
+                0xdb0c2e0d64f98fa7,
+                0x47b5481dbefa4fa4
+            ], 8 * 8)
+        }
+        else {
+            MoveMemory(this->H, i64[
+                0x6a09e667f3bcc908,
+                0xbb67ae8584caa73b,
+                0x3c6ef372fe94f82b,
+                0xa54ff53a5f1d36f1, 
+                0x510e527fade682d1,
+                0x9b05688c2b3e6c1f,
+                0x1f83d9abfb41bd6b,
+                0x5be0cd19137e2179
+            ], 8 * 8)
+        }
 
         MoveMemory(this->K, i64[
             0x428a2f98d728ae22, 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc, 0x3956c25bf348b538, 
@@ -268,7 +284,14 @@ class SHA2_512 implements IHashFunction, derives INew {
         ], 80 * 8)
     }
 
+    define void New(i8 Is384) {
+        this->Is384 := Is384
+        
+        this->Prepare()
+    }
     define void New() {
+        this->Is384 := false
+        
         this->Prepare()
     }
     define void Free() {
@@ -431,14 +454,50 @@ class SHA2_512 implements IHashFunction, derives INew {
             this->H[Index] := Swap64(this->H[Index])
         }
 
-        MoveMemory(Output, this->H, 64)
+        if (this->Is384) {
+            MoveMemory(Output, this->H, 48)
+        }
+        else {
+            MoveMemory(Output, this->H, 64)
+        }
 
         this->Initialize()
     }
 
     define void GetInfo(HashFunctionInfo* Info) {
         Info->BlockSize := 128
-        Info->OutputSize := 64
+
+        if (this->Is384) {
+            Info->OutputSize := 48
+        }
+        else {
+            Info->OutputSize := 64
+        }
+    }
+}
+
+class SHA2_384 implements IHashFunction, derives INew {
+    SHA2_512* Base
+
+    define void New() {
+        this->Base := new SHA2_512(true)
+    }
+    define void Free() {
+        this->Base->Free()
+        Free(this)
+    }
+
+    define void Prepare() {
+        this->Base->Prepare()
+    }
+    define void Update(void* Data, i32 Size) {
+        this->Base->Update(Data, Size)
+    }
+    define void Finalize(void* Output) {
+        this->Base->Finalize(Output)
+    }
+    define void GetInfo(HashFunctionInfo* Info) {
+        this->Base->GetInfo(Info)
     }
 }
 
@@ -446,18 +505,17 @@ class SHA2_512 implements IHashFunction, derives INew {
 
 /*
 define void Main() {
-    SHA2_256* Base := new SHA2_256()
-    HMACWrapper* HMAC := new HMACWrapper(Base)
-
-    HMAC->SetKey("key", 3)
+    SHA2_384* Base := new SHA2_384()
 
     i8* TestString := "The quick brown fox jumps over the lazy dog"
-    i8[32] Hash
 
-    HMAC->Prepare()
-    HMAC->Update(TestString, StringLength(TestString))
-    HMAC->Finalize(Hash)
+    i8[48] Hash
 
-    Print("%hexdump\n", Hash, 32)
-}*/
+    Base->Prepare()
+    Base->Update(TestString, StringLength(TestString))
+    Base->Finalize(Hash)
 
+    Print("%hexdump\n", Hash, 48)
+}
+
+*/
