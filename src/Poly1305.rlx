@@ -10,6 +10,10 @@ class Poly1305 derives INew {
     i32 Leftover
     i8[16] Buffer
 
+    define void Free() {
+        Free(this)
+    }
+
     define void SetKey(void* RawKey) {
         i32* Key := RawKey As i32*
 

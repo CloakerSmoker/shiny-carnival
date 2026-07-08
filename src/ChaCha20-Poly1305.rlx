@@ -13,6 +13,11 @@ class ChaCha20Poly1305 derives INew {
         this->ChaCha := new ChaCha20()
         this->Poly := new Poly1305()
     }
+    define void Free() {
+        this->ChaCha->Free()
+        this->Poly->Free()
+        Free(this)
+    }
 
     define void SetKey(void* Key) {
         this->ChaCha->SetKey(Key)

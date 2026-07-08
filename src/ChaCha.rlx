@@ -25,6 +25,9 @@ class ChaCha20 derives INew {
     define void New() {
         this->New(20)
     }
+    define void Free() {
+        Free(this)
+    }
 
     define void SetKey(i8* Key) {
         MoveMemory(this->Key, Key, 32)
