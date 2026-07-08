@@ -638,22 +638,21 @@ define TLS::Security::ICertificate* LoadCertificate(i8* PrivateKeyPath, i8* Cert
 
     i32 CertificateDataSize := 0
     void* CertificateData := ParsePEM(
-        "-----BEGIN CERTIFICATE-----\r",
-        "\r-----END CERTIFICATE-----\r",
+        "CERTIFICATE",
         &CertificateDataSize,
         CertificatePEM,
         CertificatePEMSize
     )
 
-    ASN1::PKCS8::Parser* PrivateKeyParser := new ASN1::PKCS8::Parser()
-    ASN1::PKCS8::PrivateKeyInfo* PrivateKeyInfo := PrivateKeyParser->ParsePEM(PrivateKeyPEM, PrivateKeyPEMSize)
+    ASN1::PrivateKey::Parser* PrivateKeyParser := new ASN1::PrivateKey::Parser()
+    ASN1::PrivateKey::PrivateKeyInfo* PrivateKeyInfo := PrivateKeyParser->ParsePEM(PrivateKeyPEM, PrivateKeyPEMSize)
 
     if (PrivateKeyInfo->Algorithm != ASN1::X509::AlgorithmIdentifier::RSA_ENCRYPTION) {
         Print("Unsupported private key algorithm %s\n", nameof:(PrivateKeyInfo->Algorithm))
         Exit(1)
     }
 
-    ASN1::PKCS8::RSAPrivateKey* PrivateKey := PrivateKeyInfo->PrivateKey
+    ASN1::PrivateKey::RSAPrivateKey* PrivateKey := PrivateKeyInfo->PrivateKey
 
     TLS::Security::RSACertificate* Result := new TLS::Security::RSACertificate(PrivateKey, null, CertificateData, CertificateDataSize)
 
@@ -695,7 +694,7 @@ define void Main(i32 ArgC, i8** ArgV) {
 
         TLS::Security::RSACertificate* RSACert := (Certificate As TLS::Security::RSACertificate*)
 
-        ASN1::PKCS8::RSAPrivateKey* PrivateKey := RSACert->PrivateKey
+        ASN1::PrivateKey::RSAPrivateKey* PrivateKey := RSACert->PrivateKey
 
         PrivateKey->Print()
 

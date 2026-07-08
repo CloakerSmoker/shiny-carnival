@@ -144,22 +144,67 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
                 Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client does not support required signature algorithm"))
             }
 
+            TLS::HandshakeProtocol::ExtensionEntry* SupportedGroupsEntry := ClientExtensions->Get(HandshakeProtocol::ExtensionType::SupportedGroups)
 
-            if !(ClientExtensions->Has(HandshakeProtocol::ExtensionType::SupportedGroups)) {
-                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client did not require supported groups extension"))
+            if !(SupportedGroupsEntry) {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client does not support required curve"))
             }
 
-            i16[2] SupportedGroups
-            SupportedGroups[0] := Swap16(2)
-            SupportedGroups[1] := Swap16(NamedCurve::P521 As i16)
+            i16* RawSupportedGroups := SupportedGroupsEntry->Data As i16*
+
+            i16 SupportedGroupsSize := Swap16(RawSupportedGroups[0])
+
+            if (SupportedGroupsSize + 2 != SupportedGroupsEntry->Length) {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client supported groups extension length mismatch"))
+            }
+
+            i32 SupportedGroupsCount := SupportedGroupsSize / 2
+            NamedCurve SelectedCurve := NamedCurve::Invalid
+
+            for (i32 Index := 0, Index < SupportedGroupsCount, Index++) {
+                NamedCurve Curve := Swap16(RawSupportedGroups[Index + 1]) As NamedCurve
+
+                Print("Curve %i: %x %s\n", Index, Curve, nameof:(Curve))
+
+                if (Curve = NamedCurve::P256) {
+                    SelectedCurve := NamedCurve::P256
+                    break
+                }
+                else if (Curve = NamedCurve::P384) {
+                    SelectedCurve := NamedCurve::P384
+                    break
+                }
+                else if (Curve = NamedCurve::P521) {
+                    SelectedCurve := NamedCurve::P521
+                    break
+                }
+                else if (Curve = NamedCurve::x25519) {
+                    SelectedCurve := NamedCurve::x25519
+                    break
+                }
+                else if (Curve = NamedCurve::x448) {
+                    SelectedCurve := NamedCurve::x448
+                    break
+                }
+            }
+
+            Print("Selected curve: %x %s\n", SelectedCurve, nameof:(SelectedCurve))
+
+            if (SelectedCurve = NamedCurve::Invalid) {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client does not support required curve"))
+            }
+
+            this->SetCurve(SelectedCurve)
+
+            i16[2] ReplySupportedGroups
+            ReplySupportedGroups[0] := 2
+            ReplySupportedGroups[1] := Swap16(SelectedCurve As i16)
 
             ServerExtensions->Add(
                 HandshakeProtocol::ExtensionType::SupportedGroups,
-                SupportedGroups,
+                ReplySupportedGroups,
                 4
             )
-
-            this->SetCurve(NamedCurve::P521) ; TODO: Choose based on client support
 
             if !(ClientExtensions->Has(HandshakeProtocol::ExtensionType::ECPointFormats)) {
                 Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client did not require EC point formats extension"))
@@ -403,7 +448,7 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             return 16 ; append 16 byte tag
         }
 
-        define void Encrypt(void* Data, i32 DataLength, void* Authenticate, i32 AuthenticateLength) {
+        define i8 Encrypt(void* Data, i32 DataLength, void* Authenticate, i32 AuthenticateLength) {
             this->BulkCipher->SetKey(this->Parameters->Local->EncryptionKey)
 
             i8[12] IV
@@ -421,8 +466,10 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
             this->BulkCipher->EncryptBytes(Data + 8, DataLength)
 
             this->BulkCipher->CalculateTag(Data + 8 + DataLength, 16)
+
+            return true
         }
-        define void Decrypt(void* Data, i32 DataLength, void* Authenticate, i32 AuthenticateLength) {
+        define i8 Decrypt(void* Data, i32 DataLength, void* Authenticate, i32 AuthenticateLength) {
             ;Print("AAD:\n%hexdump\n", Authenticate, AuthenticateLength)
 
             this->BulkCipher->SetKey(this->Parameters->Remote->EncryptionKey)
@@ -457,8 +504,10 @@ namespace TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
 
             if !(CompareMemory(Tag, CalculatedTag, 16)) {
                 Print("Tag does not match\n")
-                Exit(1)
+                return false
             }
+
+            return true
         }
     }
 }

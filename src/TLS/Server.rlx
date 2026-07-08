@@ -1,5 +1,6 @@
 
 #Require "./src/TLS/TLS.rlx"
+#Require "./src/TLS/CipherSuites/ECDHE_ANY_WITH_ANY_ANY.rlx"
 
 namespace TLS {
     enum ServerState {
@@ -17,7 +18,7 @@ namespace TLS {
 
         Socket Remote
 
-        TLS::Security::ICertificate* SigningCertificate
+        Security::ICertificate* SigningCertificate
 
         TLS::RecordProtocol::Layer* RecordLayer
         TLS::HandshakeProtocol::Layer* HandshakeLayer
@@ -89,23 +90,46 @@ namespace TLS {
                 return false
             }
 
-            CipherSuite SelectedSuite := TLS::CipherSuite::Invalid
+            CipherSuite* MyFavoriteCipherSuites := CipherSuite[
+                ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+                ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+                ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+                ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+                Invalid
+            ]
+
+            CipherSuite SelectedSuite := CipherSuite::Invalid
+            i32 MostFavoriteIndex := 0
+            
+            while (MyFavoriteCipherSuites[MostFavoriteIndex] != CipherSuite::Invalid) {
+                MostFavoriteIndex++
+            }
 
             Length := this->ClientHello->CipherSuites->Length
 
             for (i32 Index := 0, Index < Length, Index++) {
-                CipherSuite Candidate := this->ClientHello->CipherSuites->Suites[Index]
+                CipherSuite Candidate := ((this->ClientHello->CipherSuites->Suites[Index] As i32) & 0xFFFF) As CipherSuite
 
                 Print("Client supports cipher suite %s %x\n", nameof:(Candidate), Candidate)
 
-                if (Candidate = TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256) {
-                    SelectedSuite := Candidate
-                    break
+                for (i32 FavoriteIndex := 0, FavoriteIndex < MostFavoriteIndex, FavoriteIndex++) {
+                    if (Candidate = MyFavoriteCipherSuites[FavoriteIndex]) {
+                        SelectedSuite := Candidate
+                        MostFavoriteIndex := FavoriteIndex
+                    }
                 }
-                else if (Candidate = TLS::CipherSuite::ECDH_RSA_WITH_AES_128_SHA256) {
-                    SelectedSuite := Candidate
-                    break
-                }
+            }
+
+            if (SelectedSuite != CipherSuite::Invalid) {
+                Print("Selected cipher suite %s %x (it's my #%i favorite!!)\n", nameof:(SelectedSuite), SelectedSuite, MostFavoriteIndex)
+            }
+            else {
+                Print("Client does not support any known cipher suites\n")
+                this->SendAlert(AlertLevel::Fatal, AlertDescription::HandshakeFailure)
+                this->State := ServerState::Closed
+                return false
             }
 
             if (this->ClientHello->Extensions->Has(HandshakeProtocol::ExtensionType::RenegotiationInfo)) {
@@ -119,7 +143,7 @@ namespace TLS {
             }
             else {
                 for (i32 Index := 0, Index < Length, Index++) {
-                    CipherSuite Suite := this->ClientHello->CipherSuites->Suites[Index]
+                    CipherSuite Suite := this->ClientHello->CipherSuites->Suites[Index] As CipherSuite
 
                     if (Suite = CipherSuite::SECURE_RENEGOTIATION_MARKER) {
                         Print("Client supports secure renegotiation\n")
@@ -140,16 +164,20 @@ namespace TLS {
                 return false
             }
 
-            if (SelectedSuite = TLS::CipherSuite::ECDHE_RSA_WITH_AES_128_GCM_SHA256) {
-                this->CipherSuite := new TLS::Security::ECDHE_RSA_WITH_AES_128_GCM_SHA256::Suite(this->Security)
-            }
+            ; unpack cipher suite into security parameters
+            this->Security->PopulateAlgorithmsFromCipherSuite(SelectedSuite)
+
+            this->CipherSuite := new Security::CipherSuites::ECDHE_ANY_WITH_ANY_ANY::Suite(
+                SelectedSuite,
+                this->Security
+            )
 
             this->RecordLayer->SetSecurityParameters(this->Security, this->CipherSuite)
 
             this->Security->Local->Random := AllocateSecureRandom(32)
             MoveMemory(this->ServerHello->Random, this->Security->Local->Random, 32)
 
-            this->ServerHello->Cipher := SelectedSuite
+            this->ServerHello->Cipher := Swap16(SelectedSuite As i16) As CipherSuite
             this->ServerHello->Compression := TLS::HandshakeProtocol::CompressionMethod::Null
 
             HandshakeProtocol::ExtensionList* ReplyExtensions := this->ServerHello->Extensions
@@ -454,6 +482,14 @@ namespace TLS {
 
         define i32 GetFileDescriptor() {
             return this->Remote As i32
+        }
+
+        define i8 AtEOF() {
+            if (this->State = ServerState::Closed) {
+                return true
+            }
+
+            return this->RecordLayer->AtEOF()
         }
 
         define i8 Peek(i32 Size, void* Data) {

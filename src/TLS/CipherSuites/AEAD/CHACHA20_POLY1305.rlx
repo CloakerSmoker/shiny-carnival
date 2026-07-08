@@ -1,0 +1,75 @@
+
+#Require "./src/ChaCha20-Poly1305.rlx"
+
+namespace TLS::Security::AEAD {
+    class CHACHA20_POLY1305 implements IAuthenticatedCipher, derives INew {
+        ChaCha20Poly1305* Cipher
+
+        define void New() {
+            this->Cipher := new ChaCha20Poly1305()
+        }
+        define void Free() {
+            this->Cipher->Free()
+            Free(this)
+        }
+
+        define i32 GetMACKeySize() {
+            return 0
+        }
+        define i32 GetEncryptionKeySize() {
+            return 32
+        }
+        define i32 GetIVSize() {
+            ; 12 bytes, xor'd with the sequence number to
+            ;  produce a unique (deterministic) nonce for
+            ;   each record
+
+            return 12
+        }
+
+        define i32 CalculateLeadingCipherTextSize() {
+            ; deterministic IV, no need to send over network
+
+            return 0
+        }
+
+        define i32 CalculateFollowingCipherTextSize(void* Data, i32 Size) {
+            ; 16 bytes for the tag
+
+            return 16
+        }
+
+        define void GenerateNonce(i64 SequenceNumber, i8* IV, i8* OutNonce) {
+            FastZeroMemory(OutNonce, 12)
+            MoveMemory(OutNonce + 4, &SequenceNumber, 8)
+
+            for (i32 Index := 0, Index < 12, Index++) {
+                OutNonce[Index] ^= IV[Index]
+            }
+        }
+
+        ; Cipher does tag calculation for us, passed as last parameter
+        ; Cipher validates tag for us, returns true if valid, false if not
+
+        define i8 Encrypt(i64 SequenceNumber, void* Key, void* IV, void* Data, i32 Size, void* AuthenticateData, i32 AuthenticateSize) {
+            i8[12] Nonce
+            this->GenerateNonce(SequenceNumber, IV, Nonce)
+
+            this->Cipher->SetKey(Key)
+            this->Cipher->Encrypt(Nonce, Data, Size - 16, AuthenticateData, AuthenticateSize, Data + Size)
+
+            return true
+        }
+        define i8 Decrypt(i64 SequenceNumber, void* Key, void* IV, void* Data, i32 Size, void* AuthenticateData, i32 AuthenticateSize) {
+            if (Size < 16) {
+                Throw(new FatalAlert(AlertDescription::DecodeError, "Ciphertext is too small to contain a valid tag"))
+            }
+
+            i8[12] Nonce
+            this->GenerateNonce(SequenceNumber, IV, Nonce)
+
+            this->Cipher->SetKey(Key)
+            return this->Cipher->Decrypt(Nonce, Data, Size - 16, AuthenticateData, AuthenticateSize, Data + Size - 16)
+        }
+    }
+}

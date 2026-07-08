@@ -4,7 +4,7 @@
 #Require "$/Debug.rlx"
 
 declare i8 TrackAllocations(i8)
-i8 ALLOCATIONS_ARE_TRACKED := TrackAllocations(false)
+i8 ALLOCATIONS_ARE_TRACKED := TrackAllocations(true)
 
 declare i8 EnterMetadataHeap()
 declare void ExitMetadataHeap(i8)

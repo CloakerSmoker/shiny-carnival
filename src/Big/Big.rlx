@@ -125,7 +125,7 @@ struct BigInteger {
             ;*/
 
             Free(this->Digits)
-            ;Free(this)
+            Free(this)
         }
 
         return this

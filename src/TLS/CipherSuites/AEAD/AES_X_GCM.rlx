@@ -1,0 +1,96 @@
+
+
+namespace TLS::Security::AEAD {
+    class AES_X_GCM implements IAuthenticatedCipher, derives INew {
+        AES_GCM* Cipher
+        AESKeySize Size
+        i32 KeySizeBytes
+
+        define void New(AESKeySize Size) {
+            this->Cipher := new AES_GCM(Size)
+            this->Size := Size
+
+            if (this->Size = AESKeySize::128) {
+                this->KeySizeBytes := 16
+            }
+            else if (this->Size = AESKeySize::192) {
+                this->KeySizeBytes := 24
+            }
+            else if (this->Size = AESKeySize::256) {
+                this->KeySizeBytes := 32
+            }
+        }
+        define void Free() {
+            this->Cipher->Free()
+            Free(this)
+        }
+
+        define i32 GetMACKeySize() {
+            return 0
+        }
+        define i32 GetEncryptionKeySize() {
+            return this->KeySizeBytes
+        }
+        define i32 GetIVSize() {
+            ; 4 bytes keyed, 8 bytes random = 12 bytes total
+
+            return 4
+        }
+
+        define i32 CalculateLeadingCipherTextSize() {
+            ; random IV is prepended to each ciphertext
+
+            return 8
+        }
+
+        define i32 CalculateFollowingCipherTextSize(void* Data, i32 Size) {
+            ; 16 bytes for the tag
+
+            return 16
+        }
+
+        define i8 Encrypt(i64 SequenceNumber, void* Key, void* IV, void* Data, i32 Size, void* AuthenticateData, i32 AuthenticateSize) {
+            this->Cipher->SetKey(Key)
+
+            ; AES-GCM requires a 12 byte IV
+            ;  first 4 bytes come from the key material
+            ;  last 8 bytes are random and prepended to the ciphertext
+
+            i8[12] FullIV
+            MoveMemory(FullIV, IV, 4)
+            SecureFillRandom(Data, 8) ; prepend the random IV to the ciphertext
+            MoveMemory(FullIV + 4, Data, 8)
+
+            this->Cipher->SetIV(FullIV, 12)
+
+            this->Cipher->AuthenticateBytes(AuthenticateData, AuthenticateSize)
+            this->Cipher->EncryptBytes(Data + 8, Size - 8 - 16)
+            this->Cipher->CalculateTag(Data + Size - 16, 16)
+
+            return true
+        }
+        define i8 Decrypt(i64 SequenceNumber, void* Key, void* IV, void* Data, i32 Size, void* AuthenticateData, i32 AuthenticateSize) {
+            if (Size < 8 + 16) {
+                Throw(new FatalAlert(AlertDescription::DecodeError, "Ciphertext is too small to contain a valid IV+tag"))
+            }
+
+            this->Cipher->SetKey(Key)
+
+            i8[12] FullIV
+            MoveMemory(FullIV, IV, 4)
+            MoveMemory(FullIV + 4, Data, 8)
+
+            this->Cipher->SetIV(FullIV, 12)
+
+            this->Cipher->AuthenticateBytes(AuthenticateData, AuthenticateSize)
+            this->Cipher->DecryptBytes(Data + 8, Size - 8 - 16)
+
+            i8[16] CalculatedTag
+            this->Cipher->CalculateTag(CalculatedTag, 16)
+
+            void* ActualTag := Data + Size - 16
+
+            return CompareMemory(ActualTag, CalculatedTag, 16)
+        }
+    }
+}

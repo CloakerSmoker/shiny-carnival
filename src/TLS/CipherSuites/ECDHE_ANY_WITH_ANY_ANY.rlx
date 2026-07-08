@@ -1,0 +1,545 @@
+
+/*
+fuck it, parameterized cipher suite that'll do any of:
+
+* ECDHE_RSA_WITH_AES_128_GCM_SHA256
+* ECDHE_RSA_WITH_AES_256_GCM_SHA384
+* ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+
+* ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+* ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+* ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+
+Only constants are ECDHE and the TLS 1.2 PRF
+
+*/
+
+#Require "./src/TLS/CipherSuites/AEAD/AES_X_GCM.rlx"
+#Require "./src/TLS/CipherSuites/AEAD/CHACHA20_POLY1305.rlx"
+
+#Require "./src/EC/EcDSA.rlx"
+#Require "./src/EC/ECDH.rlx"
+
+namespace TLS::Security::CipherSuites::ECDHE_ANY_WITH_ANY_ANY {
+    struct CurveInfo unaligned {
+        CurveType Type
+        NamedCurve Curve
+        i8 PublicKeySize
+    }
+
+    struct ClientKeyExchangeRecord {
+        i8 PublicKeySize
+        i8[0] PublicKey
+    }
+
+    struct ServerKeyExchangeRecord unaligned {
+        CurveType Type
+        NamedCurve Curve
+        i8 PublicKeySize
+        i8[0] PublicKey
+
+        define ServerKeyExchangeRecordTail* GetTail() {
+            return (this->PublicKey + ((this->PublicKeySize As i32) & 0xFF)) As void*
+        }
+    }
+
+    struct ServerKeyExchangeRecordTail {
+        HandshakeProtocol::SignatureAndHashAlgorithm Algorithm
+        i16 SignatureLength
+        i8[0] Signature
+    }
+
+    class Suite implements ICipherSuite, derives INew {
+        CipherSuite SuiteName
+
+        SecurityParameters* Parameters
+
+        IHashFunction* SignatureHash
+
+        IHashFunction* KeyExchangeHash
+        TLS_1_2_PRF* PRF
+
+        IAuthenticatedCipher* Cipher
+
+        NamedCurve KeyExchangeCurveName
+        ::IDiffieHellmanCurve* KeyExchangeCurve
+
+        define IHashFunction* GetHashFunction() {
+            return this->KeyExchangeHash
+        }
+        define IPseudoRandomFunction* GetPseudoRandomFunction() {
+            return this->PRF
+        }
+
+        define void New(CipherSuite SuiteName, SecurityParameters* Parameters) {
+            this->SuiteName := SuiteName
+            this->Parameters := Parameters
+
+            if (Parameters->PseudoRandomFunction = PseudoRandomFunctionName::TLS_1_2_SHA2_256_HMAC) {
+                this->KeyExchangeHash := new SHA2_256()
+                this->PRF := new TLS_1_2_PRF(Parameters, PseudoRandomFunctionName::TLS_1_2_SHA2_256_HMAC)
+            }
+            else if (Parameters->PseudoRandomFunction = PseudoRandomFunctionName::TLS_1_2_SHA2_384_HMAC) {
+                this->KeyExchangeHash := new SHA2_384()
+                this->PRF := new TLS_1_2_PRF(Parameters, PseudoRandomFunctionName::TLS_1_2_SHA2_384_HMAC)
+            }
+            else {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Unsupported PRF"))
+            }
+
+            if (Parameters->BulkCipher = BulkCipherName::AES_128_GCM) {
+                this->Cipher := new AEAD::AES_X_GCM(AESKeySize::128)
+            }
+            else if (Parameters->BulkCipher = BulkCipherName::AES_256_GCM) {
+                this->Cipher := new AEAD::AES_X_GCM(AESKeySize::256)
+            }
+            else if (Parameters->BulkCipher = BulkCipherName::CHACHA20_POLY1305) {
+                this->Cipher := new AEAD::CHACHA20_POLY1305()
+            }
+            else {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Unsupported bulk cipher"))
+            }
+        }
+        define void Free() {
+            this->Parameters->Free()
+            this->SignatureHash->Free()
+            this->PRF->Free()
+            this->KeyExchangeHash->Free()
+            this->Cipher->Free()
+
+            Free(this)
+        }
+
+        define void SetKeyExchangeCurve(NamedCurve Curve) {
+            Print("Using curve %s\n", nameof:(Curve))
+
+            this->KeyExchangeCurveName := Curve
+
+            if (Curve = NamedCurve::P256) {
+                this->KeyExchangeCurve := ECDH_P256
+            }
+            else if (Curve = NamedCurve::P384) {
+                this->KeyExchangeCurve := ECDH_P384
+            }
+            else if (Curve = NamedCurve::P521) {
+                this->KeyExchangeCurve := ECDH_P521
+            }
+            else if (Curve = NamedCurve::x25519) {
+                this->KeyExchangeCurve := ECDH_X25519
+            }
+            else if (Curve = NamedCurve::x448) {
+                this->KeyExchangeCurve := ECDH_X448
+            }
+            else {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Unsupported curve"))
+            }
+
+            ; Use curve to generate a local private key
+
+            auto P := this->Parameters
+
+            P->LocalPrivateKey := this->KeyExchangeCurve->GeneratePrivateKey(
+                P~>LocalPrivateKeySize
+            )
+
+            ; Use curve to generate local public key from private key
+
+            auto L := P->Local
+
+            L->PublicKey := this->KeyExchangeCurve->GeneratePublicKey(
+                P->LocalPrivateKey, P->LocalPrivateKeySize,
+                L~>PublicKeySize
+            )
+        }
+
+        define void GenerateKeys() {
+            auto P := this->Parameters
+
+            P->PreMasterSecret := this->KeyExchangeCurve->ComputeSharedSecret(
+                P->LocalPrivateKey, P->LocalPrivateKeySize,
+                P->Remote->PublicKey, P->Remote->PublicKeySize,
+                P~>PreMasterSecretSize
+            )
+
+            P->MasterSecret := this->PRF->GenerateMasterSecret(
+                P->PreMasterSecret, P->PreMasterSecretSize,
+                "master secret", 48
+            )
+
+            Print("Master Secret:\n%hexdump\n", P->MasterSecret, 48)
+
+            i32 MACKeySize := this->Cipher->GetMACKeySize()
+            i32 EncryptionKeySize := this->Cipher->GetEncryptionKeySize()
+            i32 IVSize := this->Cipher->GetIVSize()
+
+            i32 KeyBlockSize := (MACKeySize + EncryptionKeySize + IVSize) * 2
+
+            P->KeyBlock := this->PRF->GenerateKeyMaterial(
+                P->MasterSecret, 48,
+                "key expansion", KeyBlockSize
+            )
+
+            Print("Key Block:\n%hexdump\n", P->KeyBlock, KeyBlockSize)
+
+            void* Keys := P->KeyBlock
+
+            DirectionalKeySet* ClientKeys := P~>Client
+            DirectionalKeySet* ServerKeys := P~>Server
+
+            void* KeyMaterial := P->KeyBlock
+
+            if (MACKeySize) {
+                ClientKeys->MACKey := CloneMemory(KeyMaterial, MACKeySize)
+                KeyMaterial += MACKeySize
+
+                ServerKeys->MACKey := CloneMemory(KeyMaterial, MACKeySize)
+                KeyMaterial += MACKeySize
+            }
+
+            ClientKeys->EncryptionKey := CloneMemory(KeyMaterial, EncryptionKeySize)
+            KeyMaterial += EncryptionKeySize
+
+            ServerKeys->EncryptionKey := CloneMemory(KeyMaterial, EncryptionKeySize)
+            KeyMaterial += EncryptionKeySize
+
+            if (IVSize) {
+                ClientKeys->IV := CloneMemory(KeyMaterial, IVSize)
+                KeyMaterial += IVSize
+
+                ServerKeys->IV := CloneMemory(KeyMaterial, IVSize)
+                KeyMaterial += IVSize
+            }
+
+            Print("Client Encryption Key:\n%hexdump\n", ClientKeys->EncryptionKey, 16)
+            Print("Client IV:\n%hexdump\n", ClientKeys->IV, 4)
+
+            Print("Server Encryption Key:\n%hexdump\n", ServerKeys->EncryptionKey, 16)
+            Print("Server IV:\n%hexdump\n", ServerKeys->IV, 4)
+
+            i64 KeyLogFile := FileOpen("rlxkeylog.log", FILE_CREATE_NEW | FILE_WRITE)
+
+            FileSeek(KeyLogFile, 0, SEEK_END)
+
+            FileWrite(KeyLogFile, "CLIENT_RANDOM ", 14)
+
+            for (i32 Index := 0, Index < 32, Index++) {
+                i8 Byte := (P->Client->Random As i8*)[Index]
+                i32 Upper := (Byte >> 4) & 0xF
+                i32 Lower := Byte & 0xF
+                FileWrite(KeyLogFile, "0123456789abcdef" + Upper, 1)
+                FileWrite(KeyLogFile, "0123456789abcdef" + Lower, 1)
+            }
+
+            FileWrite(KeyLogFile, " ", 1)
+
+            for (i32 Index := 0, Index < 48, Index++) {
+                i8 Byte := (P->MasterSecret As i8*)[Index]
+                i32 Upper := (Byte >> 4) & 0xF
+                i32 Lower := Byte & 0xF
+                FileWrite(KeyLogFile, "0123456789abcdef" + Upper, 1)
+                FileWrite(KeyLogFile, "0123456789abcdef" + Lower, 1)
+            }
+
+            FileWrite(KeyLogFile, "\n", 1)
+            FileTruncate(KeyLogFile, FileTell(KeyLogFile))
+
+            FileClose(KeyLogFile)
+        }
+
+        define i32 CalculateLeadingCipherTextSize() {
+            return this->Cipher->CalculateLeadingCipherTextSize()
+        }
+        define i32 CalculateFollowingCipherTextSize(void* Data, i32 Size) {
+            return this->Cipher->CalculateFollowingCipherTextSize(Data, Size)
+        }
+
+        define i8 Encrypt(i64 SequenceNumber, void* Data, i32 DataLength, void* Authenticate, i32 AuthenticateLength) {
+            return this->Cipher->Encrypt(
+                SequenceNumber,
+                this->Parameters->Local->EncryptionKey,
+                this->Parameters->Local->IV,
+                Data, DataLength,
+                Authenticate, AuthenticateLength
+            )
+        }
+        define i8 Decrypt(i64 SequenceNumber, void* Data, i32 DataLength, void* Authenticate, i32 AuthenticateLength) {
+            return this->Cipher->Decrypt(
+                SequenceNumber,
+                this->Parameters->Remote->EncryptionKey,
+                this->Parameters->Remote->IV,
+                Data, DataLength,
+                Authenticate, AuthenticateLength
+            )
+        }
+
+        define void SendServerExtensions(HandshakeProtocol::ExtensionList* ClientExtensions, HandshakeProtocol::ExtensionList* ServerExtensions) {
+            TLS::HandshakeProtocol::ExtensionEntry* SignatureAlgorithmsEntry := ClientExtensions->Get(HandshakeProtocol::ExtensionType::SignatureAlgorithms)
+
+            if !(SignatureAlgorithmsEntry) {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client did not send signature_algorithms extension"))
+            }
+
+            i16* RawSignatureAlgorithms := SignatureAlgorithmsEntry->Data As i16*
+            i16 SignatureAlgorithmsSize := Swap16(RawSignatureAlgorithms[0])
+
+            if (SignatureAlgorithmsSize + 2 != SignatureAlgorithmsEntry->Length) {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client signature algorithms extension length mismatch"))
+            }
+
+            i32 SignatureAlgorithmsCount := SignatureAlgorithmsSize / 2
+
+            HandshakeProtocol::SignatureAndHashAlgorithm* MyFavoriteSignatureHashAlgorithms := null
+
+            if (this->Parameters->SignatureAlgorithm = SignatureAlgorithmName::RSA) {
+                MyFavoriteSignatureHashAlgorithms := HandshakeProtocol::SignatureAndHashAlgorithm[
+                    RSA_PKCS1_SHA512,
+                    RSA_PKCS1_SHA384,
+                    RSA_PKCS1_SHA256,
+                    Invalid
+                ]
+            }
+            else if (this->Parameters->SignatureAlgorithm = SignatureAlgorithmName::ECDSA) {
+                EcDSACertificate* Certificate := this->Parameters->Certificate As EcDSACertificate*
+                ASN1::PrivateKey::EllipticCurvePrivateKey* PrivateKey := Certificate->PrivateKey As ASN1::PrivateKey::EllipticCurvePrivateKey*
+
+                if (PrivateKey->Algorithm = ASN1::X509::AlgorithmIdentifier::Prime256v1) {
+                    MyFavoriteSignatureHashAlgorithms := HandshakeProtocol::SignatureAndHashAlgorithm[
+                        ECDSA_SECP256R1_WITH_SHA256,
+                        Invalid
+                    ]
+                }
+                else if (PrivateKey->Algorithm = ASN1::X509::AlgorithmIdentifier::Prime384v1) {
+                    MyFavoriteSignatureHashAlgorithms := HandshakeProtocol::SignatureAndHashAlgorithm[
+                        ECDSA_SECP384R1_WITH_SHA384,
+                        Invalid
+                    ]
+                }
+                else if (PrivateKey->Algorithm = ASN1::X509::AlgorithmIdentifier::Prime521v1) {
+                    MyFavoriteSignatureHashAlgorithms := HandshakeProtocol::SignatureAndHashAlgorithm[
+                        ECDSA_SECP521R1_WITH_SHA512,
+                        Invalid
+                    ]
+                }
+            }
+
+            i32 MostFavoriteIndex := 0
+
+            while (MyFavoriteSignatureHashAlgorithms[MostFavoriteIndex] != HandshakeProtocol::SignatureAndHashAlgorithm::Invalid) {
+                MostFavoriteIndex++
+            }
+
+            HandshakeProtocol::SignatureAndHashAlgorithm SelectedAlgorithm := HandshakeProtocol::SignatureAndHashAlgorithm::Invalid
+
+            for (i32 Index := 0, Index < SignatureAlgorithmsCount, Index++) {
+                HandshakeProtocol::SignatureAndHashAlgorithm Algorithm := Swap16(RawSignatureAlgorithms[Index + 1]) As HandshakeProtocol::SignatureAndHashAlgorithm
+
+                for (i32 FavoriteIndex := 0, FavoriteIndex < MostFavoriteIndex, FavoriteIndex++) {
+                    if (Algorithm = MyFavoriteSignatureHashAlgorithms[FavoriteIndex]) {
+                        SelectedAlgorithm := Algorithm
+                        MostFavoriteIndex := FavoriteIndex
+                    }
+                }
+            }
+
+            if (SelectedAlgorithm = HandshakeProtocol::SignatureAndHashAlgorithm::Invalid) {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "No compatible signature algorithm found"))
+            }
+
+            HashAlgorithmName HashAlgorithm := (((SelectedAlgorithm As i32) >> 8) & 0xFF) As HashAlgorithmName
+
+            if (HashAlgorithm = HashAlgorithmName::SHA2_256) {
+                this->SignatureHash := new SHA2_256()
+            }
+            else if (HashAlgorithm = HashAlgorithmName::SHA2_384) {
+                this->SignatureHash := new SHA2_384()
+            }
+            else if (HashAlgorithm = HashAlgorithmName::SHA2_512) {
+                this->SignatureHash := new SHA2_512()
+            }
+            else {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Unsupported hash algorithm"))
+            }
+
+            this->Parameters->SignatureAndHash := SelectedAlgorithm
+
+            Print("Selected signature algorithm: %s, using hash %s\n", nameof:(SelectedAlgorithm), nameof:(HashAlgorithm))
+
+            TLS::HandshakeProtocol::ExtensionEntry* SupportedGroupsEntry := ClientExtensions->Get(HandshakeProtocol::ExtensionType::SupportedGroups)
+
+            if !(SupportedGroupsEntry) {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client did not send supported_groups extension"))
+            }
+
+            i16* RawSupportedGroups := SupportedGroupsEntry->Data As i16*
+            i16 SupportedGroupsSize := Swap16(RawSupportedGroups[0])
+
+            if (SupportedGroupsSize + 2 != SupportedGroupsEntry->Length) {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client supported groups extension length mismatch"))
+            }
+
+            i32 SupportedGroupsCount := SupportedGroupsSize / 2
+            NamedCurve SelectedCurve := NamedCurve::Invalid
+
+            for (i32 Index := 0, Index < SupportedGroupsCount, Index++) {
+                NamedCurve Curve := Swap16(RawSupportedGroups[Index + 1]) As NamedCurve
+
+                Print("Curve %i: %x %s\n", Index, Curve, nameof:(Curve))
+
+                if (Curve = NamedCurve::P256) {
+                    SelectedCurve := NamedCurve::P256
+                    break
+                }
+                else if (Curve = NamedCurve::P384) {
+                    SelectedCurve := NamedCurve::P384
+                    break
+                }
+                else if (Curve = NamedCurve::P521) {
+                    SelectedCurve := NamedCurve::P521
+                    break
+                }
+                else if (Curve = NamedCurve::x25519) {
+                    SelectedCurve := NamedCurve::x25519
+                    break
+                }
+                else if (Curve = NamedCurve::x448) {
+                    SelectedCurve := NamedCurve::x448
+                    break
+                }
+            }
+
+            Print("Selected curve: %x %s\n", SelectedCurve, nameof:(SelectedCurve))
+
+            if (SelectedCurve = NamedCurve::Invalid) {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client does not support required curve"))
+            }
+
+            this->SetKeyExchangeCurve(SelectedCurve)
+
+            i16[2] ReplySupportedGroups
+            ReplySupportedGroups[0] := Swap16(2)
+            ReplySupportedGroups[1] := Swap16(SelectedCurve As i16)
+
+            ServerExtensions->Add(
+                HandshakeProtocol::ExtensionType::SupportedGroups,
+                ReplySupportedGroups,
+                4
+            )
+
+            if !(ClientExtensions->Has(HandshakeProtocol::ExtensionType::ECPointFormats)) {
+                Throw(new FatalAlert(AlertDescription::HandshakeFailure, "Client did not require EC point formats extension"))
+            }
+
+            i8[2] ECPointFormats
+            ECPointFormats[0] := 1
+            ECPointFormats[1] := ECPointFormat::Uncompressed As i8
+
+            ServerExtensions->Add(
+                HandshakeProtocol::ExtensionType::ECPointFormats,
+                ECPointFormats,
+                2
+            )
+
+            ServerExtensions->Add(
+                HandshakeProtocol::ExtensionType::RenegotiationInfo,
+                i8[0x00],
+                1
+            )
+        }
+
+        define void SendServerKeyExchange(NetworkPacket* Packet) {
+            ServerKeyExchangeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::KeyExchange", #ServerKeyExchangeRecord)
+
+            Record->Type := CurveType::Named
+            Record->Curve := Swap16(this->KeyExchangeCurveName As i16) As NamedCurve
+
+            auto P := this->Parameters
+            auto L := P->Local
+
+            Packet->Mark("TLS::HandshakeProtocol::KeyExchange::PublicKey", L->PublicKeySize)
+
+            Record->PublicKeySize := L->PublicKeySize As i8
+            MoveMemory(Record->PublicKey, L->PublicKey, L->PublicKeySize)
+
+            Packet->Mark("TLS::HandshakeProtocol::KeyExchange::Tail", #ServerKeyExchangeRecordTail)
+            ServerKeyExchangeRecordTail* Tail := Record->GetTail()
+
+            Tail->Algorithm := Swap16(this->Parameters->SignatureAndHash As i16) As HandshakeProtocol::SignatureAndHashAlgorithm
+
+            this->SignatureHash->Prepare()
+            this->SignatureHash->Update(P->Client->Random, 32)
+            this->SignatureHash->Update(P->Server->Random, 32)
+            
+            CurveInfo Info {
+                Type: CurveType::Named,
+                Curve: Swap16(this->KeyExchangeCurveName As i16) As NamedCurve,
+                PublicKeySize: L->PublicKeySize As i8
+            }
+            this->SignatureHash->Update(&Info, #CurveInfo)
+
+            this->SignatureHash->Update(L->PublicKey, L->PublicKeySize)
+
+            ;Print("Signature Data:\n%hexdump\n", SignatureData, 64 + #CurveInfo + L->PublicKeySize)
+
+            ;Print("Signature Data: ")
+
+            ;for (i32 Index := 0, Index < 64 + #CurveInfo + L->PublicKeySize, Index++) {
+            ;    Print("%B", (SignatureData As i8*)[Index])
+            ;}
+
+            ;Print("\n")
+
+            void* Digest := Alloc(this->SignatureHash->GetOutputSize())
+            this->SignatureHash->Finalize(Digest)
+
+            if (P->Certificate->GetSignatureAlgorithm() != this->Parameters->SignatureAlgorithm) {
+                Print("Certificate signature algorithm %s does not match required signature algorithm %s\n", nameof:(P->Certificate->GetSignatureAlgorithm()), nameof:(this->Parameters->SignatureAlgorithm))
+                Exit(1)
+            }
+
+            i32 SignatureLength := 0
+            void* Signature := this->Parameters->Certificate->Sign(
+                Digest,
+                this->SignatureHash->GetOutputSize(),
+                &SignatureLength
+            )
+
+            Free(Digest)
+
+            Packet->Mark("TLS::HandshakeProtocol::KeyExchange::Signature", SignatureLength)
+
+            Tail->SignatureLength := Swap16(SignatureLength As i16) As i16
+            MoveMemory(Tail->Signature, Signature, SignatureLength)
+
+            Free(Signature)
+        }
+
+        define void ReceiveClientKeyExchange(NetworkPacket* Packet) {
+            Packet->AssertBound(#ClientKeyExchangeRecord)
+            ClientKeyExchangeRecord* Record := Packet->Mark("TLS::HandshakeProtocol::KeyExchange", #ClientKeyExchangeRecord)
+
+            i32 PublicKeySize := (Record->PublicKeySize As i32) & 0xFF
+            Packet->AssertBound(PublicKeySize)
+
+            if (PublicKeySize != this->Parameters->Local->PublicKeySize) {
+                i8* Message := FormatString("Curve %s needs a %i byte public key\n", nameof:(this->KeyExchangeCurveName), this->Parameters->Local->PublicKeySize)
+                Throw(new FatalAlert(AlertDescription::IllegalParameter, Message))
+            }
+
+            void* PublicKey := Packet->Mark("TLS::HandshakeProtocol::KeyExchange::PublicKey", PublicKeySize)
+            this->Parameters->Remote->PublicKey := CloneMemory(PublicKey, PublicKeySize)
+            this->Parameters->Remote->PublicKeySize := PublicKeySize
+
+            this->GenerateKeys()
+        }
+
+        define void ReceiveServerExtensions(HandshakeProtocol::ExtensionList* ClientExtensions) {
+            
+        }
+        define void ReceiveServerKeyExchange(NetworkPacket* Packet) {
+            
+        }
+        define void SendClientKeyExchange(NetworkPacket* Packet) {
+            
+        }
+    }
+}
