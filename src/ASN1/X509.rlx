@@ -11,7 +11,10 @@ namespace ASN1::X509 {
     enum AlgorithmIdentifier {
         None,
         RSA_ENCRYPTION,
-        SHA2_256_WITH_RSA_ENCRYPTION
+        SHA2_256_WITH_RSA_ENCRYPTION,
+        Prime256v1,
+        Prime384v1,
+        Prime521v1
     }
 
     class Certificate derives INew {
@@ -127,16 +130,38 @@ namespace ASN1::X509 {
             i32 Length := FormatString(OIDString, 100, "%asn1-der-oid", AlgorithmOID)
             OIDString[Length] := 0
 
+            AlgorithmIdentifier Result := AlgorithmIdentifier::None
+
             if (StringEquals(OIDString, "1.2.840.113549.1.1.1")) {
                 return AlgorithmIdentifier::RSA_ENCRYPTION
             }
             else if (StringEquals(OIDString, "1.2.840.113549.1.1.11")) {
                 return AlgorithmIdentifier::SHA2_256_WITH_RSA_ENCRYPTION
             }
+            else if (StringEquals(OIDString, "1.2.840.10045.2.1")) {
+                ; ANSI X9.62
+                ; ecPublicKey (why public? this is a private key)
+
+                DER::ObjectIdentifierValue* CurveOID := this->Verifier->Expect(DER::UniversalTag::OBJECT_IDENTIFIER, AlgorithmSequence->At(1), "Expected curve OID to be an OID") As DER::ObjectIdentifierValue*
+
+                i32 Length := FormatString(OIDString, 100, "%asn1-der-oid", CurveOID)
+                OIDString[Length] := 0
+
+                if (StringEquals(OIDString, "1.2.840.10045.3.1.7")) {
+                    return AlgorithmIdentifier::Prime256v1
+                }
+                else if (StringEquals(OIDString, "1.3.132.0.34")) {
+                    return AlgorithmIdentifier::Prime384v1
+                }
+                else if (StringEquals(OIDString, "1.3.132.0.35")) {
+                    return AlgorithmIdentifier::Prime521v1
+                }
+            }
             else {
                 this->Verifier->Raise("Unknown or unsupported algorithm OID")
-                return AlgorithmIdentifier::None
             }
+
+            return AlgorithmIdentifier::None
         }
         
         define void ParseCertificateToBeSigned(DER::SequenceValue* TBS) {
