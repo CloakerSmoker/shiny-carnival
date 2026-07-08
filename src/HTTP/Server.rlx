@@ -5,6 +5,9 @@
 
 #Require "./src/network/epoll.rlx"
 
+declare void HadLeaks()
+declare void Mark()
+
 namespace HTTP {
 
     struct String {
@@ -464,6 +467,7 @@ namespace HTTP {
     interface ISocket {
         virtual i32 GetFileDescriptor()
 
+        virtual i8 AtEOF()
         virtual i8 Peek(i32, void*)
         virtual i8 Advance(i32)
         virtual i8 Read(i32, void*)
@@ -679,7 +683,33 @@ namespace HTTP {
             Content->Free()
         }
 
+        define void CloseClient(ServerClient* Client) {
+            epoll_ctl(this->epoll, EPOLL_CONTROL_DEL, Client->Socket->GetFileDescriptor(), 0)
+            Client->Socket->Free()
+
+            if (Client->Request) {
+                Client->Request->Free()
+            }
+
+            if (Client->Response) {
+                Client->Response->Free()
+            }
+
+            this->Clients->RemoveValue(Client)
+            Free(Client)
+        }
+
         define void HandleClient(ServerClient* Client) {
+            Print("Handle client: fd=%i\n", Client->Socket->GetFileDescriptor())
+
+            if (Client->Socket->AtEOF()) {
+                Print("Socket at EOF\n")
+
+                ; We're only called when the socket is readable, so if we can't peek, the socket is closed
+                this->CloseClient(Client)
+                return
+            }
+
             loop {
                 if (Client->State = RequestParsingState::Method) {
                     if !(Client->Socket->Peek(4, Client->Buffer)) {
@@ -999,22 +1029,6 @@ namespace HTTP {
             }
         }
 
-        define void CloseClient(ServerClient* Client) {
-            epoll_ctl(this->epoll, EPOLL_CONTROL_DEL, Client->Socket->GetFileDescriptor(), 0)
-            Client->Socket->Free()
-
-            if (Client->Request) {
-                Client->Request->Free()
-            }
-
-            if (Client->Response) {
-                Client->Response->Free()
-            }
-
-            this->Clients->RemoveValue(Client)
-            Free(Client)
-        }
-
         define void Start() {
             loop {
                 i64 EventCount := epoll_wait(this->epoll, this->Events, this->Clients->Count() + 1, -1)
@@ -1029,6 +1043,7 @@ namespace HTTP {
                     if (Event->fd = this->SocketServer->GetFileDescriptor()) {
                         if (Event->Events & EPOLL_EVENT_IN) {
                             DebugHeapMark()
+                            Mark()
 
                             ServerClient* Client := Alloc(#ServerClient)
                             ISocket* Connection := this->SocketServer->Accept(Client~>Address, #AnySocketAddress)
@@ -1055,18 +1070,20 @@ namespace HTTP {
                         }
 
                         if (OutstandingClient != null) {
-                            if (Event->Events & EPOLL_EVENT_IN) {
-                                this->HandleClient(OutstandingClient)
-                            }
+                            Print("Events: %x\n", Event->Events)
                             
                             if (Event->Events & EPOLL_EVENT_ERR) {
                                 Print("Socket error!\n")
                                 this->CloseClient(OutstandingClient)
                                 DebugHeapSweep()
+                                HadLeaks()
                             }
                             else if (Event->Events & EPOLL_EVENT_HUP) {
                                 Print("Socket hangup!\n")
                                 this->CloseClient(OutstandingClient)
+                            }
+                            else if (Event->Events & EPOLL_EVENT_IN) {
+                                this->HandleClient(OutstandingClient)
                             }
                         }
                     }
