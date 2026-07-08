@@ -33,6 +33,24 @@ class SocketStream derives INew {
         }
     }
 
+    define i8 AtEOF() {
+        if (this->Size > 0) {
+            return false
+        }
+
+        if (this->Base->Poll(POLL_FOR_READ, 0)) {
+            i32 Received := this->Base->Receive(this->Buffer, this->Capacity) As i32
+
+            if (Received <= 0) {
+                return true
+            }
+
+            this->Size += Received
+        }
+
+        return false
+    }
+
     define i8 TryReceive(i32 Size) {
         while (this->Size < Size) {
             if !(this->Base->Poll(POLL_FOR_READ, 0)) {
